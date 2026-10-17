@@ -150,18 +150,6 @@ object SyncGate {
     }
 
     /**
-     * 记下"这份数据**今天已经同步过**"，而不发请求。
-     *
-     * 用在"我们刚刚通过别的路径把它同步下来了"的场合：
-     * 例如加入收藏夹之前的兜底步骤里已经为它拉过一次内容缓存
-     * （见 `AsmrRepository.ensurePlaylistContentCached`）。
-     * 不记的话，用户随后点开那个收藏夹会再拉一次 —— 白多一个请求。
-     */
-    fun markSyncedToday(key: String) {
-        writeDay(domainOf(key), dayStamp())
-    }
-
-    /**
      * 把当前时刻格式化成"本地自然日"的日期串。
      *
      * 用日历日而不是"间隔 24 小时"：需求是"每天第一次"，日历日更符合直觉，

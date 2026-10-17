@@ -23,9 +23,9 @@ import com.asmrone.app.data.cache.CachedPlaylistMeta
 import com.asmrone.app.data.cache.PlaylistMetaCodec
 import com.asmrone.app.data.cache.PlaylistsCodec
 import com.asmrone.app.data.cache.CollectionCacheOps
-import com.asmrone.app.data.cache.PlaylistCacheFlags
 import com.asmrone.app.data.cache.PendingWrite
 import com.asmrone.app.data.cache.PendingWriteStore
+import com.asmrone.app.data.cache.PlaylistPatchOps
 import com.asmrone.app.data.cache.CircleDictionary
 import com.asmrone.app.data.cache.TagDictionary
 import com.asmrone.app.data.cache.SyncCacheStore
@@ -343,9 +343,6 @@ object AsmrRepository {
     private var collectionSnapshot: List<Work>? = null
     private var collectionSnapshotKey: String? = null
 
-    /** 内存快照是否是一份**完整**列表（见 `CacheEntry.complete`） */
-    private var collectionSnapshotComplete: Boolean = false
-
     // ─────────────────────── 「本地已改，界面请刷新」信号 ───────────────────────
     //
     // 为什么需要它：收藏的 ViewModel 挂在导航层、**不会**随页面进出而重建，
@@ -606,13 +603,11 @@ object AsmrRepository {
                     loadedPages = page.currentPage
                 ),
                 etag = etag,
-                syncedAt = System.currentTimeMillis(),
-                complete = merged.size <= COLLECTION_PAGE_SIZE
+                syncedAt = System.currentTimeMillis()
             )
         )
         collectionSnapshotKey = key
         collectionSnapshot = merged.map { it.toWork() }
-        collectionSnapshotComplete = merged.size <= COLLECTION_PAGE_SIZE
     }
 
     private fun appendCollectionCache(key: String, page: PageResult<Work>, pageNo: Int) {
@@ -627,14 +622,11 @@ object AsmrRepository {
                 value = CachedWorkPage(merged, page.totalCount, loadedPages = pageNo),
                 etag = existing?.etag,
                 syncedAt = existing?.syncedAt ?: System.currentTimeMillis(),
-                dirty = existing?.dirty ?: false,
-                // 追加是"只有前几页"，永远不算完整基线
-                complete = false
+                dirty = existing?.dirty ?: false
             )
         )
         collectionSnapshotKey = key
         collectionSnapshot = null
-        collectionSnapshotComplete = false
     }
 
     /** 当前账号的待补写记录（本地已改、云端还没收到） */
@@ -918,13 +910,13 @@ object AsmrRepository {
 
             if (ok) {
                 clearPending(write)
-                // 收藏夹内容变了 → 作废相关缓存，下次读取重新拉
+                // 收藏夹内容变了 → 清 dirty，让下次对齐回到廉价的条件请求路径。
+                //
+                // ⚠️ 这里**不能**再 patch 一次内容：失败当时就已经"本地先行"过了，
+                // 再应用一次同样的改动会重复增删件数（旧实现正是如此）。
                 when (write) {
-                    is PendingWrite.PlaylistAdd ->
-                        patchPlaylistWorksCache(write.playlistId, workCache[write.workId], remove = false)
-
-                    is PendingWrite.PlaylistRemove ->
-                        patchPlaylistWorksCache(write.playlistId, workCache[write.workId], remove = true)
+                    is PendingWrite.PlaylistAdd -> clearPlaylistCacheDirty(write.playlistId)
+                    is PendingWrite.PlaylistRemove -> clearPlaylistCacheDirty(write.playlistId)
                     else -> Unit
                 }
                 succeeded++
@@ -1013,8 +1005,7 @@ object AsmrRepository {
                 //
                 // 写入是否成功另有表达：成功→列表立刻可见；失败→卡片上的「待同步」标识。
                 syncedAt = existing?.syncedAt ?: 0L,
-                dirty = markDirty,
-                complete = true
+                dirty = markDirty
             )
         )
 
@@ -1039,7 +1030,6 @@ object AsmrRepository {
         playlistsSnapshot = null
         collectionSnapshot = null
         collectionSnapshotKey = null
-        collectionSnapshotComplete = false
         SyncGate.reset()
     }
 
@@ -1087,68 +1077,10 @@ object AsmrRepository {
                             syncedAt = System.currentTimeMillis()
                         )
                     )
-                    // 本地还没有内容缓存的收藏夹 → 补上（见 seedMissingPlaylistContent）
-                    seedMissingPlaylistContent(mine)
                 }
             }
         }
         return cachedPlaylists().orEmpty()
-    }
-
-    /**
-     * 给**本地还没有内容缓存**的收藏夹补上一份。
-     *
-     * ## 为什么需要（缺陷：列表页会变空白）
-     *
-     * 收藏夹可能是**在网页端/另一台设备**上新建的，本地从没见过它，
-     * 于是它没有 `playlistWorks` 缓存。此时若用户往里加作品，
-     * `patchPlaylistWorksCache` 会走"没有内容缓存 → 作废缓存"那条分支。
-     * 那条分支现在已不再连带删除列表缓存，但预置一份完整内容仍然更好：
-     * 加作品时能走"就地修改"，件数与列表立刻正确。
-     *
-     * ## 两种来源，两种代价
-     *
-     * | 情况 | 处理 | 请求数 |
-     * |---|---|---|
-     * | `worksCount == 0` | 内容必然为空 → 本地写一份完整空缓存 | **0** |
-     * | `worksCount > 0`  | 内容未知 → 真的去拉一次 `get-playlist-works` | **1** |
-     *
-     * 第二种是用户明确认可的代价（"只是多了一个新请求也可以接受"）。
-     * 拉取走 `loadPlaylistWorks(DAILY_AUTO)`，于是它同时**消耗掉该收藏夹
-     * 当天的自动机会** —— 之后用户点开它不会重复请求，这是对的。
-     *
-     * ## 判定条件是"没有缓存"，不是"本次新出现"
-     *
-     * 两个好处：
-     *  1. **幂等**：某次因限额或失败没补完，下次同步会继续补，
-     *     不会因为"已经算见过它"而永久漏掉；
-     *  2. 内容缓存被作废过（例如曾经只有不完整的一页被删掉）也会自动补回来。
-     *
-     * ## 每次同步的请求上限
-     *
-     * 第一次在一台新设备上同步时，**所有**收藏夹都没有内容缓存。
-     * 若不设限，用户有 20 个收藏夹就会一次性打出 20 个请求。
-     * 所以限制每次同步最多补 [MAX_PLAYLIST_CONTENT_SEEDS] 个，
-     * 其余的由后续同步继续补（因为判定是"没有缓存"，所以不会漏）。
-     */
-    private suspend fun seedMissingPlaylistContent(current: List<Playlist>) {
-        var remaining = MAX_PLAYLIST_CONTENT_SEEDS
-        current.forEach { playlist ->
-            val key = currentPlaylistWorksKey(playlist.id) ?: return@forEach
-            // 已经有内容缓存 → 不碰（它有自己的每日机会，交给正常路径）
-            if (SyncCacheStore.read(key, WorkPageCodec) != null) return@forEach
-
-            if (playlist.worksCount == 0) {
-                // 内容必然为空 → 零请求
-                seedEmptyPlaylistContent(playlist.id)
-                return@forEach
-            }
-
-            if (remaining <= 0) return@forEach
-            remaining--
-            // 有内容 → 真的拉一次（失败就算了：它仍是"没有缓存"，下次再来）
-            runCatching { loadPlaylistWorks(playlist.id, SyncTrigger.DAILY_AUTO) }
-        }
     }
 
     /** 只读本地：收藏夹列表 */
@@ -1206,105 +1138,97 @@ object AsmrRepository {
     /**
      * 把"加入/移出收藏夹"落到本地缓存里，让收藏**立刻**反映出来。
      *
-     * ## 与「标记」一致：本地是主数据源
+     * ## 与「标记」完全一致：本地是主数据源
      *
      * 用户的动作本地先行、立刻可见，网络只是尽力而为：
      *  - 加入 → 插进本地列表并立即显示；网络失败则打「待同步」标识
      *  - 移出 → 从本地列表移除并立即消失；网络失败则等下次对齐删云端
      *
-     * 本地缓存里有这份收藏夹内容时就地改；没有时（用户还没进过这个收藏夹）
-     * 才作废，交给下一次读取去拿 —— 避免凭空造出"只有这一部作品"的假象。
+     * ## 不再要求"本地这份内容必须是完整的"
+     *
+     * 曾经这里有一个 `entry.complete` 门槛：只有手里握着**完整的一份**内容才敢
+     * 就地插入，否则作废缓存、等下次重新拉。为了守住那个前提，外面还长出了
+     * 「收藏前先把内容缓存好」「新建时预置空缓存」「每日扫描补齐」
+     * 「另一个文件单独记一个已缓存标识」等一整套兜底。
+     *
+     * 那些机制现在全部删掉了。理由是「标记」列表早就给出过的同一个结论：
+     * **本地就是权威，一份只含一条的列表也是正确的用户数据，不是假象。**
+     * 手里只有前几页时插一条，最坏情况也只是"暂时少显示几部"，
+     * 下一次对齐（服务端 200 全量替换）就会补回来 —— 这比"什么都不显示"
+     * 和"每次收藏前先多发一个读请求"都好。
      *
      * ⚠️ 注意只更新缓存里的 `worksCount`，**不重建**播放列表数组 ——
      * 之前重建过一次，`latestWorkId` 等字段会因此丢失（被读成 0）。
      *
-     * @param markDirty 网络失败时置 true，让下次对齐跳过 304、强制拿一次云端内容
+     * @param workId 被操作的作品 id。**必须有**：移出时即使拿不到作品快照
+     *   （`work` 为 null）也能把那条从列表里摘掉。
+     * @param work 作品快照，加入时需要它的标题/封面才能插进列表卡片；
+     *   移出时可以传 null。
+     * @param markDirty 本地改动尚未被服务端确认时置 true，让下次对齐跳过 304、
+     *   强制拿一次云端内容。
      */
     private fun patchPlaylistWorksCache(
         playlistId: String,
-        work: Work?,
+        workId: Int,
         remove: Boolean,
+        work: Work? = null,
         markDirty: Boolean = false
     ) {
         val state = AuthManager.state.value
         if (state.host.isBlank() || state.displayName.isBlank()) return
+        if (playlistId.isBlank() || workId <= 0) return
 
-        // ① 收藏夹内的作品列表：本地有**完整**这份内容才就地改，
-        //    否则交给重新拉取 —— 理由同「标记」列表：
-        //    手里只有前几页时插一条，会显示成"这个收藏夹里只有这一部作品"。
         val worksKey = SyncCacheStore.SyncKeys.playlistWorks(state.host, state.displayName, playlistId)
         val entry = SyncCacheStore.read(worksKey, WorkPageCodec)
-        if (entry == null || !entry.complete) {
-            // 没有可用基线 → 作废这份**内容**缓存，交给下次进入正式拉一份。
-            //
-            // ⚠️ 这里**不能**连收藏夹列表缓存一起删。曾经那样做（为了让它顺便
-            // 重算件数），后果是：从没打开过的收藏夹里加一个作品 →
-            // 列表缓存被删掉 → 而重拉要过每日闸门（今天已同步过、被挡下）
-            // → **重启 App 后「列表」页整页空白**，直到明天或手动刷新。
-            //
-            // 正确做法：内容缓存作废（这个是对的，手里只有不完整的一页时
-            // 不能凭空插一条），但列表缓存保留，只把件数就地加减。
-            SyncCacheStore.delete(worksKey)
-            // 标识同步降级：下次要收藏这个收藏夹之前会先重新缓存（见 ensurePlaylistContentCached）
-            markPlaylistContentNotCached(playlistId)
-            patchPlaylistsWorksCount(state, playlistId, remove)
-            notifyLibraryChanged()
-            return
-        }
 
-        val items = entry.value.items.map { it.toWork() }
-        val updated = if (remove) {
-            items.filterNot { it.id == work?.id }
-        } else if (work != null) {
-            CollectionCacheOps.dedupe(listOf(work) + items.filterNot { it.id == work.id })
-        } else {
-            items
-        }
+        // 没有基线时才去读列表里的件数（短路求值：有缓存时一个字段都不多读）
+        val baselineTotal = entry?.value?.totalCount ?: cachedPlaylistWorksCount(playlistId) ?: 0
 
-        SyncCacheStore.write(
-            worksKey,
-            WorkPageCodec,
-            SyncCacheStore.CacheEntry(
-                value = CachedWorkPage(
-                    items = updated.map { CachedWork.fromWork(it) },
-                    totalCount = when {
-                        remove -> (entry.value.totalCount - 1).coerceAtLeast(updated.size)
-                        else -> maxOf(entry.value.totalCount, updated.size)
-                    },
-                    loadedPages = entry.value.loadedPages
-                ),
-                // 本地列表变了，旧 ETag 不再代表服务端当前内容 → 置空，
-                // 下次核对会做无条件请求并全量替换（若服务端结果不同就纠正回来）
-                etag = null,
-                // 同上：本地写入不等于与云端核对过，不能推高这个时间戳
-                syncedAt = entry.syncedAt,
-                dirty = markDirty,
-                // 就地改了一条，整体仍是完整的
-                complete = true
+        // 该落成什么样全在纯函数里（可单测），这里只负责读、写、通知
+        val plan = PlaylistPatchOps.compute(
+            current = entry?.value,
+            baselineTotal = baselineTotal,
+            workId = workId,
+            work = work,
+            remove = remove
+        ) ?: return
+
+        plan.content?.let { content ->
+            SyncCacheStore.write(
+                worksKey,
+                WorkPageCodec,
+                SyncCacheStore.CacheEntry(
+                    value = content,
+                    // 本地列表变了，旧 ETag 不再代表服务端当前内容 → 置空，
+                    // 下次核对会做无条件请求并全量替换（若服务端结果不同就纠正回来）
+                    etag = null,
+                    // 本地写入不等于与云端核对过，不能推高这个时间戳
+                    syncedAt = entry?.syncedAt ?: System.currentTimeMillis(),
+                    dirty = markDirty
+                )
             )
-        )
+        }
 
-        // ② 收藏夹列表：只改件数，数组本身不动（见上面的说明）
-        patchPlaylistsWorksCount(state, playlistId, remove, work?.id)
+        // 收藏夹列表：只改件数，数组本身不动（见 patchPlaylistsWorksCount 的说明）
+        patchPlaylistsWorksCount(playlistId, delta = plan.countDelta, latestWorkId = work?.id)
         notifyLibraryChanged()
     }
 
     /**
      * 只改收藏夹列表里的 `worksCount`（与 `latestWorkId`），**不动数组本身**。
      *
-     * 抽出来是因为有两处需要它：
-     *  - 本地有完整内容 → 改内容缓存之后调它
-     *  - 本地没有完整内容 → 只作废内容缓存，但仍要改件数
-     *
      * ⚠️ 为什么"不重建数组"：之前重建过一次，`latestWorkId` 等字段会因此
      * 丢失（被读成 0）。
+     *
+     * 用**增量**而不是布尔方向，是为了让调用方按"实际发生的改动"传值：
+     * 拿不到作品快照、或作品本来就在里面时，增量为 0 就不会造成件数漂移。
      */
     private fun patchPlaylistsWorksCount(
-        state: AuthState,
         playlistId: String,
-        remove: Boolean,
+        delta: Int,
         latestWorkId: Int? = null
     ) {
+        if (delta == 0) return
         val listKey = currentPlaylistsKey() ?: return
         val listEntry = SyncCacheStore.read(listKey, PlaylistsCodec) ?: run {
             playlistsSnapshot = null
@@ -1313,8 +1237,8 @@ object AsmrRepository {
         val patched = listEntry.value.items.map { p ->
             if (p.id != playlistId) return@map p
             p.copy(
-                worksCount = if (remove) (p.worksCount - 1).coerceAtLeast(0) else p.worksCount + 1,
-                latestWorkId = if (remove) p.latestWorkId else (latestWorkId ?: p.latestWorkId)
+                worksCount = (p.worksCount + delta).coerceAtLeast(0),
+                latestWorkId = if (delta > 0) (latestWorkId ?: p.latestWorkId) else p.latestWorkId
             )
         }
         SyncCacheStore.write(
@@ -1331,14 +1255,63 @@ object AsmrRepository {
     }
 
     /**
+     * 收藏夹列表缓存里记录的件数（R1 用的基线）。
+     *
+     * 只读本地、不发请求：它的唯一用途是"本地没有内容缓存时，
+     * 别把 `totalCount` 写成 0 或 1"。
+     */
+    private fun cachedPlaylistWorksCount(playlistId: String): Int? {
+        val listKey = currentPlaylistsKey() ?: return null
+        val items = SyncCacheStore.read(listKey, PlaylistsCodec)?.value?.items ?: return null
+        return items.firstOrNull { it.id == playlistId }?.worksCount
+    }
+
+    /**
      * 撤销一次"本地先行"的收藏夹改动。
      *
      * 用在服务端明确回答**收藏夹不存在**时：既然这次收藏没有成功、
      * 也不会重试，本地就不该继续显示它 —— 否则用户会看到"明明说失败了，
      * 列表里却多了一部作品"。
+     *
+     * "加入"那条如果当初就没能插入（拿不到作品快照），也就没什么可撤销的，
+     * 这里直接跳过 —— 否则会凭空把件数减掉一条。
      */
-    private fun revertPlaylistPatch(playlistId: String, work: Work?, remove: Boolean) {
-        patchPlaylistWorksCache(playlistId, work, remove = !remove, markDirty = false)
+    private fun revertPlaylistPatch(
+        playlistId: String,
+        workId: Int,
+        work: Work?,
+        remove: Boolean
+    ) {
+        val wasInsert = !remove
+        if (wasInsert && work == null) return
+        patchPlaylistWorksCache(
+            playlistId = playlistId,
+            workId = workId,
+            remove = !remove,
+            work = work
+        )
+    }
+
+    /**
+     * 写入已被服务端确认 → 只把 `dirty` 降级，**内容与件数一概不再改动**。
+     *
+     * ## 为什么不能在这里再调一次 patchPlaylistWorksCache
+     *
+     * 旧实现就是这么做的（成功后再 patch 一遍、只把 `markDirty` 换成 false），
+     * 但 `patchPlaylistWorksCache` 会**无条件**把件数 ±1 —— 于是
+     * "本地先行 +1"之后"成功确认再 +1"，**成功收藏一次，列表里显示 +2**。
+     * 移出同理。虽然下一次列表同步会用服务端数字覆盖回来，但在那之前
+     * 用户看到的就是错的，而且跨天才会自愈。
+     *
+     * 所以确认动作单独一个函数：它只做一件事 —— 清掉"尚未确认"这个标记。
+     */
+    private fun clearPlaylistCacheDirty(playlistId: String) {
+        val state = AuthManager.state.value
+        if (state.host.isBlank() || state.displayName.isBlank()) return
+        val key = SyncCacheStore.SyncKeys.playlistWorks(state.host, state.displayName, playlistId)
+        val entry = SyncCacheStore.read(key, WorkPageCodec) ?: return
+        if (!entry.dirty) return
+        SyncCacheStore.write(key, WorkPageCodec, entry.copy(dirty = false))
     }
 
     /**
@@ -1355,18 +1328,22 @@ object AsmrRepository {
 
         val target = work ?: workCache[workId]
 
-        // ⓪ 【最兜底】先确认这份内容已经缓存好，否则先缓存再收藏
-        ensurePlaylistContentCached(playlistId)
-
-        // ① 本地先行 —— 用户立刻看得到
-        patchPlaylistWorksCache(playlistId, target, remove = false, markDirty = true)
+        // ① 本地先行 —— 用户立刻看得到（不再先"把内容缓存好"：见 patchPlaylistWorksCache 的说明）
+        patchPlaylistWorksCache(
+            playlistId = playlistId,
+            workId = workId,
+            remove = false,
+            work = target,
+            markDirty = true
+        )
 
         return runCatching {
             val changed = rowCountOf(api.addWorksToPlaylist(playlistId, listOf(workId)))
             // 成功 → 清掉反方向（用户可能先前在离线时移除过）与本次的待同步记录
             clearPending(PendingWrite.PlaylistRemove(playlistId, workId, createdAt = 0L))
             clearPending(PendingWrite.PlaylistAdd(playlistId, workId, createdAt = 0L))
-            patchPlaylistWorksCache(playlistId, target, remove = false, markDirty = false)
+            // 只清 dirty —— 内容与件数在上面已经落好了，再 patch 一次会重复计数
+            clearPlaylistCacheDirty(playlistId)
             PlaylistWriteResult(changed = changed)
         }.getOrElse { e ->
             // ★ 收藏夹已经不存在 → **不强行收藏**，也不记待补写。
@@ -1376,7 +1353,7 @@ object AsmrRepository {
             // 记一条待补写只会留下永久失败的记录，并且每次对齐都多打一次请求。
             // 所以直接告诉用户原因，并把这笔本地改动撤销掉。
             if (e is PlaylistNotFoundException) {
-                revertPlaylistPatch(playlistId, target, remove = false)
+                revertPlaylistPatch(playlistId, workId, target, remove = false)
                 return PlaylistWriteResult(error = "这个收藏夹已不存在（可能已在网页端删除），没有收藏")
             }
             // 失败 → 保留本地内容 + 打标等待重试（下一次对齐或用户点击）
@@ -1399,24 +1376,28 @@ object AsmrRepository {
     suspend fun removeWorkFromPlaylist(playlistId: String, workId: Int): PlaylistWriteResult {
         if (!AuthManager.state.value.isLoggedIn) return PlaylistWriteResult(error = "未登录")
 
-        // ⓪ 【最兜底】同样先确认内容已缓存
-        ensurePlaylistContentCached(playlistId)
-
         // ① 本地先行 —— 用户立刻看到它消失了
-        patchPlaylistWorksCache(playlistId, workCache[workId], remove = true, markDirty = true)
+        patchPlaylistWorksCache(
+            playlistId = playlistId,
+            workId = workId,
+            remove = true,
+            work = workCache[workId],
+            markDirty = true
+        )
 
         return runCatching {
             val changed = rowCountOf(api.removeWorksFromPlaylist(playlistId, listOf(workId)))
             // 成功 → 清掉反方向与本次的待同步记录
             clearPending(PendingWrite.PlaylistAdd(playlistId, workId, createdAt = 0L))
             clearPending(PendingWrite.PlaylistRemove(playlistId, workId, createdAt = 0L))
-            patchPlaylistWorksCache(playlistId, workCache[workId], remove = true, markDirty = false)
+            // 同样只清 dirty：本地那次"先删掉"已经落好了，再 patch 一次会重复减件数
+            clearPlaylistCacheDirty(playlistId)
             PlaylistWriteResult(changed = changed)
         }.getOrElse { e ->
             // ★ 收藏夹已经不存在 → 不记待补写（重试永远不会成功），
             // 并把本地那次"先删掉"撤销回来，避免界面与真实状态长期不一致。
             if (e is PlaylistNotFoundException) {
-                revertPlaylistPatch(playlistId, workCache[workId], remove = true)
+                revertPlaylistPatch(playlistId, workId, workCache[workId], remove = true)
                 return PlaylistWriteResult(error = "这个收藏夹已不存在（可能已在网页端删除）")
             }
             // 失败 → 本地保持"已移除"，打标等下次对齐删云端
@@ -1511,8 +1492,6 @@ object AsmrRepository {
                     // 再清一遍"用户已移出但云端也移出了"的残留
                     SyncCacheStore.touch(key, WorkPageCodec, dirty = false)
                     purgeRemovedFromPlaylistCache(playlistId, pendingRemoves)
-                    // 304 说明本地这份内容与服务端一致 → 标识也是"已缓存"
-                    if (existing?.complete == true) markPlaylistContentCached(playlistId)
                 } else {
                     writePlaylistWorksCache(
                         key = key,
@@ -1590,7 +1569,6 @@ object AsmrRepository {
             ).map { CachedWork.fromWork(it) }
         }
 
-        val complete = merged.size <= PLAYLIST_WORKS_PAGE_SIZE
         SyncCacheStore.write(
             key,
             WorkPageCodec,
@@ -1603,67 +1581,9 @@ object AsmrRepository {
                 etag = etag,
                 syncedAt = System.currentTimeMillis(),
                 // 有待同步项时标 dirty：下次不做条件请求，强制拿云端真实内容
-                dirty = pendingAdds.isNotEmpty() || pendingRemoves.isNotEmpty(),
-                complete = complete
+                dirty = pendingAdds.isNotEmpty() || pendingRemoves.isNotEmpty()
             )
         )
-        // 标识只在"完整"时才置位：只有第 1 页时不算缓存好，
-        // 否则下次会拿一份残缺的基线去就地插入作品
-        if (complete) markPlaylistContentCached(playlistId)
-    }
-
-    /**
-     * 标记某收藏夹的"内容已缓存"标识（见 [PlaylistCacheFlags]）。
-     *
-     * 所有**写入完整内容**的地方都要调它；所有**作废内容**的地方都要调
-     * [markPlaylistContentNotCached]。
-     */
-    private fun markPlaylistContentCached(playlistId: String) {
-        val state = AuthManager.state.value
-        if (state.host.isBlank() || state.displayName.isBlank()) return
-        PlaylistCacheFlags.markCached(state.host, state.displayName, playlistId)
-    }
-
-    private fun markPlaylistContentNotCached(playlistId: String) {
-        val state = AuthManager.state.value
-        if (state.host.isBlank() || state.displayName.isBlank()) return
-        PlaylistCacheFlags.markNotCached(state.host, state.displayName, playlistId)
-    }
-
-    /**
-     * ## 最兜底的一道：收藏之前，先确认这份内容已经缓存好
-     *
-     * 前面已经有好几层保证（新建时原子预置、每日扫描补齐、作废时不删列表缓存），
-     * 但用户可能绕过它们：
-     *
-     *  - 收藏夹是在网页端建的，而今天的列表同步已经做过了 → 还没被扫描到
-     *  - 缓存文件被系统清掉 / 用户清了缓存
-     *  - 补内容缓存时因为限额被跳过
-     *
-     * 所以「加入 / 移出收藏夹」在**动手改本地之前**先看标识：
-     * 标识说"没缓存"，就**先把这份内容缓存下来，再收藏**。
-     * 否则就会拿一份残缺或不存在的内容去插入一条作品 ——
-     * 界面表现为"我的收藏夹里只有这一部"。
-     *
-     * ## 只在这种情况下才多发一次请求
-     *
-     * 正常情况下标识已是"已缓存"，这里**零请求**直接返回。
-     * 只有兜底路径会真正联网一次；而且拉完会顺手把该收藏夹**当天的
-     * 自动机会记掉**（[SyncGate.markSyncedToday]），用户之后点开它不会再拉一次。
-     */
-    private suspend fun ensurePlaylistContentCached(playlistId: String) {
-        val state = AuthManager.state.value
-        if (state.host.isBlank() || state.displayName.isBlank()) return
-        if (PlaylistCacheFlags.isCached(state.host, state.displayName, playlistId)) return
-
-        // 真的拉一次。用 USER_REFRESH：这是用户明确动作（要收藏）带出来的必要前置，
-        // 不能被"今天已经自动同步过"挡住 —— 否则拿不到基线，收藏就会基于残缺数据。
-        runCatching { loadPlaylistWorks(playlistId, SyncTrigger.USER_REFRESH) }
-
-        // 缓存成功 → 记掉它今天的自动机会，避免之后点开又拉一次
-        if (PlaylistCacheFlags.isCached(state.host, state.displayName, playlistId)) {
-            currentPlaylistWorksKey(playlistId)?.let { SyncGate.markSyncedToday(it) }
-        }
     }
 
     /** 把"已被云端移出收藏夹"的作品从本地清掉（304 分支用） */
@@ -1712,9 +1632,7 @@ object AsmrRepository {
                     value = CachedWorkPage(merged, result.page.totalCount, loadedPages = nextPage),
                     etag = existing?.etag,
                     syncedAt = existing?.syncedAt ?: System.currentTimeMillis(),
-                    dirty = existing?.dirty ?: false,
-                    // 追加是"手里有多页"，不再算完整基线
-                    complete = false
+                    dirty = existing?.dirty ?: false
                 )
             )
         }
@@ -1755,61 +1673,24 @@ object AsmrRepository {
     /**
      * 新建收藏夹。
      *
-     * ## 与"内容缓存"原子地一起建立
+     * ## 不再需要"预置一份空内容缓存"
      *
-     * 新建的收藏夹**必然是空的**，所以这里可以**零请求**地把它那份
-     * `playlistWorks` 缓存写成"空且完整"。这样做的价值是：
+     * 旧实现会在这里顺手写一份 `complete = true` 的空 `playlistWorks` 缓存，
+     * 目的是让之后的"收藏"能走"有完整基线 → 就地插入"那条分支。
      *
-     * 之后往这个新收藏夹加作品时，`patchPlaylistWorksCache` 一定能走
-     * "本地有完整内容 → 就地改" 那条分支，而不会因为"没有内容缓存"
-     * 去作废缓存（那是「列表」页会变空白的根源）。
-     *
-     * 换句话说：**创建动作与它的内容缓存必须是同一个原子操作**，
-     * 中间不能存在"收藏夹已存在、但它的内容缓存还不存在"的窗口。
+     * 现在那条分支已经不存在了（见 [patchPlaylistWorksCache]），
+     * 没有基线时收藏会直接以"件数基线 + 这一条"建出内容缓存，
+     * 结果等价而少一次写盘、也少一个"必须与创建动作原子"的约束。
      */
     suspend fun createPlaylist(name: String, description: String? = null): Result<String?> {
         if (!AuthManager.state.value.isLoggedIn) return Result.failure(IllegalStateException("未登录"))
         return runCatching {
             val id = api.createPlaylist(name = name, description = description)
-            // ① 原子地建立空内容缓存（零请求：我们确定它是空的）
-            id?.let { seedEmptyPlaylistContent(it) }
-            // ② 列表缓存作废，让下次读取拿到带 id 的新列表
+            // 列表缓存作废，让下次读取拿到带 id 的新列表
             currentPlaylistsKey()?.let { SyncCacheStore.delete(it) }
             playlistsSnapshot = null
             id
         }
-    }
-
-    /**
-     * 为一个**确定为空**的收藏夹预置内容缓存。
-     *
-     * `complete = true` 是成立的：空列表就是完整的全部内容。
-     * 这样 `patchPlaylistWorksCache` 会走就地修改分支，
-     * 也不会出现"加一部作品后显示成这个收藏夹里只有一部"的假象。
-     */
-    private fun seedEmptyPlaylistContent(playlistId: String) {
-        val key = currentPlaylistWorksKey(playlistId) ?: return
-        val state = AuthManager.state.value
-        val existing = SyncCacheStore.read(key, WorkPageCodec)
-        if (existing != null) {
-            // 已经有内容就别碰（避免把已同步的数据覆盖成空），但标识要与实际一致
-            if (existing.complete) {
-                PlaylistCacheFlags.markCached(state.host, state.displayName, playlistId)
-            }
-            return
-        }
-        SyncCacheStore.write(
-            key,
-            WorkPageCodec,
-            SyncCacheStore.CacheEntry(
-                value = CachedWorkPage(items = emptyList(), totalCount = 0, loadedPages = 1),
-                etag = null,
-                syncedAt = System.currentTimeMillis(),
-                complete = true
-            )
-        )
-        // 标识：这份内容现在是"完整可用"的（空也是完整）
-        PlaylistCacheFlags.markCached(state.host, state.displayName, playlistId)
     }
 
     /**
@@ -1837,18 +1718,8 @@ object AsmrRepository {
             }
             currentPlaylistsKey()?.let { SyncCacheStore.delete(it) }
             currentPlaylistWorksKey(playlist.id)?.let { SyncCacheStore.delete(it) }
-            // 收藏夹没了 → 忘掉它的标识
-            PlaylistCacheFlags.forget(state.host, state.displayName, playlist.id)
             playlistsSnapshot = null
         }
-    }
-
-    /** 收藏夹内容变了 → 作废相关缓存（下次读取重新拉，不会一直显示旧的件数） */
-    private fun invalidatePlaylistContent(playlistId: String) {
-        currentPlaylistWorksKey(playlistId)?.let { SyncCacheStore.delete(it) }
-        markPlaylistContentNotCached(playlistId)
-        currentPlaylistsKey()?.let { SyncCacheStore.delete(it) }
-        playlistsSnapshot = null
     }
 
     /** 切换主机后清掉缓存，避免跨站数据混用 */
@@ -1860,7 +1731,6 @@ object AsmrRepository {
         collectionSnapshot = null
         collectionSnapshotKey = null
         SyncCacheStore.clearAll()
-        PlaylistCacheFlags.clearAll()
         SyncGate.reset()
     }
 
@@ -1872,15 +1742,6 @@ object AsmrRepository {
 
     /** 收藏夹内每页条数 */
     private const val PLAYLIST_WORKS_PAGE_SIZE = 20
-
-    /**
-     * 每次同步最多为几个收藏夹补内容缓存。
-     *
-     * 新设备首次同步时**所有**收藏夹都没有内容缓存，不设限就会一次性打出
-     * N 个请求。补全的判定是"本地没有缓存"，所以超出的会在后续同步继续补，
-     * 不会漏掉；用户点开某个收藏夹时也会正常拉取。
-     */
-    private const val MAX_PLAYLIST_CONTENT_SEEDS = 10
 }
 
 /**

@@ -6,7 +6,6 @@ import com.asmrone.app.data.audio.AudioCacheMaintenance
 import com.asmrone.app.data.cache.CircleDictionary
 import com.asmrone.app.data.diag.HttpLog
 import com.asmrone.app.data.cache.PendingWriteStore
-import com.asmrone.app.data.cache.PlaylistCacheFlags
 import com.asmrone.app.data.cache.TagDictionary
 import com.asmrone.app.data.cache.SyncCacheStore
 import com.asmrone.app.data.cache.VoiceActorDictionary
@@ -33,8 +32,6 @@ class AsmrOneApplication : Application() {
         SyncCacheStore.init(this)
         // 待补写队列：装的是"用户已表达、但还没写到云端"的操作，同样要早于首次读取
         PendingWriteStore.init(this)
-        // 每个收藏夹"内容已缓存"的标识：加入收藏夹前的最后一道兜底判断
-        PlaylistCacheFlags.init(this)
         // 搜索用的三本字典（本地 JSON）：标签 / 声优 / 社团。
         // 搜索界面会直接读它们，所以要早于首次组合。
         TagDictionary.init(this)

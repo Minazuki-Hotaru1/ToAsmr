@@ -10,17 +10,27 @@ import java.io.File
 /**
  * 收藏夹的**生命周期一致性**：创建 / 删除 / 加内容 三种操作不能留下"半截状态"。
  *
- * 这组测试对应三个真实缺陷（都由"每天只同步一次"这个前提放大）：
+ * 这组测试最初对应三个真实缺陷（都由"每天只同步一次"这个前提放大）：
  *
  * | 缺陷 | 机制 | 后果 |
  * |---|---|---|
  * | 新收藏夹没有内容缓存 | 加内容时走到了"作废缓存"分支，而它**连列表缓存一起删** | 重启后「列表」页整页空白，要到明天才恢复 |
  * | 收藏夹已在别处删除 | 加内容时服务端回 `playlistNotFound`，却被当成普通网络失败 | 留下**永远失败**的待补写记录，每次对齐多打一次注定失败的请求 |
  * | 用户删除收藏夹 | 没清掉它的待补写操作 | 同上，且违背"用户已经不要这个收藏夹了"的语义 |
+ *
+ * ## 本轮的改动：兜底链已整条删除
+ *
+ * 上面第一条缺陷的**根因**是"本地这份内容必须完整才敢就地改"。那个前提取消了，
+ * 为它服务的一整套脚手架（`PlaylistCacheFlags`、`ensurePlaylistContentCached`、
+ * `seedEmpty/seedMissingPlaylistContent`、`CacheEntry.complete` 门槛）也跟着删掉。
+ *
+ * 所以这里不再断言"某个兜底方法必须存在"——那类断言锁定的是实现方式。
+ * 真正需要判断的东西移到了 [PlaylistPatchOps.compute]（纯函数），
+ * 由 [PlaylistPatchOpsTest] 逐条验证行为；
+ * 本文件只保留**仍然成立的不变量**与**防回归**断言。
  */
 class PlaylistLifecycleTest {
 
-    private val cacheDir: File by lazy { File("src/main/java/com/asmrone/app/data/cache") }
     private val repoSource: String by lazy {
         File("src/main/java/com/asmrone/app/data/repo/AsmrRepository.kt").readText()
     }
@@ -81,95 +91,52 @@ class PlaylistLifecycleTest {
         assertEquals(2, withoutPlaylist(listOf(add("A", 1), add("B", 2)), "Z").size)
     }
 
-    // ═══════════════ ② 创建与内容缓存原子建立 ═══════════════
+    // ═══════════════ ② 本地写入不得破坏收藏夹列表（历史的"整页空白"缺陷） ═══════════════
 
     @Test
-    fun `★ 新建收藏夹时同时建立内容缓存（同一流程里）`() {
-        val body = functionBody(repoSource, "suspend fun createPlaylist(")
-        assertTrue("createPlaylist 应当存在", body.isNotEmpty())
-        assertTrue(
-            "★ 创建后必须立刻建立它的内容缓存 —— 否则存在" +
-                "「收藏夹已存在、但它的内容缓存还不存在」的窗口",
-            body.contains("seedEmptyPlaylistContent(")
-        )
-        assertTrue(
-            "而且要在同一个 runCatching 流程里（原子，不是两个独立操作）",
-            body.indexOf("seedEmptyPlaylistContent(") < body.indexOf("currentPlaylistsKey()")
-        )
-    }
-
-    @Test
-    fun `★ 预置的空内容缓存是「完整」的`() {
-        // complete = true 才成立：空列表就是它的全部内容。
-        // 若标成不完整，加第一部作品时又会走到"作废"那条分支。
-        val body = functionBody(repoSource, "private fun seedEmptyPlaylistContent(")
-        assertTrue(body.isNotEmpty())
-        assertTrue("必须标 complete = true", body.contains("complete = true"))
-        assertTrue("必须是零请求（本地写，不联网）", !body.contains("api."))
-        assertTrue(
-            "已有内容时不能覆盖成空",
-            body.contains("if (existing != null)") && body.contains("return")
-        )
-    }
-
-    @Test
-    fun `★ 每日扫描时给缺内容缓存的收藏夹补上`() {
-        assertTrue(
-            "列表同步后要检查缺内容缓存的收藏夹",
-            repoSource.contains("seedMissingPlaylistContent(")
-        )
-        val body = functionBody(repoSource, "private suspend fun seedMissingPlaylistContent(")
-        assertTrue(body.isNotEmpty())
-
-        // ① 空收藏夹：零请求
-        assertTrue(
-            "worksCount == 0 时应当本地写空缓存（零请求）",
-            body.contains("playlist.worksCount == 0") && body.contains("seedEmptyPlaylistContent(")
-        )
-
-        // ② 有内容的收藏夹：真的拉一次（用户明确认可这一份额外请求）
-        assertTrue(
-            "★ 有内容的收藏夹必须真的去拉一次 —— 用户认可「多一个请求也可以接受」",
-            body.contains("loadPlaylistWorks(playlist.id")
-        )
-        assertFalse("★ 不能再因为 worksCount > 0 就跳过", body.contains("playlist.worksCount != 0) return"))
-
-        // ③ 幂等：判定是「没有缓存」，不是「本次新出现」
-        assertTrue(
-            "判定条件是「本地没有内容缓存」",
-            body.contains("SyncCacheStore.read(key, WorkPageCodec) != null")
-        )
-        assertFalse(
-            "★ 不能再用「本次新出现」判定 —— 那会让限额跳过的收藏夹永久漏掉",
-            body.contains("previousIds")
-        )
-
-        // ④ 有上限，避免新设备首次同步一次性打出 N 个请求
-        assertTrue("应当有每次同步的请求上限", body.contains("MAX_PLAYLIST_CONTENT_SEEDS"))
-    }
-
-    // ═══════════════ ③ 不再连带删除列表缓存 ═══════════════
-
-    @Test
-    fun `★ 内容缓存作废时不能把收藏夹列表缓存也删掉`() {
+    fun `★ 本地写入既不删内容缓存也不删列表缓存`() {
         val body = functionBody(repoSource, "private fun patchPlaylistWorksCache(")
-        assertTrue(body.isNotEmpty())
-        assertTrue("应当作废内容缓存", body.contains("SyncCacheStore.delete(worksKey)"))
+        assertTrue("patchPlaylistWorksCache 应当存在", body.isNotEmpty())
 
-        // 找出"删列表缓存"的那些行，确认没有出现在这个函数里
+        // 以前"没有完整基线"时会 delete 内容缓存；而更早的版本连列表缓存一起删，
+        // 于是重启 App 后「列表」页整页空白（重拉被每日闸门挡着）。
+        // 现在两条删除都不该再出现：写入就是把结果写进去，不是作废。
         assertFalse(
-            "★ 这个函数里不能出现 `delete(currentPlaylistsKey())` —— 那会让" +
-                "「列表」页在重启后空白（重拉被每日闸门挡着）",
-            body.contains("SyncCacheStore.delete(it)") ||
-                body.contains("currentPlaylistsKey()?.let { SyncCacheStore.delete")
+            "★ 本地写入不该删除任何缓存 —— 删了就等于把界面上的内容抹掉。实际函数体：\n$body",
+            body.contains("SyncCacheStore.delete(")
         )
         assertTrue(
-            "改成只改件数",
+            "要就地改件数，而不是重建列表数组（重建会丢 latestWorkId）",
             body.contains("patchPlaylistsWorksCount(")
         )
     }
 
-    // ═══════════════ ④ 收藏夹不存在时直接失败 ═══════════════
+    @Test
+    fun `★ 确认成功后只清 dirty，不再重复改内容与件数`() {
+        // 旧实现的成功路径又调了一次 patchPlaylistWorksCache，而那个函数会
+        // 无条件把件数 ±1 —— 于是"成功收藏一次，列表里显示 +2"。
+        val body = functionBody(repoSource, "suspend fun addWorkToPlaylist(")
+        assertTrue(body.isNotEmpty())
+        // 只取 `runCatching { … }` 成功分支 —— 它前面的"本地先行"patch 是要保留的
+        val successRegion = body.substringAfter("return runCatching {").substringBefore("getOrElse")
+        assertTrue(
+            "成功路径应当只清 dirty",
+            successRegion.contains("clearPlaylistCacheDirty(")
+        )
+        assertFalse(
+            "★ 成功路径不能再 patch 一次内容缓存 —— 那会重复增删件数",
+            successRegion.contains("patchPlaylistWorksCache(")
+        )
+
+        val dirtyBody = functionBody(repoSource, "private fun clearPlaylistCacheDirty(")
+        assertTrue("clearPlaylistCacheDirty 应当存在", dirtyBody.isNotEmpty())
+        assertFalse(
+            "clearPlaylistCacheDirty 只清标记，不该动件数",
+            dirtyBody.contains("patchPlaylistsWorksCount(")
+        )
+    }
+
+    // ═══════════════ ③ 收藏夹不存在时直接失败 ═══════════════
 
     @Test
     fun `★ API 层单独识别 playlistNotFound`() {
@@ -219,7 +186,7 @@ class PlaylistLifecycleTest {
         assertTrue("要撤销本地那次移除", block.contains("revertPlaylistPatch("))
     }
 
-    // ═══════════════ ⑤ 删除收藏夹时清理待补写 ═══════════════
+    // ═══════════════ ④ 删除收藏夹时清理待补写 ═══════════════
 
     @Test
     fun `★ 删收藏夹时丢掉它的待补写，不再为它同步`() {
@@ -231,96 +198,46 @@ class PlaylistLifecycleTest {
         )
     }
 
-    // ═══════════════ ⑥ 最兜底：收藏前先确认已缓存 ═══════════════
+    // ═══════════════ ⑤ 防回归：兜底链不许被重新引入 ═══════════════
 
     @Test
-    fun `★ 加入收藏夹前必须先检查标识并确保已缓存`() {
-        val body = functionBody(repoSource, "suspend fun addWorkToPlaylist(")
-        assertTrue(body.isNotEmpty())
-
-        val ensureIdx = body.indexOf("ensurePlaylistContentCached(")
-        val patchIdx = body.indexOf("patchPlaylistWorksCache(")
-
-        assertTrue(
-            "★ 必须调用 ensurePlaylistContentCached —— 这是绕过前面所有保证时的最后一道",
-            ensureIdx >= 0
-        )
-        assertTrue(
-            "★ 顺序必须是「先确保缓存，再改本地」：否则会拿残缺基线插入作品。" +
-                "实际顺序 ensure=$ensureIdx patch=$patchIdx",
-            ensureIdx in 0 until patchIdx
-        )
+    fun `★ 完整性门槛与它的脚手架已彻底移除`() {
+        // 这一条与仓库里既有的"额度式旧机制已删掉"同类：防止有人
+        // 为了修一个偶发问题，把整套"必须先有完整基线"又加回来。
+        listOf(
+            "PlaylistCacheFlags",
+            "ensurePlaylistContentCached",
+            "seedMissingPlaylistContent",
+            "seedEmptyPlaylistContent",
+            "markPlaylistContentCached",
+            "markPlaylistContentNotCached",
+            "MAX_PLAYLIST_CONTENT_SEEDS",
+            "!entry.complete",
+            "!existing?.complete",
+            "markSyncedToday"
+        ).forEach { gone ->
+            assertFalse(
+                "★ 「$gone」属于已删除的兜底链，不该再出现 —— " +
+                    "本地是不是「完整的一份」不再需要任何前提判断",
+                repoSource.contains(gone)
+            )
+        }
     }
 
     @Test
-    fun `★ 移出收藏夹前同样先确保已缓存`() {
-        val body = functionBody(repoSource, "suspend fun removeWorkFromPlaylist(")
-        assertTrue(body.isNotEmpty())
-        val ensureIdx = body.indexOf("ensurePlaylistContentCached(")
-        val patchIdx = body.indexOf("patchPlaylistWorksCache(")
-        assertTrue("必须调用", ensureIdx >= 0)
-        assertTrue("必须先确保缓存", ensureIdx in 0 until patchIdx)
-    }
-
-    @Test
-    fun `★ 兜底检查本身：没缓存才拉，拉完记掉当日机会`() {
-        val body = functionBody(repoSource, "private suspend fun ensurePlaylistContentCached(")
-        assertTrue(body.isNotEmpty())
-
-        assertTrue(
-            "先看标识，已缓存就直接返回（正常情况下零请求）",
-            body.contains("PlaylistCacheFlags.isCached(") &&
-                body.contains("return")
-        )
-        assertTrue(
-            "没缓存就真的拉一次",
-            body.contains("loadPlaylistWorks(playlistId")
-        )
-        assertTrue(
-            "拉完要记掉它当天的自动机会，避免用户点开时又拉一次",
-            body.contains("SyncGate.markSyncedToday(")
-        )
-    }
-
-    @Test
-    fun `★ 所有会改变内容缓存的地方都维护了标识`() {
-        // 有写必置位、有删必降级 —— 否则兜底判断会读到过时的"已缓存"
-        val writer = functionBody(repoSource, "private fun writePlaylistWorksCache(")
-        assertTrue(
-            "写入完整内容后要标为已缓存",
-            writer.contains("markPlaylistContentCached(") && writer.contains("if (complete)")
-        )
-
-        val seed = functionBody(repoSource, "private fun seedEmptyPlaylistContent(")
-        assertTrue(
-            "预置空缓存后也要标为已缓存",
-            seed.contains("PlaylistCacheFlags.markCached(")
-        )
-
-        val patch = functionBody(repoSource, "private fun patchPlaylistWorksCache(")
-        assertTrue(
-            "作废内容缓存时要降级标识",
-            patch.contains("markPlaylistContentNotCached(")
-        )
-
-        val invalidate = functionBody(repoSource, "private fun invalidatePlaylistContent(")
-        assertTrue(
-            "作废相关缓存时也要降级",
-            invalidate.contains("markPlaylistContentNotCached(")
-        )
-
-        val delete = functionBody(repoSource, "suspend fun deletePlaylist(")
-        assertTrue(
-            "删收藏夹时要忘掉标识",
-            delete.contains("PlaylistCacheFlags.forget(")
-        )
-    }
-
-    @Test
-    fun `★ 30 收藏夹上限的旧行为已不再出现`() {
-        // 防御性：确认没有为了"省请求"又把 worksCount > 0 的情况跳过
-        val body = functionBody(repoSource, "private suspend fun seedMissingPlaylistContent(")
-        assertTrue("有内容的要真的拉", body.contains("loadPlaylistWorks(playlist.id"))
+    fun `★ 收藏夹写入路径不再为了拿基线而多发一个读请求`() {
+        // 旧实现：标识说"没缓存" → 收藏前先 loadPlaylistWorks(USER_REFRESH)。
+        // 也就是说"收藏一次"最坏是 1 读 + 1 写。现在稳定 1 写。
+        listOf("suspend fun addWorkToPlaylist(", "suspend fun removeWorkFromPlaylist(")
+            .forEach { signature ->
+                val body = functionBody(repoSource, signature)
+                assertTrue("$signature 应当存在", body.isNotEmpty())
+                val beforeWrite = body.substringBefore("api.")
+                assertFalse(
+                    "★ $signature 在写请求之前不该再拉列表（那正是被删掉的兜底）",
+                    beforeWrite.contains("loadPlaylistWorks(")
+                )
+            }
     }
 
     /** 按大括号配对取函数体（从签名处开始找第一个 `{`） */

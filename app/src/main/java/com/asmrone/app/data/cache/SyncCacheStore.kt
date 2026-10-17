@@ -78,19 +78,7 @@ object SyncCacheStore {
          * 因为此刻"本地改了、服务端没改"，拿旧 ETag 去问会错误地收到 304，
          * 从而把一个失败的写入永久固化下来。
          */
-        val dirty: Boolean = false,
-        /**
-         * 这份内容是否**完整**（即"服务端该列表的全貌"，而不只是其中一页或一条）。
-         *
-         * 为什么需要这个标记：本地写入（标记/取消标记）会就地往缓存里的列表插一条。
-         * 但只有**已经有完整基线**时才敢这么做 —— 如果本地压根没有这份列表
-         * （用户从没进过收藏），凭空造一个"只有这一部作品"的列表是错误的：
-         * 界面会显示成"我的收藏里只有它"。
-         *
-         * 默认 false（保守）：宁可少插一条（下次核对就补上），也不要伪造一份残缺的列表。
-         * 分页拉取（「加载更多」）也只置 false —— 那时手里只有前几页。
-         */
-        val complete: Boolean = false
+        val dirty: Boolean = false
     ) {
         /** 距上次同步过了多久（毫秒） */
         fun ageMs(now: Long = System.currentTimeMillis()): Long = now - syncedAt
@@ -127,8 +115,7 @@ object SyncCacheStore {
             value = value,
             etag = o.optString("etag", "").takeIf { it.isNotBlank() },
             syncedAt = o.optLong("syncedAt", 0L),
-            dirty = o.optBoolean("dirty", false),
-            complete = o.optBoolean("complete", false)
+            dirty = o.optBoolean("dirty", false)
         )
     }
 
@@ -139,7 +126,6 @@ object SyncCacheStore {
             put("etag", entry.etag ?: "")
             put("syncedAt", entry.syncedAt)
             put("dirty", entry.dirty)
-            put("complete", entry.complete)
             put("body", codec.encode(entry.value))
         }
         // 先看有没有内存替身，再回落到真实存储 ——
@@ -226,7 +212,6 @@ object SyncCacheStore {
             put("etag", entry.etag ?: "")
             put("syncedAt", entry.syncedAt)
             put("dirty", entry.dirty)
-            put("complete", entry.complete)
             put("body", codec.encode(entry.value))
         }.toString()
 
