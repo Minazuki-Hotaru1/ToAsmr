@@ -619,14 +619,19 @@ private fun PlaylistCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .clickable(
+            // ⚠️ 点击与长按必须由**同一个**手势修饰符处理。
+            //
+            // 原先这里是两层叠着：
+            //   外层 .clickable(onClick = onClick)
+            //   内层 .combinedClickable(onClick = {}, onLongClick = …)   ← 空 onClick
+            // Compose 里更内层的手势先拿到并消费事件，于是卡片的点击被内层那个
+            // **空** onClick 吃掉 —— 表现正是「点了没反应、进不去」。
+            // 而系统收藏夹看起来正常，恰恰因为它不挂长按、只有外层那一个 clickable。
+            .combinedClickableCompat(
                 interactionSource = interactionSource,
-                indication = ripple(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                onClick = onClick
-            )
-            .then(
-                if (playlist.isSystem) Modifier
-                else Modifier.combinedClickableCompat(onLongClick)
+                onClick = onClick,
+                // 系统收藏夹不允许删除 → 连长按都不挂
+                onLongClick = if (playlist.isSystem) null else onLongClick
             ),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -835,7 +840,26 @@ private fun InlineEmpty(
     }
 }
 
-/** 长按手势（收藏夹删除用）；Compose 的 `combinedClickable` 需要 experimental 标注，这里包一层 */
+/**
+ * 点击 + **可选**长按。
+ *
+ * 两种手势必须由**这一个**修饰符同时承担。
+ *
+ * ⚠️ 绝不能改成"先 `.clickable(onClick)`、再叠一个 `combinedClickable`"：
+ * 同一节点上后声明（更内层）的手势会先拿到并消费事件，外层的点击就永远收不到 ——
+ * 收藏夹卡片曾经因此点不开（内层那个 `onClick` 是空的）。
+ *
+ * @param onLongClick null = 不挂长按（系统收藏夹不允许删除）
+ */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-private fun Modifier.combinedClickableCompat(onLongClick: () -> Unit): Modifier =
-    this.combinedClickable(onLongClick = onLongClick, onClick = {})
+@Composable
+private fun Modifier.combinedClickableCompat(
+    interactionSource: androidx.compose.foundation.interaction.MutableInteractionSource,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
+): Modifier = this.combinedClickable(
+    interactionSource = interactionSource,
+    indication = ripple(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+    onClick = onClick,
+    onLongClick = onLongClick
+)
