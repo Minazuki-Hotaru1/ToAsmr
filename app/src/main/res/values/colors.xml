@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 冷启动窗口底色：与 Color.kt 中的 LightBackground 对齐，避免启动白/黑闪 -->
+    <color name="window_background">#F4F8F7</color>
+    <color name="ic_launcher_background">#17817A</color>
+</resources>

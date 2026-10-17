@@ -1,0 +1,65 @@
+package com.asmrone.app
+
+import android.app.Application
+import android.content.pm.ApplicationInfo
+import com.asmrone.app.data.audio.AudioCacheMaintenance
+import com.asmrone.app.data.cache.CircleDictionary
+import com.asmrone.app.data.diag.HttpLog
+import com.asmrone.app.data.cache.PendingWriteStore
+import com.asmrone.app.data.cache.PlaylistCacheFlags
+import com.asmrone.app.data.cache.TagDictionary
+import com.asmrone.app.data.cache.SyncCacheStore
+import com.asmrone.app.data.cache.VoiceActorDictionary
+import com.asmrone.app.data.prefs.AccountStore
+import com.asmrone.app.data.prefs.AppPrefs
+import com.asmrone.app.data.prefs.LibraryStore
+import com.asmrone.app.data.prefs.SearchHistoryStore
+import com.asmrone.app.player.AudioController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+
+class AsmrOneApplication : Application() {
+
+    override fun onCreate() {
+        super.onCreate()
+        // 偏好与本地收藏必须在任何 Compose 组合之前初始化
+        AppPrefs.init(this)
+        LibraryStore.init(this)
+        AccountStore.init(this)
+        // 搜索历史（SharedPreferences）；搜索页会直接读它，所以要早于首次组合
+        SearchHistoryStore.init(this)
+        // 收藏类数据的本地镜像（JSON 文件）；必须在第一次读取收藏之前就绪
+        SyncCacheStore.init(this)
+        // 待补写队列：装的是"用户已表达、但还没写到云端"的操作，同样要早于首次读取
+        PendingWriteStore.init(this)
+        // 每个收藏夹"内容已缓存"的标识：加入收藏夹前的最后一道兜底判断
+        PlaylistCacheFlags.init(this)
+        // 搜索用的三本字典（本地 JSON）：标签 / 声优 / 社团。
+        // 搜索界面会直接读它们，所以要早于首次组合。
+        TagDictionary.init(this)
+        VoiceActorDictionary.init(this)
+        CircleDictionary.init(this)
+        AudioController.init(this)
+        AudioController.setGain(AppPrefs.gain.value)
+        AppPrefs.sleepTimerMinutes.value.takeIf { it > 0 }?.let { AudioController.setSleepTimer(it) }
+
+        // 音频缓存的清理放到后台线程：它要遍历缓存目录数文件，
+        // 放在 onCreate 里会拖慢冷启动的首帧。
+        // 内部有 10 分钟的最小间隔，所以频繁冷启动不会反复扫盘。
+        CoroutineScope(Dispatchers.IO).launch { AudioCacheMaintenance.run() }
+
+        // 调试期把网络日志落盘，便于用 adb 取出分析。
+        //
+        // 用 FLAG_DEBUGGABLE 而不是 BuildConfig.DEBUG：本工程没开
+        // `buildFeatures { buildConfig = true }`，BuildConfig 并不生成；
+        // 而这个判断只是"别在正式包里留日志文件"，用系统标志就够。
+        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (debuggable) {
+            HttpLog.enableFileDump(java.io.File(filesDir, "http_log.txt"))
+            // 立刻刷一次：否则要等到第一次播放（代理收到请求）才有日志文件，
+            // 而排查"代理到底起没起来"恰恰是在播放之前
+            HttpLog.flushToFile()
+        }
+    }
+}

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AsmrOne" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0F1A18</item>
+    </style>
+</resources>

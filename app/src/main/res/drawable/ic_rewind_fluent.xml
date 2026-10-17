@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 来源：Fluent UI System Icons（rewind-24-filled）· MIT License · 快退 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M10.03 4.362c.974-.83 2.472-.137 2.472 1.142v3.99l6.027-5.13c.974-.83 2.473-.138 2.473 1.142v12.992c0 .879-.707 1.48-1.465 1.503h-.087a1.48 1.48 0 0 1-.92-.36l-6.028-5.13v3.986c0 1.279-1.498 1.971-2.472 1.142l-7.41-6.306a1.75 1.75 0 0 1 0-2.665zm-7.41 6.306l.486.57Z" />
+</vector>

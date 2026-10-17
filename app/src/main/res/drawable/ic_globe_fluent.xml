@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 来源：Fluent UI System Icons（globe-24-regular）· MIT License · 服务器地址 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12 2c5.523 0 10 4.477 10 10s-4.477 10-10 10S2 17.523 2 12S6.477 2 12 2m0 1.5a8.5 8.5 0 0 0-5.98 2.46A11.9 11.9 0 0 1 9.5 12a11.9 11.9 0 0 1-3.48 6.04A8.5 8.5 0 1 0 12 3.5m4.63 11.5l2.28.001a8.5 8.5 0 0 1-2.83 3.98A13.6 13.6 0 0 0 16.63 15m-9.26 0a13.6 13.6 0 0 0 .55 3.98A8.5 8.5 0 0 1 5.09 15zM11 8.5v5H7.06c.2-1.9.8-3.62 1.71-5zm2 0h2.23c.91 1.38 1.51 3.1 1.71 5H13zm-1 0v5H8.97c.2-1.9.7-3.62 1.6-5zM12 3.5c1.6 0 3.1 1.36 4.2 3.9q.16.36.3.6H7.5q.14-.24.3-.6C8.9 4.86 10.4 3.5 12 3.5" />
+</vector>

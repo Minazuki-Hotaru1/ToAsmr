@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 来源：Fluent UI System Icons（folder-add-24-regular）· MIT License · 收藏到收藏夹 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M3.75 3A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V8.25A2.25 2.25 0 0 0 20.25 6h-8.086a.75.75 0 0 1-.53-.22L9.72 3.866A2.25 2.25 0 0 0 8.129 3zm-.75 2.25a.75.75 0 0 1 .75-.75h3.628a.75.75 0 0 1 .53.22L9.72 6.53c.422.422.994.659 1.591.659h8.939a.75.75 0 0 1 .75.75v10.5a.75.75 0 0 1-.75.75H3.75a.75.75 0 0 1-.75-.75z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12 10.5a.75.75 0 0 1 .75.75v1.5h1.5a.75.75 0 0 1 0 1.5h-1.5v1.5a.75.75 0 0 1-1.5 0v-1.5h-1.5a.75.75 0 0 1 0-1.5h1.5v-1.5a.75.75 0 0 1 .75-.75" />
+</vector>

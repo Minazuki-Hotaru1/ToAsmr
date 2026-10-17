@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 可共享的目录。
+
+  只有「下载到缓存的文件」需要共享出去（目前是 PDF，交给外部阅读器）。
+  刻意**只暴露 cache 下的这一个子目录**，而不是整个 cacheDir ——
+  cacheDir 里还有收藏缓存、字典 JSON 等内部数据，没有必要让外部 App 拿到路径。
+
+  路径必须与 ExternalFileOpener / DetailViewModel 的写入位置一致：
+  `context.cacheDir/external_open/`
+-->
+<paths>
+    <cache-path
+        name="external_open"
+        path="external_open/" />
+</paths>

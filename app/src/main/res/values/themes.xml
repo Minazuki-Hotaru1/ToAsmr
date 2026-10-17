@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 comicApp 同策略：只提供一个无 ActionBar 的宿主主题，真正的配色全部在 ui/theme/Color.kt -->
+    <style name="Theme.AsmrOne" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+</resources>
