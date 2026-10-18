@@ -1,6 +1,8 @@
 package com.asmrone.app.data.lyrics
 
+import com.asmrone.app.data.model.Track
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -324,5 +326,124 @@ class LyricsLoaderTest {
             "a.vtt"
         )
         assertTrue("秒数 99 应当被拒绝", lines.isEmpty())
+    }
+
+    // ═══════════════ 曲目 ↔ 歌词匹配 ═══════════════
+
+    private fun audio(path: String) = Track(title = path.substringAfterLast('/'), type = "audio", path = path)
+
+    private fun lyric(path: String) = Track(
+        title = path.substringAfterLast('/'),
+        type = "text",
+        path = path,
+        mediaStreamUrl = "https://cdn/$path"
+    )
+
+    private fun folder(path: String, vararg children: Track) =
+        Track(title = path.substringAfterLast('/'), type = "folder", path = path, children = children.toList())
+
+    private fun pick(audioPath: String, tree: List<Track>): String? =
+        LyricsLoader.findLyricTrack(tree, audioPath, audioPath.substringAfterLast('/'))?.path
+
+    @Test
+    fun `★ 歌词放在别的文件夹里也能找到`() {
+        // 这就是被去掉的那条限制：歌词整包放在 lyrics/ 下，音频在 mp3/ 下
+        val tree = listOf(
+            folder("mp3", audio("mp3/01_はじめに.mp3"), audio("mp3/02_つづき.mp3")),
+            folder("lyrics", lyric("lyrics/01_はじめに.lrc"), lyric("lyrics/02_つづき.lrc"))
+        )
+        assertEquals("lyrics/01_はじめに.lrc", pick("mp3/01_はじめに.mp3", tree))
+        assertEquals("lyrics/02_つづき.lrc", pick("mp3/02_つづき.mp3", tree))
+    }
+
+    @Test
+    fun `★ 同文件夹优先于其它文件夹`() {
+        val tree = listOf(
+            folder("mp3", audio("mp3/Tr1.mp3"), lyric("mp3/Tr1.lrc")),
+            folder("lyrics", lyric("lyrics/Tr1.lrc"))
+        )
+        assertEquals("同目录的那份必须先命中", "mp3/Tr1.lrc", pick("mp3/Tr1.mp3", tree))
+    }
+
+    @Test
+    fun `★ 同样是跨目录，歌词目录优先于普通目录`() {
+        val tree = listOf(
+            folder("mp3", audio("mp3/Tr1.mp3")),
+            folder("omake", lyric("omake/Tr1.lrc")),
+            folder("歌詞", lyric("歌詞/Tr1.lrc"))
+        )
+        assertEquals("歌詞/Tr1.lrc", pick("mp3/Tr1.mp3", tree))
+    }
+
+    @Test
+    fun `跨目录时扩展名优先级仍然生效`() {
+        val tree = listOf(
+            folder("mp3", audio("mp3/Tr1.mp3")),
+            folder("sub", lyric("sub/Tr1.ass"), lyric("sub/Tr1.lrc"))
+        )
+        assertEquals("sub/Tr1.lrc", pick("mp3/Tr1.mp3", tree))
+    }
+
+    @Test
+    fun `★ 名字对不上就不匹配 —— 跨目录不等于乱配`() {
+        val tree = listOf(
+            folder("mp3", audio("mp3/Tr1.mp3"), audio("mp3/Tr2.mp3")),
+            folder("lyrics", lyric("lyrics/Tr2.lrc"))
+        )
+        assertNull("没有与 Tr1 同名的歌词，就应当返回 null", pick("mp3/Tr1.mp3", tree))
+        assertEquals("lyrics/Tr2.lrc", pick("mp3/Tr2.mp3", tree))
+    }
+
+    @Test
+    fun `支持 同名加音频扩展名 的写法`() {
+        val tree = listOf(
+            folder("mp3", audio("mp3/Tr1.mp3")),
+            folder("字幕", lyric("字幕/Tr1.mp3.vtt"))
+        )
+        assertEquals("字幕/Tr1.mp3.vtt", pick("mp3/Tr1.mp3", tree))
+    }
+
+    @Test
+    fun `同名匹配不区分大小写`() {
+        val tree = listOf(
+            folder("mp3", audio("mp3/TRACK01.mp3")),
+            folder("lyrics", lyric("lyrics/track01.lrc"))
+        )
+        assertEquals("lyrics/track01.lrc", pick("mp3/TRACK01.mp3", tree))
+    }
+
+    @Test
+    fun `音频在根目录时也能跨目录找到歌词`() {
+        val tree = listOf(
+            audio("root.mp3"),
+            folder("lyrics", lyric("lyrics/root.lrc"))
+        )
+        assertEquals("lyrics/root.lrc", pick("root.mp3", tree))
+    }
+
+    @Test
+    fun `wav 与 mp3 两套音频共用同一份歌词`() {
+        val tree = listOf(
+            folder("mp3", audio("mp3/Tr1.mp3")),
+            folder("wav", audio("wav/Tr1.wav")),
+            folder("lyrics", lyric("lyrics/Tr1.lrc"))
+        )
+        assertEquals("lyrics/Tr1.lrc", pick("mp3/Tr1.mp3", tree))
+        assertEquals("lyrics/Tr1.lrc", pick("wav/Tr1.wav", tree))
+    }
+
+    @Test
+    fun `深层嵌套目录里的歌词同样能找到`() {
+        val tree = listOf(
+            folder("本編", folder("mp3", audio("本編/mp3/01.mp3"))),
+            folder("特典", folder("歌詞", lyric("特典/歌詞/01.lrc")))
+        )
+        assertEquals("特典/歌詞/01.lrc", pick("本編/mp3/01.mp3", tree))
+    }
+
+    @Test
+    fun `没有歌词时返回 null`() {
+        val tree = listOf(folder("mp3", audio("mp3/Tr1.mp3")))
+        assertNull(pick("mp3/Tr1.mp3", tree))
     }
 }

@@ -17,14 +17,30 @@ sealed interface LyricsLoad {
 /**
  * 曲目 ↔ 歌词文件匹配与解析。
  *
- * 匹配规则（用户的文件组织习惯）：
- *  - 优先在**音频所在的同一个文件夹**里找；
- *  - 文件名去掉扩展名后与音频同名；
- *  - 兼容 `01_foo.mp3 + 01_foo.lrc` 与 `01_foo.mp3 + 01_foo.mp3.lrc` 两种写法；
- *  - 支持 `.lrc` / `.vtt` / `.srt` / `.ass` / `.ssa`，按这个顺序取第一个匹配。
+ * ## 匹配规则
  *
- * 不做“全作品同名文件兜底”：不同文件夹里的同名文件很可能是不同章节，
- * 跨目录匹配比“找不到”更容易出错。
+ * 1. 文件名去掉扩展名后与音频**同名**（兼容 `01_foo.mp3 + 01_foo.lrc` 与
+ *    `01_foo.mp3 + 01_foo.mp3.lrc` 两种写法）；
+ * 2. 同名候选**不止一个**时，按下面的优先级挑：
+ *    - **音频所在的同一个文件夹**（最贴近"同名同目录"这个最常见习惯）；
+ *    - 目录名像歌词目录的（`lyric` / `歌詞` / `歌词` / `字幕` / `subtitle` / `lrc`…）；
+ *    - 扩展名优先级 `.lrc` > `.vtt` > `.srt` > `.ass` > `.ssa`。
+ *
+ * ## 为什么不再限制"必须在同一个文件夹"
+ *
+ * 早先只认同目录，理由是"不同文件夹里的同名文件可能是不同章节"。
+ * 但实测有相当一部分作品把整套歌词单独放在 `lyrics/`、`歌詞/`、`字幕/`
+ * 这样的目录里，音频在 `mp3/`、`wav/` 下 —— 那条限制会让这些作品**一首歌词都找不到**。
+ *
+ * 现在改成"同目录优先，但不排斥跨目录"：同目录命中仍然排在第一位，
+ * 只有在同目录找不到时才会去别处找同名文件，所以常见情况的行为没有变，
+ * 只是把"找不到"变成了"能找到"。
+ *
+ * ## 内存缓存
+ *
+ * 解析结果按 `(workId, trackPath)` 缓存在内存里（[CACHE_MAX] 条 LRU），
+ * 并由 [prefetch] 在**开始播放时**就预热。这样播放器的歌词页打开时
+ * 通常已经是"读缓存"，不再在展开动画里做网络与解析。
  */
 object LyricsLoader {
 
@@ -33,6 +49,11 @@ object LyricsLoader {
     /** 歌词文件名里可能残留的音频扩展名（`track.mp3.vtt`） */
     private val audioExts = setOf(
         "mp3", "wav", "m4a", "flac", "ogg", "opus", "aac", "wma"
+    )
+
+    /** 目录名里出现这些词就认为"这是个歌词/字幕目录" */
+    private val lyricDirHints = listOf(
+        "lyric", "lyrics", "歌詞", "歌词", "字幕", "subtitle", "subtitles", "lrc", "vtt", "srt"
     )
 
     private val lrcTag = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]""")
@@ -52,20 +73,87 @@ object LyricsLoader {
      * 也更快。
      */
 
-    suspend fun load(workId: Int, trackPath: String, trackTitle: String): LyricsLoad {
-        if (workId <= 0 || trackPath.isBlank()) return LyricsLoad.None
+    // ─────────────────────────── 内存缓存 ───────────────────────────
 
-        // 详情页播放时文件树已经缓存，直接用；冷启动恢复时再拉。
+    /** 最多缓存多少首的解析结果（每首约几十 KB，24 条足够覆盖连续收听） */
+    private const val CACHE_MAX = 24
+
+    private val cache = object : LinkedHashMap<String, LyricsLoad>(CACHE_MAX, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LyricsLoad>?): Boolean =
+            size > CACHE_MAX
+    }
+
+    private fun cacheKey(workId: Int, trackPath: String) = "$workId|$trackPath"
+
+    /** 同步读缓存：给界面的首帧用（命中就不用等任何异步） */
+    fun cached(workId: Int, trackPath: String): LyricsLoad? =
+        synchronized(cache) { cache[cacheKey(workId, trackPath)] }
+
+    private fun remember(workId: Int, trackPath: String, result: LyricsLoad) {
+        // 只缓存"有结论"的结果：Failed 多半是网络问题，下次要重试
+        if (result is LyricsLoad.Failed) return
+        synchronized(cache) { cache[cacheKey(workId, trackPath)] = result }
+    }
+
+    /** 清掉某部作品的缓存（重新拉歌词时用） */
+    fun forget(workId: Int) {
+        synchronized(cache) {
+            cache.keys.filter { it.startsWith("$workId|") }.forEach { cache.remove(it) }
+        }
+    }
+
+    fun clearCache() {
+        synchronized(cache) { cache.clear() }
+    }
+
+    /**
+     * 预热：**开始播放这一首时**就把歌词准备好。
+     *
+     * 调用方不应等待它 —— 它是纯后台动作，失败也不影响播放。
+     * 命中缓存时零开销（直接返回）。
+     */
+    suspend fun prefetch(
+        workId: Int,
+        sourceId: String?,
+        trackPath: String,
+        trackTitle: String
+    ) {
+        if (workId <= 0 || trackPath.isBlank()) return
+        if (cached(workId, trackPath) != null) return
+        load(workId, sourceId, trackPath, trackTitle)
+    }
+
+    /**
+     * 取一首曲目的歌词。
+     *
+     * @param sourceId RJ 号；有它才能命中按 RJ 落盘的文件树缓存
+     */
+    suspend fun load(
+        workId: Int,
+        sourceId: String?,
+        trackPath: String,
+        trackTitle: String
+    ): LyricsLoad {
+        if (workId <= 0 || trackPath.isBlank()) return LyricsLoad.None
+        cached(workId, trackPath)?.let { return it }
+
+        // 详情页播放时文件树已经在内存；冷启动时读 RJ 号落盘的那份；
+        // 都没有才联网（这条路径现在应该很少走到）
         val tree = AsmrRepository.peekTracks(workId)?.takeIf { it.isNotEmpty() }
-            ?: runCatching { AsmrRepository.getTracks(workId) }.getOrElse {
+            ?: runCatching { AsmrRepository.getTracks(workId, sourceId) }.getOrElse {
                 if (it is CancellationException) throw it
                 return LyricsLoad.Failed(it.message ?: "无法获取作品文件列表")
             }
-        val lyric = findLyricTrack(tree, trackPath, trackTitle) ?: return LyricsLoad.None
-        val url = lyric.mediaStreamUrl?.takeIf { it.isNotBlank() } ?: return LyricsLoad.None
+        val lyric = findLyricTrack(tree, trackPath, trackTitle)
+        val url = lyric?.mediaStreamUrl?.takeIf { it.isNotBlank() }
+        if (url == null) {
+            // "这部作品里没有与它同名的歌词"是个稳定结论，缓存下来避免每次重算
+            remember(workId, trackPath, LyricsLoad.None)
+            return LyricsLoad.None
+        }
         val lyricName = lyric.path.substringAfterLast('/').ifBlank { lyric.title }
 
-        return runCatching {
+        val result = runCatching {
             val decoded = TextDecoder.decode(
                 bytes = AsmrRepository.fetchBytes(url),
                 fileName = lyricName
@@ -80,11 +168,18 @@ object LyricsLoader {
             if (it is CancellationException) throw it
             LyricsLoad.Failed(it.message ?: "歌词下载失败")
         }
+        remember(workId, trackPath, result)
+        return result
     }
 
     // ─────────────────────────── 匹配 ───────────────────────────
 
-    private fun findLyricTrack(
+    /**
+     * 在同名候选里挑最合适的那一个。
+     *
+     * `internal` 是为了能在纯 JVM 上测匹配规则（构造几棵树即可，不联网）。
+     */
+    internal fun findLyricTrack(
         tree: List<Track>,
         audioPath: String,
         audioTitle: String
@@ -110,13 +205,45 @@ object LyricsLoader {
         return leaves
             .asSequence()
             .filter { TrackKind.of(it) == TrackKind.SUBTITLE }
-            .filter { it.path.substringBeforeLast('/', "") == parent }
-            .filter {
-                normalizeStem(it.path.substringAfterLast('/').ifBlank { it.title }) == audioStem
-            }
-            .minByOrNull {
-                lyricPriority(it.path.substringAfterLast('/').ifBlank { it.title })
-            }
+            // 同名是硬条件：跨目录可以，但"名字对不上"绝不能拿
+            .filter { stemOf(it) == audioStem }
+            // 同目录优先，其次看目录名像不像歌词目录，最后比扩展名
+            .minByOrNull { matchScore(it, parent) }
+    }
+
+    /** 叶子节点的文件名（`path` 的最后一段，退回落 `title`） */
+    private fun stemOf(node: Track): String =
+        normalizeStem(node.path.substringAfterLast('/').ifBlank { node.title })
+
+    /** 节点的文件名（带扩展名） */
+    private fun fileNameOf(node: Track): String =
+        node.path.substringAfterLast('/').ifBlank { node.title }
+
+    /**
+     * 同名候选的优先级分（越小越优先）。
+     *
+     * 分段权重保证了三层判断互不干扰：
+     *  - 同目录 = 0 分档，跨目录 = 1000 分档（同目录**永远**赢）；
+     *  - 歌词目录再省 10 分（同样是跨目录时，`lyrics/` 比 `omake/` 更像）；
+     *  - 扩展名 0..4 分（`.lrc` 最优先）。
+     */
+    private fun matchScore(node: Track, audioParent: String): Int {
+        val dir = node.path.substringBeforeLast('/', "")
+        val sameFolder = dir == audioParent
+        val folderScore = when {
+            sameFolder -> 0
+            looksLikeLyricsDir(dir) -> 10
+            else -> 20
+        }
+        return (if (sameFolder) 0 else 1000) + folderScore + lyricPriority(fileNameOf(node))
+    }
+
+    /** 目录名里是否出现"歌词/字幕"这类词（任意一层命中即可） */
+    private fun looksLikeLyricsDir(dir: String): Boolean {
+        if (dir.isBlank()) return false
+        return dir.split('/').any { segment ->
+            lyricDirHints.any { hint -> segment.contains(hint, ignoreCase = true) }
+        }
     }
 
     /**

@@ -6,6 +6,7 @@ import androidx.compose.animation.core.EaseInOut
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -173,6 +174,22 @@ private const val STAGGER_STEP_MS = 40
 
 /** 拖动浏览后静置多久回到当前歌词（毫秒） */
 private const val BROWSE_RETURN_DELAY_MS = 3_000L
+
+/**
+ * 只有离当前行这么近的行才做**交错动画**。
+ *
+ * 超出的行一定在视口外（视口约 6–8 行高），动画看不见却要占一帧的动画调度；
+ * 一首 44 行的歌词本来会同时跑 44 条 `animateFloatAsState`。
+ */
+private const val MAX_ANIMATED_DISTANCE = 12
+
+/**
+ * 只有离当前行这么近的行才**挂模糊**。
+ *
+ * `Modifier.blur` 会给该行单独开一个渲染层；44 行同时挂就是 44 个模糊层。
+ * 更远的行同样在视口外，模糊看不到却要付渲染成本 —— 这是进歌词页那一下卡顿的主因之一。
+ */
+private const val MAX_BLURRED_DISTANCE = 6
 
 // ───────────────────────────── 页面 ─────────────────────────────
 
@@ -490,13 +507,21 @@ private fun AppleMusicLyrics(
                     val focused = index == focusedIndex
 
                     // 跟随模式下的交错位移（浏览期间不生效，但仍继续跑，回位后可无缝接上）
+                    //
+                    // 只有视口附近的行才走交错动画；更远的行用 snap 直接到位 ——
+                    // 它们在视口外，看不到差别，但省掉几十条并行动画。
+                    val nearEnoughToStagger = distance <= MAX_ANIMATED_DISTANCE
                     val followOffset by animateFloatAsState(
                         targetValue = targetOffset,
-                        animationSpec = tween(
-                            durationMillis = 650,
-                            delayMillis = (distance * STAGGER_STEP_MS).coerceAtMost(320),
-                            easing = FastOutSlowInEasing
-                        ),
+                        animationSpec = if (nearEnoughToStagger) {
+                            tween(
+                                durationMillis = 650,
+                                delayMillis = (distance * STAGGER_STEP_MS).coerceAtMost(320),
+                                easing = FastOutSlowInEasing
+                            )
+                        } else {
+                            snap()
+                        },
                         label = "lineOffset"
                     )
 
@@ -514,16 +539,19 @@ private fun AppleMusicLyrics(
                         animationSpec = tween(durationMillis = 300),
                         label = "lineAlpha"
                     )
-                    // 浏览（拖动 / 回位）期间**去掉模糊**，让用户看清内容
+                    // 浏览（拖动 / 回位）期间**去掉模糊**，让用户看清内容。
+                    // 远离当前行的行也压成 0：它们在视口外，挂模糊只是白花渲染成本。
+                    val blurTarget = if (browsingActive || distance > MAX_BLURRED_DISTANCE) {
+                        0f
+                    } else {
+                        (distance * BLUR_PER_DISTANCE).coerceAtMost(9f)
+                    }
                     val blurRadius by animateFloatAsState(
-                        targetValue = if (browsingActive) {
-                            0f
-                        } else {
-                            (abs(focusedIndex - index) * BLUR_PER_DISTANCE).coerceAtMost(9f)
-                        },
+                        targetValue = blurTarget,
                         animationSpec = tween(durationMillis = 300),
                         label = "lineBlur"
                     )
+                    val blurable = blurRadius > 0.05f
 
                     Box(
                         modifier = Modifier
@@ -547,7 +575,10 @@ private fun AppleMusicLyrics(
                                     alpha = focusAlpha
                                     transformOrigin = TransformOrigin(0f, 1f)
                                 }
-                                .blur(blurRadius.dp)
+                                // 只有需要模糊时才挂：Modifier.blur 会为该行单开渲染层
+                                .then(
+                                    if (blurable) Modifier.blur(blurRadius.dp) else Modifier
+                                )
                                 .padding(horizontal = 16.dp),
                             verticalArrangement = Arrangement.Center
                         ) {
@@ -622,37 +653,51 @@ private fun AppleMusicLyrics(
 /**
  * 给播放页复用的歌词页。
  *
- * 从当前作品的完整文件树里，按「同一文件夹 + 同名」找到歌词文件，下载并解析后
- * 直接用真实时间轴驱动高亮；点击歌词就是跳到该行的真实时间点。
+ * ## 加载时机（这是卡顿的根因，已改）
  *
- * 歌词页被 Pager 预组合时就会开始异步加载，因此用户滑到这一页时通常已经就绪。
+ * 旧实现在这里 `LaunchedEffect` 里直接调 `LyricsLoader.load` —— 于是**每次打开
+ * 播放器**都要在展开动画期间做"取文件树 → 找歌词 → 下载 → 解析"，
+ * 冷启动时甚至要拉那棵最大 6MB 的树。
+ *
+ * 现在：
+ *  1. **开始播放时**就在后台预热（`MainActivity` 里监听当前曲目变化调
+ *     `LyricsLoader.prefetch`）；
+ *  2. 这里首帧先同步读内存缓存（`LyricsLoader.cached`），命中就直接渲染，
+ *     **组合期间零网络、零解析**；
+ *  3. 只有缓存没命中（预热还没完成 / 预热失败）才回落到异步加载。
+ *
+ * 所以正常路径下，滑到歌词页看到的已经是成品。
  */
 @Composable
 fun PlayerLyrics(
     workId: Int,
+    sourceId: String?,
     trackPath: String,
     trackTitle: String,
     positionMs: Long,
     onSeekTo: (Long) -> Unit
 ) {
-    var result by remember(workId, trackPath) { mutableStateOf<LyricsLoad?>(null) }
+    // 首帧直接拿预热好的结果：命中时整个组合过程不产生挂起
+    var result by remember(workId, trackPath) {
+        mutableStateOf(LyricsLoader.cached(workId, trackPath))
+    }
 
-    LaunchedEffect(workId, trackPath, trackTitle) {
-        result = null
-        result = LyricsLoader.load(workId, trackPath, trackTitle)
+    LaunchedEffect(workId, trackPath, trackTitle, sourceId) {
+        if (result != null) return@LaunchedEffect
+        result = LyricsLoader.load(workId, sourceId, trackPath, trackTitle)
     }
 
     when (val load = result) {
         null -> LyricsPlaceholder(
             loading = true,
             title = "正在加载歌词…",
-            hint = "正在匹配与当前曲目同名的文件"
+            hint = "正在查找与当前曲目同名的歌词文件"
         )
 
         LyricsLoad.None -> LyricsPlaceholder(
             loading = false,
             title = "未找到匹配的歌词",
-            hint = "歌词文件需要与音频同名，并放在同一个文件夹下"
+            hint = "需要有一个与音频同名的歌词文件（可放在任意文件夹）"
         )
 
         is LyricsLoad.Failed -> LyricsPlaceholder(

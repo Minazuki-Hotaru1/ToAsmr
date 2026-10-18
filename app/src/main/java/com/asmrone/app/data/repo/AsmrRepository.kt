@@ -32,6 +32,7 @@ import com.asmrone.app.data.cache.SyncCacheStore
 import com.asmrone.app.data.cache.VoiceActorDictionary
 import com.asmrone.app.data.cache.SyncGate
 import com.asmrone.app.data.cache.SyncTrigger
+import com.asmrone.app.data.cache.TrackTreeStore
 import com.asmrone.app.data.cache.WorkPageCodec
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.remote.ApiConfig
@@ -179,12 +180,38 @@ object AsmrRepository {
         return merged
     }
 
-    /** 文件树（folders + audio + image + text） */
-    suspend fun getTracks(id: Int, forceRefresh: Boolean = false): List<Track> {
-        if (!forceRefresh) trackCache[id]?.let { return it }
+    /**
+     * 文件树（folders + audio + image + text）。
+     *
+     * 三级来源，越靠前越便宜：
+     *  1. 内存缓存（本次会话已经拿过）
+     *  2. **按 RJ 号落盘的本地树**（[TrackTreeStore]，进入作品时写入）
+     *  3. 联网拉 `/api/tracks/{id}`
+     *
+     * 第 2 级是这次新增的关键：冷启动后开播放器/看歌词只读本地，
+     * 不会再去拉那棵最大 6MB 的树。
+     *
+     * @param sourceId RJ 号；**能传就传**，它是本地缓存的键，
+     *   也决定这份树能不能被"只拿到 workId 的调用方"读到
+     */
+    suspend fun getTracks(
+        id: Int,
+        sourceId: String? = null,
+        forceRefresh: Boolean = false
+    ): List<Track> {
+        val knownSourceId = sourceId ?: workCache[id]?.sourceId
+        if (!forceRefresh) {
+            trackCache[id]?.let { return it }
+            TrackTreeStore.load(knownSourceId, id)?.let { cached ->
+                trackCache[id] = cached
+                workCache[id]?.let { workCache[id] = it.copy(tracks = cached) }
+                return cached
+            }
+        }
         val tracks = api.getTracks(id)
         trackCache[id] = tracks
         workCache[id]?.let { workCache[id] = it.copy(tracks = tracks) }
+        TrackTreeStore.save(knownSourceId, id, host, tracks)
         return tracks
     }
 
@@ -197,13 +224,21 @@ object AsmrRepository {
             runCatching { getWorkMeta(id, forceRefresh) }
         }
         val tracksDeferred = async {
-            runCatching { getTracks(id, forceRefresh) }
+            runCatching { getTracks(id, forceRefresh = forceRefresh) }
         }
         val meta = metaDeferred.await()
         val tracks = tracksDeferred.await()
 
         val work = meta.getOrNull()
         val tree = tracks.getOrNull() ?: trackCache[id] ?: emptyList()
+        // ① 拿到元数据才知道 RJ 号 → 补写一次"按 RJ 命名"的树，
+        //    并清掉可能先落下的 `w<id>.json`，避免同一棵树存两份
+        work?.sourceId?.takeIf { it.isNotBlank() }?.let { rj ->
+            if (tree.isNotEmpty()) {
+                TrackTreeStore.save(rj, id, host, tree)
+                TrackTreeStore.forgetByIdOnly(id)
+            }
+        }
         DetailLoad(
             work = work?.copy(tracks = tree) ?: workCache[id]?.copy(tracks = tree),
             metaError = meta.exceptionOrNull()?.message,

@@ -238,6 +238,7 @@ fun PlayerScreen(
                 } else {
                     PlayerLyrics(
                         workId = state.workId,
+                        sourceId = state.workSourceId,
                         trackPath = state.currentTrack?.path.orEmpty(),
                         trackTitle = state.trackTitle,
                         positionMs = lyricPositionMs,

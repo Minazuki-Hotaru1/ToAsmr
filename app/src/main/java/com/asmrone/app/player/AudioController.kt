@@ -25,6 +25,14 @@ import kotlinx.coroutines.launch
 /** 播放器对外暴露的状态（供迷你播放器与全屏播放器共同消费） */
 data class PlayerState(
     val workId: Int = 0,
+    /**
+     * 作品的 RJ 号（DLsite 作品号，如 `RJ243448`）。
+     *
+     * 与 [workId] 一起带在状态里，是为了让**文件树与歌词**能用它做本地缓存的键：
+     * 冷启动恢复会话后内存里没有作品元数据，只有这个快照，拿不到 RJ 号就只能
+     * 退回按 workId 找缓存（可能落空）。详见 `TrackTreeStore`。
+     */
+    val workSourceId: String? = null,
     val workTitle: String = "",
     val coverUrl: String? = null,
     val tracks: List<Track> = emptyList(),
@@ -122,6 +130,7 @@ object AudioController {
         val saved = PlaybackSessionStore.load() ?: return
         _state.value = PlayerState(
             workId = saved.workId,
+            workSourceId = saved.workSourceId,
             workTitle = saved.workTitle,
             coverUrl = saved.coverUrl,
             tracks = saved.tracks,
@@ -171,6 +180,7 @@ object AudioController {
         }
         _state.value = PlayerState(
             workId = work.id,
+            workSourceId = work.sourceId,
             workTitle = work.title,
             coverUrl = coverUrl,
             tracks = tracks,

@@ -2,14 +2,16 @@ package com.asmrone.app.data.prefs
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.asmrone.app.data.cache.TrackJson
 import com.asmrone.app.data.model.Track
 import com.asmrone.app.player.PlayerState
-import org.json.JSONArray
 import org.json.JSONObject
 
 /** 从 SharedPreferences 里恢复出来的一次播放会话 */
 data class SavedPlayback(
     val workId: Int,
+    /** RJ 号；旧版本快照里没有，为 null */
+    val workSourceId: String? = null,
     val workTitle: String,
     val coverUrl: String?,
     val tracks: List<Track>,
@@ -44,33 +46,19 @@ object PlaybackSessionStore {
         if (!::sp.isInitialized) return
         if (!state.isActive || state.workId <= 0) return
 
-        val trackArray = JSONArray()
-        state.tracks.forEach { track ->
-            trackArray.put(
-                JSONObject().apply {
-                    put("title", track.title)
-                    put("type", track.type ?: "audio")
-                    track.hash?.takeIf { it.isNotBlank() }?.let { put("hash", it) }
-                    track.size?.let { put("size", it) }
-                    track.durationSec?.let { put("durationSec", it) }
-                    put("mediaStreamUrl", track.mediaStreamUrl ?: "")
-                    put("mediaDownloadUrl", track.mediaDownloadUrl ?: "")
-                    put("streamLowQualityUrl", track.streamLowQualityUrl ?: "")
-                    put("path", track.path)
-                }
-            )
-        }
-
         val root = JSONObject().apply {
             put("version", VERSION)
             put("workId", state.workId)
+            put("sourceId", state.workSourceId ?: "")
             put("workTitle", state.workTitle)
             put("coverUrl", state.coverUrl ?: "")
             put("index", state.index)
             put("positionMs", state.positionMs)
             put("durationMs", state.durationMs)
             put("savedAt", System.currentTimeMillis())
-            put("tracks", trackArray)
+            // 曲目字段映射与文件树缓存共用同一个编解码（TrackJson），
+            // 避免两处各写一套、字段读错位
+            put("tracks", TrackJson.encode(state.tracks))
         }
         val editor = sp.edit().putString(KEY_SESSION, root.toString())
         if (synchronous) {
@@ -87,31 +75,7 @@ object PlaybackSessionStore {
         val workId = root.optInt("workId", 0)
         if (workId <= 0) return null
 
-        val array = root.optJSONArray("tracks") ?: return null
-        val tracks = buildList {
-            for (i in 0 until array.length()) {
-                val o = array.optJSONObject(i) ?: continue
-                val title = o.optString("title").trim()
-                if (title.isEmpty()) continue
-                add(
-                    Track(
-                        title = title,
-                        type = o.optString("type").ifBlank { "audio" },
-                        hash = o.optString("hash").ifBlank { null },
-                        size = if (o.has("size") && !o.isNull("size")) o.optLong("size") else null,
-                        durationSec = if (o.has("durationSec") && !o.isNull("durationSec")) {
-                            o.optDouble("durationSec")
-                        } else {
-                            null
-                        },
-                        mediaStreamUrl = o.optString("mediaStreamUrl").ifBlank { null },
-                        mediaDownloadUrl = o.optString("mediaDownloadUrl").ifBlank { null },
-                        streamLowQualityUrl = o.optString("streamLowQualityUrl").ifBlank { null },
-                        path = o.optString("path").ifBlank { "track-$i" }
-                    )
-                )
-            }
-        }
+        val tracks = TrackJson.decode(root.optJSONArray("tracks"))
         if (tracks.isEmpty()) return null
 
         val index = root.optInt("index", 0).coerceIn(0, tracks.lastIndex)
@@ -124,6 +88,7 @@ object PlaybackSessionStore {
 
         return SavedPlayback(
             workId = workId,
+            workSourceId = root.optString("sourceId").ifBlank { null },
             workTitle = root.optString("workTitle"),
             coverUrl = root.optString("coverUrl").ifBlank { null },
             tracks = tracks,
