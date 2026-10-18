@@ -55,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -422,15 +423,32 @@ private fun PlayerIconButton(
  *
  * [progress] 0 = 页面完全在屏幕下方；1 = 页面完全覆盖屏幕。
  * 不使用缩放或共享元素，只做垂直位移 + 压暗遮罩，保证进出方向一致、行为简单可预期。
+ *
+ * ## 为什么它是"常驻组合"的（[visible] 参数）
+ *
+ * 早先这个覆盖层是 `if (visible) { PlayerSlideOverlay(...) }` —— 第一次点迷你播放器
+ * 才把整棵播放器（全屏模糊底图 + Pager + **44 行歌词**）组合出来，
+ * 那一下正是"首次展开明显卡顿"的来源。数据预取只解决了网络与解析，组合与测量
+ * 那次冷启动成本仍在点击的那一帧里。
+ *
+ * 现在改成：一旦有播放内容就**常驻组合**（离屏、不绘制、不吃触摸），
+ * 第一次展开只跑位移动画，没有组合/测量成本。
+ *
+ * @param visible 是否处于"展开"状态。false 时：
+ *   - 不注册 BackHandler（否则返回键会被一个看不见的页面吃掉，用户退不出 App）
+ *   - 遮罩不接收点击（否则常驻的全屏 Box 会把整个界面的触摸吞掉）
+ *   - 内容不绘制（省掉离屏渲染）
  */
 @Composable
 fun PlayerSlideOverlay(
     progress: () -> Float,
+    visible: Boolean,
     onBack: () -> Unit
 ) {
     // 覆盖层在 NavHost 之后组合，BackHandler 优先级高于底层导航：
     // 返回手势先收起播放页，而不是把播放页下面的页面 pop 掉。
-    BackHandler(onBack = onBack)
+    // ⚠️ enabled 必须跟着 visible：常驻组合时它一直存在，否则会抢走返回键。
+    BackHandler(enabled = visible, onBack = onBack)
 
     val p = progress().coerceIn(0f, 1f)
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -442,11 +460,20 @@ fun PlayerSlideOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.45f * p))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = {}
+                .background(
+                    if (visible && p > 0.001f) Color.Black.copy(alpha = 0.45f * p)
+                    else Color.Transparent
+                )
+                .then(
+                    if (visible) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {}
+                        )
+                    } else {
+                        Modifier
+                    }
                 )
         )
 
@@ -455,6 +482,8 @@ fun PlayerSlideOverlay(
                 .fillMaxSize()
                 .offset { IntOffset(0, ((1f - p) * fullHeightPx).roundToInt()) }
                 .clip(RoundedCornerShape(topStart = topCorner, topEnd = topCorner))
+                // 收起状态整块在屏幕外，仍然跳过绘制：省掉一次全屏（含 56dp 模糊）的离屏渲染
+                .then(if (visible) Modifier else Modifier.drawWithContent { })
         ) {
             PlayerScreen(
                 onBack = onBack,

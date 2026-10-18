@@ -34,13 +34,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import coil.imageLoader
+import coil.request.ImageRequest
 import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.lyrics.LyricsLoader
 import com.asmrone.app.data.prefs.AccountStore
@@ -178,6 +182,18 @@ fun MainApp() {
     val overlayProgress = remember { Animatable(0f) }
     var playerOverlayVisible by remember { mutableStateOf(false) }
 
+    /**
+     * 播放器覆盖层是否已经"预热挂载"过。
+     *
+     * 常驻组合要花一次组合 + 测量（含 44 行歌词），如果放在**冷启动第一帧**里，
+     * 会把首页的首帧推后 —— 那就把卡顿从"点播放器"搬到了"打开 App"。
+     *
+     * 所以等首帧画完、再等一小会儿（让首页的卡片入场动画先跑），才真正挂上去。
+     * 用户从看到首页到去点迷你播放器，远不止 500ms，所以正常情况下等他点的时候
+     * 早就预热完了。
+     */
+    var playerOverlayWarm by remember { mutableStateOf(false) }
+
     fun openPlayerOverlay() {
         if (playerOverlayVisible) return
         playerOverlayVisible = true
@@ -203,6 +219,19 @@ fun MainApp() {
     // 注意：返回键处理放在 PlayerSlideOverlay 内部。
     // 这里注册会早于 NavHost，返回手势会先被底层导航消费，导致播放页不关闭、
     // 反而把播放页下面的页面 pop 掉。覆盖层在 NavHost 之后组合，才能拿到更高优先级。
+
+    /**
+     * 预热：首帧画完之后再挂播放器覆盖层。
+     *
+     * `withFrameNanos` 会等到下一帧的时间点 —— 也就是首帧真的画完了，
+     * 这样挂载成本不会计入冷启动的首帧。随后再等 500ms，让首页的卡片入场
+     * 动画（400ms + 错峰）先跑完，避免这次挂载抢帧。
+     */
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        kotlinx.coroutines.delay(500)
+        playerOverlayWarm = true
+    }
 
     // 启动时恢复登录会话：先用本地令牌铺出已登录态，再在后台校验/静默重登。
     // 放在 Compose 里而不是 Application 中，是为了不拖慢首帧 —— 未登录也完全不阻塞浏览。
@@ -249,6 +278,24 @@ fun MainApp() {
             trackPath = track.path,
             trackTitle = track.title
         )
+    }
+
+    /**
+     * 封面预热 —— 把大封面提前解码进 Coil 的内存缓存。
+     *
+     * 播放器展开时用同一张封面做两件事：全屏 56dp 模糊底图 + 方形大图。
+     * 如果这一刻才去解码，解码会落在展开动画的帧里。提前 enqueue 一次，
+     * 等 `AsyncImage` 真正要显示时就是内存命中，只剩绘制。
+     */
+    val appContext = LocalContext.current
+    LaunchedEffect(playerState.coverUrl) {
+        val url = playerState.coverUrl
+        if (url.isNullOrBlank()) return@LaunchedEffect
+        runCatching {
+            appContext.imageLoader.enqueue(
+                ImageRequest.Builder(appContext).data(url).build()
+            )
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -336,10 +383,22 @@ fun MainApp() {
             }
         }
 
-        // 播放器覆盖层：整页从屏幕下方滑入，退出时原路滑出。
-        if (playerOverlayVisible) {
+        // ── 播放器覆盖层（**常驻组合**）──
+        //
+        // 只要"有播放内容"就挂上它，而不是等第一次点迷你播放器。
+        // 展开时它整块在屏幕下方（progress = 0）、不绘制、不接收触摸，
+        // 所以挂着的代价几乎为零；换来的是第一次展开只跑位移动画，
+        // 不再在点击那一帧组合"全屏模糊底图 + Pager + 44 行歌词"。
+        //
+        // 这也是"首次点迷你播放器卡顿"的正解：数据预取（LyricsLoader.prefetch）
+        // 只解决了网络与解析，组件本身的组合/测量得靠常驻组合来预热。
+        //
+        // `|| playerOverlayVisible` 是兜底：万一下手很快，预热还没完成就点了，
+        // 也要能正常展开（此时按老路径付一次组合成本，行为与改动前一致）。
+        if (playerState.isActive && (playerOverlayWarm || playerOverlayVisible)) {
             PlayerSlideOverlay(
                 progress = { overlayProgress.value },
+                visible = playerOverlayVisible,
                 onBack = { closePlayerOverlay() }
             )
         }
