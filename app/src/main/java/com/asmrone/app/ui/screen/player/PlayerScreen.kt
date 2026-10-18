@@ -45,22 +45,28 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -71,6 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.asmrone.app.R
 import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.Work
@@ -161,16 +168,38 @@ fun PlayerScreen(
         state.positionMs.toLong()
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(PlayerBackground)) {
-        // ── 封面模糊底图 ──
-        if (!state.coverUrl.isNullOrBlank()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(PlayerBackground)) {
+        // ── 封面模糊底图（**降采样模糊**）──
+        //
+        // 之前是 `AsyncImage(fillMaxSize()).blur(56.dp)`：等于对一整屏
+        // （1080×2400 级别）做高斯模糊，光栅化面积是整块屏幕，首帧非常贵 ——
+        // 这正是"点开播放器仍能感觉到的那一下"。
+        //
+        // 现在改成：只在一张 **1/8 大小**的小图层上做小半径模糊，再用
+        // graphicsLayer 把它放大 8 倍铺满。光栅化面积降到 1/64，而放大之后
+        // 本来就是糊的，视觉上几乎看不出差别（alpha 0.55 还会再压一层暗）。
+        //
+        // 顺带让 Coil 只解一张小图（size(96)）：底图最终要放大并模糊，
+        // 解 600×600 再让它糊掉纯属浪费内存与解码时间。
+        val cover = state.coverUrl
+        if (!cover.isNullOrBlank()) {
+            val sampleFactor = 8
             AsyncImage(
-                model = state.coverUrl,
+                model = ImageRequest.Builder(LocalContext.current)
+                    .data(cover)
+                    .size(96)
+                    .build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .blur(56.dp)
+                    .align(Alignment.Center)
+                    .size(maxWidth / sampleFactor, maxHeight / sampleFactor)
+                    .graphicsLayer {
+                        scaleX = sampleFactor.toFloat()
+                        scaleY = sampleFactor.toFloat()
+                    }
+                    // 小图层上的 5dp，放大 8 倍后≈原来的 40dp 观感
+                    .blur(5.dp)
                     .alpha(0.55f)
             )
         }
@@ -450,20 +479,37 @@ fun PlayerSlideOverlay(
     // ⚠️ enabled 必须跟着 visible：常驻组合时它一直存在，否则会抢走返回键。
     BackHandler(enabled = visible, onBack = onBack)
 
-    val p = progress().coerceIn(0f, 1f)
+    // ⚠️ 动画进度**只在绘制阶段读**（graphicsLayer / drawBehind 的 lambda 里）。
+    //
+    // 之前 `val p = progress()` 写在组合体里，于是展开动画的**每一帧**都会：
+    //   重组整个覆盖层 → BoxWithConstraints 重新 subcompose → PlayerScreen 重组
+    //   → 新 RoundedCornerShape → 重新布局（offset 是布局阶段）
+    // 一帧下来整棵播放器被组合+测量一遍，动画当然不平滑。
+    //
+    // 现在：
+    //   - 位移与圆角交给 graphicsLayer（绘制阶段，只更新图层变换/轮廓）
+    //   - 遮罩透明度交给 drawBehind
+    //   - 只有"是否已经铺满屏幕"这一个布尔值进组合阶段（derivedStateOf 保证
+    //     整段动画里只翻转一次）
+    val progressState = rememberUpdatedState(progress)
+    val fullyExpanded by remember {
+        derivedStateOf { progressState.value() > 0.999f }
+    }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val density = LocalDensity.current
         val fullHeightPx = with(density) { maxHeight.toPx() }
-        val topCorner = (24f * (1f - p)).coerceAtLeast(0f).dp
 
         // 背后压暗 + 吞掉点击，避免滑动过程中误触下面的页面 / 迷你播放器。
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    if (visible && p > 0.001f) Color.Black.copy(alpha = 0.45f * p)
-                    else Color.Transparent
-                )
+                .drawBehind {
+                    val pp = progressState.value().coerceIn(0f, 1f)
+                    if (visible && pp > 0.001f) {
+                        drawRect(Color.Black.copy(alpha = 0.45f * pp))
+                    }
+                }
                 .then(
                     if (visible) {
                         Modifier.clickable(
@@ -480,15 +526,22 @@ fun PlayerSlideOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .offset { IntOffset(0, ((1f - p) * fullHeightPx).roundToInt()) }
-                .clip(RoundedCornerShape(topStart = topCorner, topEnd = topCorner))
-                // 收起状态整块在屏幕外，仍然跳过绘制：省掉一次全屏（含 56dp 模糊）的离屏渲染
+                // 收起状态整块在屏幕外，跳过绘制：省掉一次全屏离屏渲染
                 .then(if (visible) Modifier else Modifier.drawWithContent { })
+                .graphicsLayer {
+                    val pp = progressState.value().coerceIn(0f, 1f)
+                    // 整页从屏幕下方滑入（绘制阶段变换，不触发布局）
+                    translationY = (1f - pp) * fullHeightPx
+                    // 顶部圆角随展开收平；完全展开时用 Rectangle，省掉轮廓裁剪
+                    val radius = ((1f - pp) * 24f).coerceAtLeast(0f)
+                    shape = if (radius <= 0.5f) RectangleShape else RoundedCornerShape(radius.dp)
+                    clip = true
+                }
         ) {
             PlayerScreen(
                 onBack = onBack,
                 // 页面真正覆盖状态栏之后才切白色系统栏图标
-                immersiveSystemBars = p > 0.999f
+                immersiveSystemBars = fullyExpanded
             )
         }
     }

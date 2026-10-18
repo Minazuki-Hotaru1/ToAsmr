@@ -36,15 +36,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import coil.imageLoader
-import coil.request.ImageRequest
 import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.lyrics.LyricsLoader
 import com.asmrone.app.data.prefs.AccountStore
@@ -281,22 +278,13 @@ fun MainApp() {
     }
 
     /**
-     * 封面预热 —— 把大封面提前解码进 Coil 的内存缓存。
+     * 封面加载不需要在这里预热。
      *
-     * 播放器展开时用同一张封面做两件事：全屏 56dp 模糊底图 + 方形大图。
-     * 如果这一刻才去解码，解码会落在展开动画的帧里。提前 enqueue 一次，
-     * 等 `AsyncImage` 真正要显示时就是内存命中，只剩绘制。
+     * 播放器覆盖层现在**常驻组合**（见下方 `playerOverlayWarm`），它的
+     * `AsyncImage` 在挂载那一刻就自己发起加载了 —— 比手动 enqueue 更准，
+     * 因为它用的是真实的请求尺寸（底图只要 96px 的小图，大封面才要原尺寸）。
+     * 手动再 enqueue 一份反而会多解码一次、多占一份缓存。
      */
-    val appContext = LocalContext.current
-    LaunchedEffect(playerState.coverUrl) {
-        val url = playerState.coverUrl
-        if (url.isNullOrBlank()) return@LaunchedEffect
-        runCatching {
-            appContext.imageLoader.enqueue(
-                ImageRequest.Builder(appContext).data(url).build()
-            )
-        }
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
