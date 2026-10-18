@@ -12,6 +12,7 @@ import com.asmrone.app.data.cache.VoiceActorDictionary
 import com.asmrone.app.data.prefs.AccountStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.prefs.LibraryStore
+import com.asmrone.app.data.prefs.PlaybackSessionStore
 import com.asmrone.app.data.prefs.SearchHistoryStore
 import com.asmrone.app.player.AudioController
 import kotlinx.coroutines.CoroutineScope
@@ -37,7 +38,10 @@ class AsmrOneApplication : Application() {
         TagDictionary.init(this)
         VoiceActorDictionary.init(this)
         CircleDictionary.init(this)
+        // 播放会话快照：必须早于 AudioController 恢复
+        PlaybackSessionStore.init(this)
         AudioController.init(this)
+        AudioController.restoreSession()
         AudioController.setGain(AppPrefs.gain.value)
         AppPrefs.sleepTimerMinutes.value.takeIf { it > 0 }?.let { AudioController.setSleepTimer(it) }
 

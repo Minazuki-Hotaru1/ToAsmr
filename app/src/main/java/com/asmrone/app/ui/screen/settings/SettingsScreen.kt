@@ -67,7 +67,8 @@ fun SettingsScreen(
     onOpenAppearance: () -> Unit,
     onOpenPlayback: () -> Unit,
     onOpenAccount: () -> Unit,
-    onOpenAbout: () -> Unit
+    onOpenAbout: () -> Unit,
+    onOpenLyricsPreview: () -> Unit
 ) {
     val scrollState = rememberScrollState()
     val hazeState = rememberHazeState()
@@ -188,6 +189,13 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
 
             FlatSection(title = "其它") {
+                FlatRow(
+                    title = "歌词效果预览",
+                    description = "独立演示页：拖拽浏览 / 松手惯性 / 3 秒回位，演示数据",
+                    onClick = onOpenLyricsPreview,
+                    trailing = { RowChevron() }
+                )
+                FlatDivider()
                 FlatRow(
                     title = "网络日志",
                     description = "查看最近 120 次请求：打到哪台主机、有没有带登录令牌、服务端回了什么",

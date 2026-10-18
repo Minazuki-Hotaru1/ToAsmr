@@ -2,12 +2,14 @@ package com.asmrone.app.player
 
 import com.asmrone.app.data.diag.HttpLog
 import com.asmrone.app.data.prefs.AppPrefs
+import com.asmrone.app.data.prefs.PlaybackSessionStore
 import com.asmrone.app.data.audio.LocalAudioProxy
 import com.asmrone.app.data.audio.TrackCacheLedger
 import com.asmrone.app.data.audio.AudioCacheStore
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.SystemClock
 import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.Work
 import kotlinx.coroutines.CoroutineScope
@@ -73,6 +75,8 @@ object AudioController {
     private var ticker: Job? = null
     private var sleepJob: Job? = null
     private var gain: Float = 1.0f
+    /** 上次写播放快照的时间（uptimeMillis），避免每 500ms tick 都写盘 */
+    private var lastPersistAt = 0L
 
     /**
      * 音频缓存：存储层 + 本地代理（"边播边缓存"的实现，见 LocalAudioProxy）。
@@ -106,6 +110,36 @@ object AudioController {
                     .build()
             )
         }
+    }
+
+    /**
+     * 冷启动时恢复上次退出前的播放会话。
+     *
+     * 只恢复展示与位置，不自动播放；用户点播放时才按 [PlayerState.positionMs] 继续。
+     */
+    fun restoreSession() {
+        if (_state.value.isActive) return
+        val saved = PlaybackSessionStore.load() ?: return
+        _state.value = PlayerState(
+            workId = saved.workId,
+            workTitle = saved.workTitle,
+            coverUrl = saved.coverUrl,
+            tracks = saved.tracks,
+            index = saved.index,
+            isPlaying = false,
+            isPrepared = false,
+            isBuffering = false,
+            durationMs = saved.durationMs,
+            positionMs = saved.positionMs
+        )
+    }
+
+    /** 主动写一次快照（Activity onStop / 用户暂停、拖动进度时调用） */
+    fun persistSession(synchronous: Boolean = false) {
+        val s = _state.value
+        if (!s.isActive || s.workId <= 0) return
+        PlaybackSessionStore.save(s, synchronous = synchronous)
+        lastPersistAt = SystemClock.uptimeMillis()
     }
 
     /**
@@ -143,6 +177,7 @@ object AudioController {
             index = startIndex.coerceIn(0, tracks.lastIndex),
             isBuffering = true
         )
+        persistSession()
         startCurrent()
     }
 
@@ -151,6 +186,7 @@ object AudioController {
         val s = _state.value
         if (index !in s.tracks.indices) return
         _state.value = s.copy(index = index, positionMs = 0, isBuffering = true, error = null)
+        persistSession()
         startCurrent()
     }
 
@@ -158,7 +194,11 @@ object AudioController {
         val p = player ?: return
         val s = _state.value
         if (!s.isPrepared) {
-            if (s.tracks.isNotEmpty()) startCurrent()
+            if (s.isBuffering) return
+            if (s.tracks.isNotEmpty()) {
+                _state.value = s.copy(isBuffering = true, error = null)
+                startCurrent()
+            }
             return
         }
         if (p.isPlaying) {
@@ -171,6 +211,7 @@ object AudioController {
             startTicker()
             _state.value = s.copy(isPlaying = true)
         }
+        persistSession()
     }
 
     fun next() {
@@ -184,12 +225,18 @@ object AudioController {
     }
 
     fun seekTo(positionMs: Int) {
-        val p = player ?: return
         val s = _state.value
-        if (!s.isPrepared) return
         val clamped = positionMs.coerceIn(0, s.durationMs.coerceAtLeast(0))
+        if (!s.isPrepared) {
+            // 冷启动恢复后还没 prepare：允许先拖动进度，点播放时从这个位置开始。
+            _state.value = s.copy(positionMs = clamped)
+            persistSession()
+            return
+        }
+        val p = player ?: return
         p.seekTo(clamped)
         _state.value = s.copy(positionMs = clamped)
+        persistSession()
     }
 
     fun seekToFraction(fraction: Float) {
@@ -226,6 +273,7 @@ object AudioController {
             _state.value = _state.value.copy(sleepTimerRemainingMs = 0L)
             player?.let { if (it.isPlaying) { it.pause(); stopTicker() } }
             _state.value = _state.value.copy(isPlaying = false)
+            persistSession()
         }
     }
 
@@ -237,6 +285,7 @@ object AudioController {
             runCatching { if (it.isPlaying) it.stop() }
             runCatching { it.reset() }
         }
+        PlaybackSessionStore.clear()
         _state.value = PlayerState()
     }
 
@@ -286,16 +335,27 @@ object AudioController {
             )
             p.setDataSource(playbackUrl)
             p.setOnPreparedListener { mp ->
+                val duration = mp.duration.coerceAtLeast(0)
+                // 用「当前 state 的位置」而不是调用 startCurrent 时的旧值：
+                // 冷启动恢复后用户可能在 prepare 完成前先拖了进度条。
+                val start = if (duration > 0) {
+                    _state.value.positionMs.coerceAtMost(duration)
+                } else {
+                    0
+                }
+                if (start > 0) runCatching { mp.seekTo(start) }
                 _state.value = _state.value.copy(
                     isPrepared = true,
                     isBuffering = false,
                     isPlaying = true,
-                    durationMs = mp.duration.coerceAtLeast(0),
+                    durationMs = duration,
+                    positionMs = start,
                     error = null
                 )
                 applyGain()
                 mp.start()
                 startTicker()
+                persistSession()
             }
             p.setOnCompletionListener {
                 val cur = _state.value
@@ -304,6 +364,7 @@ object AudioController {
                 } else {
                     stopTicker()
                     _state.value = cur.copy(isPlaying = false, positionMs = cur.durationMs)
+                    persistSession()
                 }
             }
             p.setOnErrorListener { _, what, extra ->
@@ -314,6 +375,7 @@ object AudioController {
                     isPrepared = false,
                     error = "播放失败（$what/$extra）：请检查网络或代理设置"
                 )
+                persistSession()
                 true
             }
             p.prepareAsync()
@@ -322,6 +384,7 @@ object AudioController {
                 isBuffering = false,
                 error = "无法打开音频流：${e.message ?: "未知错误"}"
             )
+            persistSession()
         }
     }
 
@@ -342,6 +405,10 @@ object AudioController {
                         positionMs = pos,
                         durationMs = if (dur > 0) dur else s.durationMs
                     )
+                    // 播放中每 2 秒落一次快照；被杀进程也能最多丢 2 秒。
+                    if (SystemClock.uptimeMillis() - lastPersistAt >= 2_000L) {
+                        persistSession()
+                    }
                 }
                 delay(500)
             }

@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -31,6 +32,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -43,6 +45,7 @@ import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.prefs.AccountStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.prefs.LibraryStore
+import com.asmrone.app.data.prefs.PlaybackSessionStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.player.AudioController
 import com.asmrone.app.ui.component.BottomBarState
@@ -55,11 +58,13 @@ import com.asmrone.app.ui.component.MiniPlayerBar
 import com.asmrone.app.ui.navigation.AppNavGraph
 import com.asmrone.app.ui.navigation.Routes
 import com.asmrone.app.ui.screen.home.HomeViewModel
+import com.asmrone.app.ui.screen.player.PlayerSlideOverlay
 import com.asmrone.app.ui.screen.search.SearchViewModel
 import com.asmrone.app.ui.screen.startup.StartupScreen
 import com.asmrone.app.ui.theme.AsmrOneTheme
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.launch
 
 /** 底部导航项（4 项：音声库 / 搜索 / 收藏 / 设置；图标为 Fluent 矢量图资源） */
 private val bottomNavItems = listOf(
@@ -86,7 +91,9 @@ class MainActivity : ComponentActivity() {
         // 账号表必须在 AuthManager 之前初始化（AuthManager 会读它拿"当前激活账号"）
         AccountStore.init(this)
         AuthManager.init(this)
+        PlaybackSessionStore.init(this)
         AudioController.init(this)
+        AudioController.restoreSession()
 
         setContent {
             val themeMode by AppPrefs.themeMode.collectAsState()
@@ -123,6 +130,12 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onStop() {
+        // 退到后台 / 被系统回收前落一次最终位置，冷启动恢复迷你播放器时用它。
+        AudioController.persistSession(synchronous = true)
+        super.onStop()
+    }
 }
 
 @Composable
@@ -156,6 +169,39 @@ fun MainApp() {
     val currentRoute = navBackStackEntry?.destination?.route
     val showBottomBar = currentRoute in Routes.topLevel
     val showMiniPlayer = playerState.isActive && currentRoute != Routes.PLAYER
+
+    // ── 迷你播放器 → 全屏播放器的展开动画 ──
+    // 不走 Routes.PLAYER：播放器作为覆盖层从迷你栏的矩形长到全屏，
+    // 这样返回时也能原路缩回迷你栏，而不是 NavHost 的整页 scale/fade。
+    val overlayScope = rememberCoroutineScope()
+    val overlayProgress = remember { Animatable(0f) }
+    var playerOverlayVisible by remember { mutableStateOf(false) }
+
+    fun openPlayerOverlay() {
+        if (playerOverlayVisible) return
+        playerOverlayVisible = true
+        overlayScope.launch {
+            overlayProgress.snapTo(0f)
+            overlayProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(dampingRatio = 1f, stiffness = 320f)
+            )
+        }
+    }
+
+    fun closePlayerOverlay() {
+        overlayScope.launch {
+            overlayProgress.animateTo(
+                targetValue = 0f,
+                animationSpec = spring(dampingRatio = 1f, stiffness = 380f)
+            )
+            playerOverlayVisible = false
+        }
+    }
+
+    // 注意：返回键处理放在 PlayerSlideOverlay 内部。
+    // 这里注册会早于 NavHost，返回手势会先被底层导航消费，导致播放页不关闭、
+    // 反而把播放页下面的页面 pop 掉。覆盖层在 NavHost 之后组合，才能拿到更高优先级。
 
     // 启动时恢复登录会话：先用本地令牌铺出已登录态，再在后台校验/静默重登。
     // 放在 Compose 里而不是 Application 中，是为了不拖慢首帧 —— 未登录也完全不阻塞浏览。
@@ -216,7 +262,7 @@ fun MainApp() {
                             isPlaying = playerState.isPlaying,
                             progress = playerState.progress,
                             hasNext = playerState.hasNext,
-                            onClick = { navController.navigate(Routes.PLAYER) },
+                            onClick = { openPlayerOverlay() },
                             onToggle = { AudioController.togglePlayPause() },
                             onNext = { AudioController.next() },
                             hazeState = hazeState
@@ -264,6 +310,14 @@ fun MainApp() {
                     )
                 }
             }
+        }
+
+        // 播放器覆盖层：整页从屏幕下方滑入，退出时原路滑出。
+        if (playerOverlayVisible) {
+            PlayerSlideOverlay(
+                progress = { overlayProgress.value },
+                onBack = { closePlayerOverlay() }
+            )
         }
     }
 }

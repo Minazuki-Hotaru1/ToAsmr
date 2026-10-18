@@ -27,6 +27,7 @@ import com.asmrone.app.ui.screen.home.HomeScreen
 import com.asmrone.app.ui.screen.home.HomeViewModel
 import com.asmrone.app.ui.screen.library.LibraryScreen
 import com.asmrone.app.ui.screen.library.PlaylistDetailScreen
+import com.asmrone.app.ui.screen.lyrics.LyricsPreviewScreen
 import com.asmrone.app.ui.screen.player.PlayerScreen
 import com.asmrone.app.ui.screen.search.SearchResultScreen
 import com.asmrone.app.ui.screen.search.SearchScreen
@@ -73,6 +74,9 @@ object Routes {
     /** 收藏夹详情（从收藏 → 列表点进） */
     const val PLAYLIST_DETAIL = "playlist/{playlistId}"
     fun playlist(playlistId: String) = "playlist/$playlistId"
+
+    /** 歌词效果预览（独立演示页，与真实音频无关） */
+    const val LYRICS_PREVIEW = "lyrics/preview"
 
     const val SETTINGS_SERVER = "settings/server"
     const val SETTINGS_APPEARANCE = "settings/appearance"
@@ -212,7 +216,8 @@ fun AppNavGraph(
                 onOpenAppearance = { navController.navigate(Routes.SETTINGS_APPEARANCE) },
                 onOpenPlayback = { navController.navigate(Routes.SETTINGS_PLAYBACK) },
                 onOpenAccount = { navController.navigate(Routes.SETTINGS_ACCOUNT) },
-                onOpenAbout = { navController.navigate(Routes.SETTINGS_ABOUT) }
+                onOpenAbout = { navController.navigate(Routes.SETTINGS_ABOUT) },
+                onOpenLyricsPreview = { navController.navigate(Routes.LYRICS_PREVIEW) }
             )
         }
 
@@ -255,6 +260,10 @@ fun AppNavGraph(
         }
         composable(Routes.SETTINGS_ABOUT) {
             AboutSettingsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.LYRICS_PREVIEW) {
+            LyricsPreviewScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

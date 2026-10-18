@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -153,7 +154,8 @@ fun MiniPlayerProgressLine(
 @Composable
 fun PlayingIndicator(
     modifier: Modifier = Modifier,
-    barCount: Int = 3
+    barCount: Int = 3,
+    color: Color = MaterialTheme.colorScheme.primary
 ) {
     Row(
         modifier = modifier,
@@ -166,7 +168,7 @@ fun PlayingIndicator(
                     .width(2.dp)
                     .height(if (index == 1) 12.dp else 8.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary)
+                    .background(color)
             )
         }
     }

@@ -142,6 +142,6 @@ object Sizes {
      */
     val TOP_BAR_CONTROL = 44.dp
 
-    /** 播放器大封面最大边长 */
-    val PLAYER_COVER_MAX = 320.dp
+    /** 播放器大封面最大边长（Apple Music 风格：尽量接近屏宽） */
+    val PLAYER_COVER_MAX = 360.dp
 }
