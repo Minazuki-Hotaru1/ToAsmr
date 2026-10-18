@@ -3,6 +3,30 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+/**
+ * 正式版签名。
+ *
+ * ## 为什么不把密钥写进仓库
+ *
+ * 发布用密钥一旦进过 Git 历史就等于泄露，只能换新密钥重发。所以这里只从
+ * **环境变量**读，读不到就退回 debug 签名 —— 退回时打出来的包**不能发布**，
+ * 但可以装到自己手机上跑正式版（R8 已开启，性能行为与发布包一致）。
+ *
+ * 发布前设置这四个环境变量即可，构建脚本本身一行都不用改：
+ *
+ * ```
+ * ASMRONE_KEYSTORE          密钥文件绝对路径（.jks / .keystore）
+ * ASMRONE_KEYSTORE_PASSWORD 仓库口令
+ * ASMRONE_KEY_ALIAS         密钥别名
+ * ASMRONE_KEY_PASSWORD      密钥口令
+ * ```
+ */
+val releaseKeystore = System.getenv("ASMRONE_KEYSTORE")?.takeIf { it.isNotBlank() }
+val releaseStorePass = System.getenv("ASMRONE_KEYSTORE_PASSWORD")
+val releaseAlias = System.getenv("ASMRONE_KEY_ALIAS")
+val releaseKeyPass = System.getenv("ASMRONE_KEY_PASSWORD")
+val hasReleaseSigning = releaseKeystore != null && releaseAlias != null
+
 android {
     namespace = "com.asmrone.app"
     compileSdk {
@@ -19,14 +43,52 @@ android {
         versionName = "0.2.1"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystore!!)
+                storePassword = releaseStorePass
+                keyAlias = releaseAlias
+                keyPassword = releaseKeyPass
+                // v1 给老系统，v2/v3 给新系统（安装校验更快）
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
         }
+
         release {
-            optimization {
-                enable = false
+            /**
+             * 代码压缩 / 内联 / 资源收缩 —— **正式版的核心**。
+             *
+             * 之前 release 是 `optimization { enable = false }`，等于正式包与 debug 包
+             * 完全一样没被优化：类没内联、Compose 运行时检查都在、方法数更多，
+             * 帧时间自然更差。
+             *
+             * 这里用 `isMinifyEnabled`（AGP 的成熟路径）而不是 AGP 9 新增的
+             * `optimization.enable` —— 后者要求额外开启 `android.r8.gradual.support`
+             * 实验开关，正式包不适合押在还在演进的管线上。
+             */
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+
+            // 没有发布密钥时退回 debug 签名：保证「能装、能跑、R8 已开、可测性能」
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
             }
+
+            isDebuggable = false
         }
     }
 
@@ -37,6 +99,17 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "/META-INF/*.kotlin_module",
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json"
+            )
+        }
     }
 }
 
@@ -55,7 +128,9 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.material.icons.extended)
+    // ⚠️ 不引入 material-icons-extended：本工程图标全部是自带的 Fluent 矢量图
+    //    （res/drawable/ic_*_fluent.xml + painterResource），一行 Icons.* 都没用到。
+    //    那个库在正式包里仍占可观的 dex 体积，属于纯浪费。
 
     // 封面加载
     implementation(libs.coil.compose)

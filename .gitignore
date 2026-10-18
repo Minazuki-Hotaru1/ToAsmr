@@ -2,3 +2,12 @@
 /.gradle/
 /app/build/
 /build/
+/.kotlin/
+
+# 本机 SDK 路径，不应进仓库（Android Studio 会自行生成）
+local.properties
+
+# 签名材料：绝不能进仓库
+*.jks
+*.keystore
+keystore.properties

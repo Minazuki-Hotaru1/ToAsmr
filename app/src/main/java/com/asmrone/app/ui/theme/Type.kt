@@ -119,14 +119,24 @@ val WorkTitleStyle = TextStyle(
     letterSpacing = 0.15.sp
 )
 
-// ───────────────────────── 备用：圆体（当前未使用） ─────────────────────────
-// 上一个版本详情页标题用的是圆体 M PLUS Rounded 1c（随包 3.2MB，OFL 授权文本在
-// assets/fonts/OFL-MPLUSRounded1c.txt）。现在标题改回默认字族，所以它暂时闲置。
-// 保留是为了随时一行切回去：把上面 WorkTitleStyle 的 fontFamily 换成 RoundedFontFamily。
-// 确认不再需要时，删掉本段 + res/font/m_plus_rounded_1c_regular.ttf +
-// assets/fonts/OFL-MPLUSRounded1c.txt，APK 会小约 1.1MB。
-
-/** 圆体字族 —— M PLUS Rounded 1c（SIL OFL 1.1），备用 */
-val RoundedFontFamily = FontFamily(
-    Font(R.font.m_plus_rounded_1c_regular, FontWeight.Normal)
-)
+// ───────────────────── 备用：圆体（当前未使用，已移出安装包） ─────────────────────
+// 上一个版本详情页标题用的是圆体 M PLUS Rounded 1c（3.3MB，OFL 1.1）。
+// 现在标题用默认字族，它完全没被引用 —— 而资源收缩也没能把它删掉
+// （`R.font.*` 字段被保留，资源收缩据此判定"还在用"），
+// 于是它白白占了正式包 45% 的体积（7.35MB 里的 3.3MB）。
+//
+// 所以字体与它的授权文本已移出打包目录，仓库里仍然保留：
+//
+//     design-assets/fonts/m_plus_rounded_1c_regular.ttf
+//     design-assets/fonts/OFL-MPLUSRounded1c.txt
+//
+// 想切回圆体（两步）：
+//   ① 把 ttf 复制回 app/src/main/res/font/，把下面这段的注释去掉；
+//   ② 把 [WorkTitleStyle]（或任意样式）的 fontFamily 换成 RoundedFontFamily。
+//
+// ⚠️ 注意：一旦触发编译，APK 就会重新变大 3.3MB —— 只有真要长期用圆体时才值得。
+//
+// /** 圆体字族 —— M PLUS Rounded 1c（SIL OFL 1.1），备用 */
+// val RoundedFontFamily = FontFamily(
+//     Font(R.font.m_plus_rounded_1c_regular, FontWeight.Normal)
+// )
