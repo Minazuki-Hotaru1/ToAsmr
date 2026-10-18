@@ -83,6 +83,21 @@ private val bottomNavItems = listOf(
     )
 )
 
+/**
+ * 播放器展开/收起动画的**停止阈值**（进度 0..1）。
+ *
+ * ⚠️ 这是必须显式给的：`spring()` 默认的 `visibilityThreshold` 是 **0.01f**，
+ * 而这里的进度是 0..1 的比例 —— 等价于「动画走到离终点还差 1% 就直接补到终点」。
+ * 对 2400px 高的屏幕，1% = 24px，于是表现为：
+ *
+ *  - 展开：快贴到顶部时，最后 24px 会**瞬间跳上去**；
+ *  - 收起：快收完时，底部最后一小条内容**瞬间消失**。
+ *
+ * 压到 0.0002（2400px 上约 0.5px）之后，收尾就是连续的，肉眼看不到跳变。
+ * 其它地方若也用 0..1 的进度做 `spring`，同样要给这个参数。
+ */
+private const val OVERLAY_VISIBILITY_THRESHOLD = 0.0002f
+
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -198,7 +213,11 @@ fun MainApp() {
             overlayProgress.snapTo(0f)
             overlayProgress.animateTo(
                 targetValue = 1f,
-                animationSpec = spring(dampingRatio = 1f, stiffness = 320f)
+                animationSpec = spring(
+                    dampingRatio = 1f,
+                    stiffness = 320f,
+                    visibilityThreshold = OVERLAY_VISIBILITY_THRESHOLD
+                )
             )
         }
     }
@@ -207,7 +226,11 @@ fun MainApp() {
         overlayScope.launch {
             overlayProgress.animateTo(
                 targetValue = 0f,
-                animationSpec = spring(dampingRatio = 1f, stiffness = 380f)
+                animationSpec = spring(
+                    dampingRatio = 1f,
+                    stiffness = 380f,
+                    visibilityThreshold = OVERLAY_VISIBILITY_THRESHOLD
+                )
             )
             playerOverlayVisible = false
         }

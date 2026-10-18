@@ -75,7 +75,10 @@ fun WorkCard(
         targetValue = if (pressed) Motion.PRESS_SCALE else 1f,
         animationSpec = spring(
             dampingRatio = Motion.SPRING_DAMPING,
-            stiffness = Motion.SPRING_STIFFNESS
+            stiffness = Motion.SPRING_STIFFNESS,
+            // 缩放区间只有 0.96→1.0，spring 默认阈值 0.01 会在最后 1/4 处直接补到
+            // 终点，按下去/抬起来会有一下"硬跳"。压到 0.0005 让收尾连续。
+            visibilityThreshold = 0.0005f
         ),
         label = "cardScale"
     )
