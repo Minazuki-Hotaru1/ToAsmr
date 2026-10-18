@@ -58,7 +58,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -526,8 +525,15 @@ fun PlayerSlideOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                // 收起状态整块在屏幕外，跳过绘制：省掉一次全屏离屏渲染
-                .then(if (visible) Modifier else Modifier.drawWithContent { })
+                // ⚠️ 这里**故意不**加"收起时不绘制"的闸门。
+                //
+                // 收起状态下它整块被 translationY 推到屏幕外，正常情况下 Skia
+                // 会把它裁掉、不产生光栅化；但 Compose 仍会把这一层录进
+                // RenderNode —— 一旦系统愿意画，纹理上传与图层就在这里完成，
+                // 首次展开就没有"第一次光栅化"的那一下。
+                //
+                // 代价：如果它真的被画了，positionMs 每 500ms 更新会让整层重新
+                // 光栅化。因为底图模糊已经降到 1/64 面积，这个代价很小（约 2 次/秒）。
                 .graphicsLayer {
                     val pp = progressState.value().coerceIn(0f, 1f)
                     // 整页从屏幕下方滑入（绘制阶段变换，不触发布局）
