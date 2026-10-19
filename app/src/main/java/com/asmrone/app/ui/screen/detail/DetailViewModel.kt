@@ -6,6 +6,7 @@ import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.model.AudioFormatOption
 import com.asmrone.app.data.model.AudioFormatPreference
 import com.asmrone.app.data.cache.ExternalOpenFiles
+import com.asmrone.app.data.cache.FolderStateStore
 import com.asmrone.app.data.model.CollectionStatus
 import com.asmrone.app.data.model.OpenableFile
 import com.asmrone.app.data.model.Track
@@ -76,12 +77,20 @@ class DetailViewModel : ViewModel() {
 
     private var loadedId: Int = 0
 
+    /**
+     * 用户在这次浏览里是否亲手改过展开态。
+     *
+     * 为 true 时，树晚到也不能用"上次记下的展开集合"覆盖他刚做的操作。
+     */
+    private var foldersTouched: Boolean = false
+
     /** 上一次标记尝试的内容，供失败后「重试」用 */
     private var lastAttempt: Triple<CollectionStatus?, Int?, Boolean>? = null
 
     fun load(workId: Int, forceRefresh: Boolean = false) {
         if (!forceRefresh && loadedId == workId && _state.value.work != null) return
         loadedId = workId
+        foldersTouched = false
 
         // 先用列表页缓存把界面铺出来（标题/封面/评分立刻可见），再去补齐文件树
         val peeked = AsmrRepository.peekWork(workId)
@@ -89,31 +98,46 @@ class DetailViewModel : ViewModel() {
         _state.value = DetailUiState(
             loading = peeked == null,
             refreshing = peeked != null,
-            work = peeked?.copy(tracks = peekedTracks ?: emptyList())
-        ).let { base ->
-            base.copy(
-                expanded = defaultExpanded(),
-                formatOptions = (peekedTracks ?: emptyList()).audioFormatOptions(),
-                selectedFormatIndex = preferredIndex(
-                    (peekedTracks ?: emptyList()).audioFormatOptions(),
-                    AppPrefs.audioFormat.value
-                )
+            work = peeked?.copy(tracks = peekedTracks ?: emptyList()),
+            formatOptions = (peekedTracks ?: emptyList()).audioFormatOptions(),
+            selectedFormatIndex = preferredIndex(
+                (peekedTracks ?: emptyList()).audioFormatOptions(),
+                AppPrefs.audioFormat.value
             )
-        }
+        )
 
         viewModelScope.launch {
+            // 上次展开过哪些文件夹。和树一起用 —— 只有树到了才知道这些路径还有没有效
+            val remembered = FolderStateStore.load(workId)
+
+            // 内存里没有（冷启动直接从收藏页点进来）→ 先用**磁盘那份**铺界面。
+            // 仍然不发请求：真正要不要联网由 getWorkDetail 里的保鲜期决定
+            if (_state.value.work == null) {
+                AsmrRepository.cachedWorkMeta(workId)?.let { cached ->
+                    val tree = peekedTracks ?: cached.tracks
+                    val options = tree.audioFormatOptions()
+                    _state.value = DetailUiState(
+                        loading = false,
+                        refreshing = true,
+                        work = cached.copy(tracks = tree),
+                        expanded = restoreExpanded(remembered, tree),
+                        formatOptions = options,
+                        selectedFormatIndex = preferredIndex(options, AppPrefs.audioFormat.value)
+                    )
+                }
+            }
+
             val result = AsmrRepository.getWorkDetail(workId, forceRefresh)
             val tree = result.work?.tracks ?: emptyList()
             val options = tree.audioFormatOptions()
-            val previousExpanded = _state.value.expanded
             _state.value = _state.value.copy(
                 loading = false,
                 refreshing = false,
                 work = result.work ?: _state.value.work,
                 metaError = result.metaError,
                 tracksError = if (tree.isEmpty()) result.tracksError else null,
-                // 文件夹**默认收起**；这里保留用户在本次浏览中手动展开/收起的状态
-                expanded = previousExpanded,
+                // 用户本次手动改过就听他的；否则回填上次展开的那些文件夹
+                expanded = if (foldersTouched) _state.value.expanded else restoreExpanded(remembered, tree),
                 formatOptions = options,
                 selectedFormatIndex = preferredIndex(options, AppPrefs.audioFormat.value)
             )
@@ -227,19 +251,53 @@ class DetailViewModel : ViewModel() {
 
     fun toggleFolder(path: String) {
         val expanded = _state.value.expanded
-        _state.value = _state.value.copy(
-            expanded = if (path in expanded) expanded - path else expanded + path
-        )
+        val next = if (path in expanded) expanded - path else expanded + path
+        foldersTouched = true
+        _state.value = _state.value.copy(expanded = next)
+        persistExpanded(next)
     }
 
     /** 展开全部（给一个上限，避免 1000+ 节点的作品一次性铺满界面） */
     fun expandAll() {
         val tree = _state.value.tracks
-        _state.value = _state.value.copy(expanded = collectFolderPaths(tree).toSet())
+        val next = collectFolderPaths(tree).toSet()
+        foldersTouched = true
+        _state.value = _state.value.copy(expanded = next)
+        persistExpanded(next)
     }
 
     fun collapseAll() {
+        foldersTouched = true
         _state.value = _state.value.copy(expanded = emptySet())
+        // 全部收起 = 删掉记录（收起本来就是默认值，没必要占配额）
+        persistExpanded(emptySet())
+    }
+
+    /**
+     * 记下"这部作品展开了哪些文件夹"，下次进来直接回填。
+     *
+     * 每次点击都写一次：它只有几百字节，换来的是"退出应用也不会忘"。
+     * 写入放在 IO 线程，不阻塞点击。
+     */
+    private fun persistExpanded(paths: Set<String>) {
+        val workId = loadedId
+        if (workId <= 0) return
+        // 树还没到就点了「展开/收起全部」：这时的空集不代表用户把文件夹都收起了，
+        // 写下去会把上次的记忆抹掉
+        if (paths.isEmpty() && _state.value.tracks.isEmpty()) return
+        viewModelScope.launch { FolderStateStore.save(workId, paths) }
+    }
+
+    /**
+     * 把上次记下的展开路径套到**当前这棵树**上。
+     *
+     * 只保留现在仍然是文件夹的路径：作者改了目录结构、或某个目录被删掉时，
+     * 强行套上去只会得到"展开了但下面什么都没有"的死条目。
+     */
+    private fun restoreExpanded(remembered: Set<String>, tree: List<Track>): Set<String> {
+        if (remembered.isEmpty() || tree.isEmpty()) return emptySet()
+        val folders = collectFolderPaths(tree, limit = Int.MAX_VALUE).toHashSet()
+        return remembered.filterTo(HashSet()) { it in folders }
     }
 
     // ─────────────────────────── 音质分支 ───────────────────────────
@@ -368,15 +426,6 @@ class DetailViewModel : ViewModel() {
     fun consumeToast() {
         _state.value = _state.value.copy(toastMessage = null)
     }
-
-    /**
-     * 默认展开的文件夹集合 —— **默认全部收起**（空集）。
-     *
-     * 若以后想改成"一进来就展开根目录"，把这里换成
-     * `tree.filter { it.children.isNotEmpty() }.map { it.path }.toSet()` 即可
-     * （需要把 [Track] 列表作为参数传进来）。
-     */
-    private fun defaultExpanded(): Set<String> = emptySet()
 
     private fun preferredIndex(options: List<AudioFormatOption>, preference: String): Int {
         if (options.isEmpty()) return 0

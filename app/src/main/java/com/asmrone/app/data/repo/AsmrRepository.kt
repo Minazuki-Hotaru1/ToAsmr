@@ -33,6 +33,7 @@ import com.asmrone.app.data.cache.VoiceActorDictionary
 import com.asmrone.app.data.cache.SyncGate
 import com.asmrone.app.data.cache.SyncTrigger
 import com.asmrone.app.data.cache.TrackTreeStore
+import com.asmrone.app.data.cache.WorkMetaStore
 import com.asmrone.app.data.cache.WorkPageCodec
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.remote.ApiConfig
@@ -65,6 +66,14 @@ object AsmrRepository {
 
     /** 文件树缓存上限（部）—— 树的体积远大于元数据，所以条数要小得多 */
     private const val TRACK_CACHE_MAX = 8
+
+    /**
+     * 落盘元数据的保鲜期（7 天）。
+     *
+     * 7 天内进同一部作品不再发请求 —— 评分、评论数这些会变，但变化对用户
+     * 来说不值得每次都等一个网络往返；过期后照常联网，失败还能拿它兜底。
+     */
+    private const val META_TTL_MS = 7L * 24 * 60 * 60 * 1000
 
     /**
      * 每次请求都**实时**取主机、令牌与 Cookie（而不是构造时快照一次）。
@@ -170,14 +179,64 @@ object AsmrRepository {
         return result
     }
 
-    /** 作品元数据（不含文件树） */
+    /**
+     * 作品元数据（不含文件树）。
+     *
+     * 三级来源，与 [getTracks] 对称：
+     *  1. 内存缓存（本次会话已经拿过）
+     *  2. **落盘的元数据**（[WorkMetaStore]）；[META_TTL_MS] 之内直接返回，**0 请求**
+     *  3. 联网拉 `/api/work/{id}?v=2`，成功后写盘
+     *
+     * 第 2 级让"从收藏页点进一部作品"在冷启动后也能立刻出图出字，
+     * 而不是先转圈等一个来回。过期（超过 TTL）的副本仍然保留：
+     * 网络失败时用它兜底，总比让用户看错误页强。
+     *
+     * @param forceRefresh 手动刷新时才为 true —— 它同时跳过内存与磁盘
+     */
     suspend fun getWorkMeta(id: Int, forceRefresh: Boolean = false): Work {
-        if (!forceRefresh) workCache[id]?.let { return it }
-        val work = api.getWork(id)
+        var stale: Work? = null
+        if (!forceRefresh) {
+            workCache[id]?.let { return it }
+            WorkMetaStore.load(id, host)?.let { cached ->
+                val work = runCatching { Work.fromJson(cached.json, host) }.getOrNull()
+                if (work != null) {
+                    val merged = work.copy(tracks = trackCache[id] ?: emptyList())
+                    if (System.currentTimeMillis() - cached.savedAt < META_TTL_MS) {
+                        workCache[id] = merged
+                        return merged
+                    }
+                    stale = merged
+                }
+            }
+        }
+
+        val fetched = runCatching { api.getWorkJson(id) }
+        val json = fetched.getOrNull()
+        if (json == null) {
+            // 离线 / 服务器异常：过期的那份照样能用（收藏状态之类的字段由本地缓存主导）
+            stale?.let {
+                workCache[id] = it
+                return it
+            }
+            throw fetched.exceptionOrNull() ?: IllegalStateException("作品信息加载失败")
+        }
+        val work = Work.fromJson(json, host)
         // 保留已缓存的树，避免刷新元数据时把树丢掉
         val merged = work.copy(tracks = trackCache[id] ?: emptyList())
         workCache[id] = merged
+        WorkMetaStore.save(id, host, json)
         return merged
+    }
+
+    /**
+     * 丢掉某部作品的元数据（内存 + 磁盘）。
+     *
+     * 收藏状态写入成功后必须调一次：`/api/work` 的响应里带着
+     * `progress` / `userRating`，留着旧副本会让详情页显示**过期的收藏标记**。
+     */
+    private fun invalidateWorkMeta(workId: Int) {
+        workCache.remove(workId)
+        WorkMetaStore.forget(workId)
     }
 
     /**
@@ -250,6 +309,21 @@ object AsmrRepository {
     fun peekWork(id: Int): Work? = workCache[id]
 
     fun peekTracks(id: Int): List<Track>? = trackCache[id]
+
+    /**
+     * 只读**本地磁盘**的元数据，**绝不发请求**。
+     *
+     * 给详情页冷启动第一帧用：内存里没有列表页留下的快照时，先拿这份铺界面，
+     * 避免先闪一下骨架屏再出内容。真正要不要联网仍由 [getWorkMeta] 的保鲜期决定，
+     * 所以这里**不写进** [workCache] —— 否则一份过期副本会被当成"刚取回来的"，
+     * 本次会话内再也不会刷新。
+     */
+    suspend fun cachedWorkMeta(id: Int): Work? {
+        if (id <= 0) return null
+        val entry = WorkMetaStore.load(id, host) ?: return null
+        val work = runCatching { Work.fromJson(entry.json, host) }.getOrNull() ?: return null
+        return work.copy(tracks = trackCache[id] ?: emptyList())
+    }
 
     suspend fun getTags(forceRefresh: Boolean = false): List<TagItem> {
         tagCache?.let { if (!forceRefresh) return it }
@@ -826,7 +900,7 @@ object AsmrRepository {
         // 记下"刚和服务端写过"：紧接着的自动对齐是多余的
         // 云端已确认 → 清掉 dirty（本地内容此刻与云端一致）
         patchCollectionCache(targetWork, targetStatus, rating, remove, markDirty = false)
-        workCache.remove(workId)
+        invalidateWorkMeta(workId)
     }
 
     /**
@@ -858,7 +932,7 @@ object AsmrRepository {
                                 rating = write.rating
                             )
                         }
-                        workCache.remove(write.workId)
+                        invalidateWorkMeta(write.workId)
                     }
 
                     is PendingWrite.PlaylistAdd ->
@@ -931,7 +1005,7 @@ object AsmrRepository {
                                 rating = write.rating
                             )
                         }
-                        workCache.remove(write.workId)
+                        invalidateWorkMeta(write.workId)
                     }
 
                     is PendingWrite.PlaylistAdd ->

@@ -5,10 +5,12 @@ import android.content.pm.ApplicationInfo
 import com.asmrone.app.data.audio.AudioCacheMaintenance
 import com.asmrone.app.data.cache.CacheFiles
 import com.asmrone.app.data.cache.CircleDictionary
+import com.asmrone.app.data.cache.FolderStateStore
 import com.asmrone.app.data.diag.HttpLog
 import com.asmrone.app.data.cache.PendingWriteStore
 import com.asmrone.app.data.cache.TagDictionary
 import com.asmrone.app.data.cache.TrackTreeStore
+import com.asmrone.app.data.cache.WorkMetaStore
 import com.asmrone.app.data.lyrics.LyricsStore
 import com.asmrone.app.data.cache.SyncCacheStore
 import com.asmrone.app.data.cache.VoiceActorDictionary
@@ -41,6 +43,10 @@ class AsmrOneApplication : Application() {
         PendingWriteStore.init(this)
         // 文件树的本地持久化（按 RJ 号）：进入作品时写入，冷启动后播放器/歌词页直接读
         TrackTreeStore.init(this)
+        // 详情页元数据的本地持久化：从收藏页点进作品时不再等一次网络往返
+        WorkMetaStore.init(this)
+        // 每部作品"展开了哪些文件夹"：再进同一部作品时自动恢复
+        FolderStateStore.init(this)
         // 已解析歌词的本地持久化：冷启动直接读盘，不再为同一首歌词重复联网
         LyricsStore.init(this)
         // 搜索用的三本字典（本地 JSON）：标签 / 声优 / 社团。

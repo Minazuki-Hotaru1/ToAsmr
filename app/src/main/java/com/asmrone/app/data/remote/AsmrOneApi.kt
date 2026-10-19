@@ -181,7 +181,15 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
     }
 
     /** 作品元数据（不含曲目树） */
-    suspend fun getWork(id: Int): Work = Work.fromJson(getJsonObject("/api/work/$id?v=2"), host)
+    suspend fun getWork(id: Int): Work = Work.fromJson(getWorkJson(id), host)
+
+    /**
+     * 作品元数据的**原始响应**。
+     *
+     * 单独开一个入口是给本地缓存用的：`WorkMetaStore` 存服务端原文，
+     * 读的时候再走一遍 `Work.fromJson` —— 缓存版与网络版共用同一套解析规则。
+     */
+    suspend fun getWorkJson(id: Int): JSONObject = getJsonObject("/api/work/$id?v=2")
 
     /** 曲目 / 文件树：接口直接返回根节点数组 */
     suspend fun getTracks(id: Int): List<Track> = Track.listFrom(getJsonArray("/api/tracks/$id"))
