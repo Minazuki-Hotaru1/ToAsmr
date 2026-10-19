@@ -60,27 +60,41 @@ internal object LyricsStore {
         value.trim().filter { it.isLetterOrDigit() || it == '-' || it == '_' }.take(40)
 
     /** 作品维度的前缀：优先 RJ 号，拿不到才退回 `w<workId>` */
-    private fun workKey(sourceId: String?, workId: Int): String? {
-        sanitize(sourceId.orEmpty()).takeIf { it.isNotEmpty() }?.let { return it }
-        return if (workId > 0) "w$workId" else null
+    private fun workKeys(sourceId: String?, workId: Int): List<String> {
+        val keys = mutableListOf<String>()
+        sanitize(sourceId.orEmpty()).takeIf { it.isNotEmpty() }?.let { keys += it }
+        if (workId > 0) keys += "w$workId"
+        return keys
     }
 
-    private fun fileFor(sourceId: String?, workId: Int, trackPath: String): File? {
-        val root = rootDir ?: return null
-        val key = workKey(sourceId, workId) ?: return null
-        if (trackPath.isBlank()) return null
+    /**
+     * 这份歌词可能落在哪几个文件里（按优先级）。
+     *
+     * ⚠️ 必须有多个候选：写入时 `sourceId`（RJ 号）未必知道 ——
+     * 例如从上个版本恢复的播放会话里没有 RJ 号，那时只能按 `w<workId>` 落盘；
+     * 而之后读取时 RJ 号又有了。如果只认一个键，就会出现"明明缓存过却读不到"，
+     * 于是又去联网下载一遍。
+     */
+    private fun candidates(sourceId: String?, workId: Int, trackPath: String): List<File> {
+        val root = rootDir ?: return emptyList()
+        if (trackPath.isBlank()) return emptyList()
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(trackPath.toByteArray(Charsets.UTF_8))
         val hex = buildString { for (i in 0 until 8) append("%02x".format(digest[i])) }
-        return File(root, "${key}__$hex.json")
+
+        return workKeys(sourceId, workId).map { key -> File(root, "${key}__$hex.json") }
     }
 
     // ─────────────────────────── 读写 ───────────────────────────
 
+    /** 这首歌词是否已经落过盘（只做 stat，不解析内容） */
+    fun has(sourceId: String?, workId: Int, trackPath: String): Boolean =
+        candidates(sourceId, workId, trackPath).any { it.exists() }
+
     suspend fun load(sourceId: String?, workId: Int, trackPath: String): LyricsLoad.Ready? =
         withContext(Dispatchers.IO) {
-            val file = fileFor(sourceId, workId, trackPath) ?: return@withContext null
-            if (!file.exists()) return@withContext null
+            val file = candidates(sourceId, workId, trackPath).firstOrNull { it.exists() }
+                ?: return@withContext null
 
             val parsed = runCatching {
                 val o = JSONObject(file.readText(Charsets.UTF_8))
@@ -105,7 +119,8 @@ internal object LyricsStore {
         trackPath: String,
         ready: LyricsLoad.Ready
     ) = withContext(Dispatchers.IO) {
-        val file = fileFor(sourceId, workId, trackPath) ?: return@withContext
+        val targets = candidates(sourceId, workId, trackPath)
+        val file = targets.firstOrNull() ?: return@withContext
         runCatching {
             val json = JSONObject().apply {
                 put("v", SCHEMA)
@@ -132,6 +147,9 @@ internal object LyricsStore {
             if (file.exists()) file.delete()
             tmp.renameTo(file)
             file.setLastModified(System.currentTimeMillis())
+
+            // 主键写成功之后，清掉另一套命名的那份，避免同一首存两份
+            targets.drop(1).forEach { stale -> runCatching { stale.delete() } }
         }
         prune()
     }
@@ -165,11 +183,21 @@ internal object LyricsStore {
         runCatching { rootDir?.listFiles()?.forEach { it.delete() } }
     }
 
-    /** 删掉某部作品的全部歌词缓存 */
+    /**
+     * 删掉某部作品的全部歌词缓存。
+     *
+     * 两套命名（RJ / `w<workId>`）都要清 —— 否则按旧键落过盘的那批会留下来，
+     * 之后重新拉取时又被读到，看起来就像"删不掉"。
+     */
     fun forget(sourceId: String?, workId: Int) {
         val root = rootDir ?: return
-        val key = workKey(sourceId, workId) ?: return
-        runCatching { root.listFiles()?.filter { it.name.startsWith("${key}__") }?.forEach { it.delete() } }
+        val prefixes = workKeys(sourceId, workId).map { "${it}__" }
+        if (prefixes.isEmpty()) return
+        runCatching {
+            root.listFiles()
+                ?.filter { file -> prefixes.any { file.name.startsWith(it) } }
+                ?.forEach { it.delete() }
+        }
     }
 
     /** 超出上限时按最后使用时间从旧到新删，一次删到 80% */

@@ -5,6 +5,11 @@ import com.asmrone.app.data.model.TrackKind
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.data.text.TextDecoder
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.Locale
 
 /** 歌词加载结果 */
@@ -75,8 +80,17 @@ object LyricsLoader {
 
     // ─────────────────────────── 内存缓存 ───────────────────────────
 
-    /** 最多缓存多少首的解析结果（每首约几十 KB，24 条足够覆盖连续收听） */
-    private const val CACHE_MAX = 24
+    /**
+     * 内存里最多留多少首的解析结果。
+     *
+     * 取 64：一部常见作品 10–40 首，整部补写完之后可以**同时留在内存**，
+     * 于是切歌、收起再展开、来回滑页都是零等待。
+     * 单首约几十 KB，64 首最多几 MB，换来的收益远大于这点内存。
+     */
+    private const val CACHE_MAX = 64
+
+    /** 整部作品补写歌词时的并发上限 —— 别一次打出几十个请求 */
+    private const val BACKFILL_CONCURRENCY = 3
 
     private val cache = object : LinkedHashMap<String, LyricsLoad>(CACHE_MAX, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LyricsLoad>?): Boolean =
@@ -121,6 +135,69 @@ object LyricsLoader {
         if (workId <= 0 || trackPath.isBlank()) return
         if (cached(workId, trackPath) != null) return
         load(workId, sourceId, trackPath, trackTitle)
+    }
+
+    /** 正在做整部作品补写的 key，避免重复跑 */
+    private val backfilling = mutableSetOf<String>()
+
+    /**
+     * **整部作品**的歌词一次性补齐并落盘。
+     *
+     * ## 为什么要整部补，而不是只补当前这首
+     *
+     * 歌词极小：一首 30 分钟的作品，单个歌词文件也就 10KB 量级，
+     * 一部 40 首的作品合计通常不到 200KB。而如果只补当前播放的那首，
+     * 用户每次切歌都要等一下（哪怕很快），且联网次数与切歌次数成正比。
+     *
+     * 所以在**真正开始播放**这部作品时（调用方保证），把这一套音轨的歌词
+     * 全部取一遍、解析、落盘；之后无论切歌还是重启，都是纯本地读取。
+     *
+     * ## 请求节奏
+     *
+     * - 并发限制 [BACKFILL_CONCURRENCY] = 3，避免一次性打出几十个请求；
+     * - 已经落过盘的直接跳过（[LyricsStore.has]，只做 stat）；
+     * - 失败的不记、下次还会重试（[load] 只在 Ready 时落盘）；
+     * - 同一个作品重复调用直接返回；被取消（切作品/退出）就停止。
+     *
+     * @param tracks 当前播放队列（只含用户正在使用的那一套音质分支）
+     */
+    suspend fun prefetchWork(
+        workId: Int,
+        sourceId: String?,
+        tracks: List<Track>
+    ) {
+        if (workId <= 0 || tracks.isEmpty()) return
+        val key = "$workId|${sourceId.orEmpty()}"
+        synchronized(backfilling) {
+            if (!backfilling.add(key)) return
+        }
+        try {
+            // 先把文件树取到内存（命中磁盘缓存时无需联网）。
+            // 这一步必须在并发补写之前完成：否则每个曲目都会各自去拉一次树。
+            val tree = AsmrRepository.peekTracks(workId)?.takeIf { it.isNotEmpty() }
+                ?: runCatching { AsmrRepository.getTracks(workId, sourceId) }.getOrNull()
+            if (tree.isNullOrEmpty()) return
+
+            val pending = tracks.filter { track ->
+                track.path.isNotBlank() &&
+                    cached(workId, track.path) == null &&
+                    !LyricsStore.has(sourceId, workId, track.path)
+            }
+            if (pending.isEmpty()) return
+
+            val semaphore = Semaphore(BACKFILL_CONCURRENCY)
+            coroutineScope {
+                pending.forEach { track ->
+                    launch(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            runCatching { load(workId, sourceId, track.path, track.title) }
+                        }
+                    }
+                }
+            }
+        } finally {
+            synchronized(backfilling) { backfilling.remove(key) }
+        }
     }
 
     /**
