@@ -111,15 +111,7 @@ private val PlayerChrome = Color.White.copy(alpha = 0.10f)
 @Composable
 fun PlayerScreen(
     onBack: () -> Unit,
-    immersiveSystemBars: Boolean = true,
-    /**
-     * 是否允许歌词页去**联网**取歌词。
-     *
-     * 覆盖层是常驻组合的（冷启动就挂上），若一挂上就下载歌词，就成了
-     * "用户什么都没点却发了一个 media 请求"。所以由覆盖层把"是否正在显示"
-     * 传进来：收起状态下只读本地（内存/磁盘），展开后才允许联网。
-     */
-    lyricsActive: Boolean = true
+    immersiveSystemBars: Boolean = true
 ) {
     val state by AudioController.state.collectAsState()
     var showQueue by remember { mutableStateOf(false) }
@@ -288,8 +280,7 @@ fun PlayerScreen(
                         trackPath = state.currentTrack?.path.orEmpty(),
                         trackTitle = state.trackTitle,
                         positionMs = lyricPositionMs,
-                        onSeekTo = { AudioController.seekTo(it.toInt()) },
-                        active = lyricsActive
+                        onSeekTo = { AudioController.seekTo(it.toInt()) }
                     )
                 }
             }
@@ -562,9 +553,7 @@ fun PlayerSlideOverlay(
             PlayerScreen(
                 onBack = onBack,
                 // 页面真正覆盖状态栏之后才切白色系统栏图标
-                immersiveSystemBars = fullyExpanded,
-                // 只有真正展开给用户看时才允许去网络取歌词
-                lyricsActive = visible
+                immersiveSystemBars = fullyExpanded
             )
         }
     }

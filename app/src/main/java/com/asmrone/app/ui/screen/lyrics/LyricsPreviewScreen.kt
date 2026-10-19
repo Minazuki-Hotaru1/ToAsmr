@@ -455,16 +455,6 @@ private fun AppleMusicLyrics(
  *  3. 只有缓存没命中（预热还没完成 / 预热失败）才回落到异步加载。
  *
  * 所以正常路径下，滑到歌词页看到的已经是成品。
- *
- * ## [active]：不显示时不联网
- *
- * 播放器覆盖层是常驻组合的（冷启动就挂上）。如果一挂上就来这里加载歌词，
- * 就会出现"用户什么都没点，网络日志里却多了 `/api/media/stream/...`"。
- *
- * 所以由覆盖层把"是否正在显示"传进来：
- *  - `false` → 只读内存与本地磁盘（[LyricsLoader] 落过盘的歌词照样秒出，
- *    预热效果不丢）；没有就保持加载态，**不发请求**；
- *  - `true`  → 允许联网补齐。
  */
 @Composable
 fun PlayerLyrics(
@@ -473,22 +463,20 @@ fun PlayerLyrics(
     trackPath: String,
     trackTitle: String,
     positionMs: Long,
-    onSeekTo: (Long) -> Unit,
-    active: Boolean = true
+    onSeekTo: (Long) -> Unit
 ) {
     // 首帧直接拿预热好的结果：命中时整个组合过程不产生挂起
     var result by remember(workId, trackPath) {
         mutableStateOf(LyricsLoader.cached(workId, trackPath))
     }
 
-    LaunchedEffect(workId, trackPath, trackTitle, sourceId, active) {
+    LaunchedEffect(workId, trackPath, trackTitle, sourceId) {
         if (result != null) return@LaunchedEffect
         result = LyricsLoader.load(
             workId = workId,
             sourceId = sourceId,
             trackPath = trackPath,
-            trackTitle = trackTitle,
-            allowNetwork = active
+            trackTitle = trackTitle
         )
     }
 

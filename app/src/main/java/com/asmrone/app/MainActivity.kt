@@ -293,35 +293,20 @@ fun MainApp() {
      * 这是"点迷你播放器卡顿"的修法：旧实现把"取文件树 → 找歌词 → 下载 → 解析"
      * 全塞在播放器组合期间的 LaunchedEffect 里，冷启动时还要拉最大 6MB 的树。
      *
+     * 这里监听「作品 + 当前曲目」的变化，在后台把结果算好放进 LyricsLoader 的内存缓存；
+     * 播放器的歌词页首帧直接读缓存，组合期间零网络、零解析。
+     *
      * 注意 key 用 `index` 而不是 `trackTitle`：同一作品连续两首同名文件时，
      * 只按标题变化会漏掉预热。`workSourceId` 也进 key，因为它决定能不能命中
-     * 按 RJ 号落盘的文件树。
-     *
-     * ## 只在"用户确实在用播放"时才允许联网
-     *
-     * 冷启动会把上次的播放会话恢复出来（暂停态、没人点过任何东西）。
-     * 那时如果照样去下歌词，网络日志里就会出现"关掉首页加载后仍然有一条
-     * media 请求"——用户视角就是"关不掉的后台联网"。
-     *
-     * 所以 [LyricsLoader.prefetch] 带上 `allowNetwork`：
-     *  - 有在播 / 播放器正展开 → 允许联网（正常预热）；
-     *  - 都不是 → **只读内存与本地磁盘**。落过盘的歌词照样能预热，
-     *    没落过盘的就等用户真的去播放或打开播放器时再取。
+     * 按 RJ 号落盘的文件树与歌词缓存。
      */
-    LaunchedEffect(
-        playerState.workId,
-        playerState.index,
-        playerState.workSourceId,
-        playerState.isPlaying,
-        playerOverlayVisible
-    ) {
+    LaunchedEffect(playerState.workId, playerState.index, playerState.workSourceId) {
         val track = playerState.currentTrack ?: return@LaunchedEffect
         LyricsLoader.prefetch(
             workId = playerState.workId,
             sourceId = playerState.workSourceId,
             trackPath = track.path,
-            trackTitle = track.title,
-            allowNetwork = playerState.isPlaying || playerOverlayVisible
+            trackTitle = track.title
         )
     }
 
