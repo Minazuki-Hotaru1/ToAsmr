@@ -378,6 +378,48 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
         }
     }
 
+    /**
+     * 只取 [url] 的**前 [count] 字节**（读音频容器头部用，例如查内嵌歌词）。
+     *
+     * 与 [fetchBytes] 的区别：那个把整个文件读进内存，对音频（单首可达上百 MB）不可用。
+     * 这里发 `Range: bytes=0-(count-1)`：
+     *  - 服务端支持 → 206，正好拿到需要的这一小段；
+     *  - 服务端忽略 Range → 200 返回整个文件，那就**读够 [count] 就断开**，
+     *    不会把整首都拉下来。
+     *
+     * 拿不到就抛 [AsmrApiException]，由调用方决定"当作没有内嵌歌词"。
+     */
+    suspend fun readPrefix(url: String, count: Int): ByteArray = withContext(Dispatchers.IO) {
+        if (count <= 0) return@withContext ByteArray(0)
+        val cfg = configProvider()
+        HttpLog.request("GET ${redactUrl(url)} | 取前 $count 字节")
+        val conn = open(url, cfg, "GET")
+        conn.setRequestProperty("Range", "bytes=0-${count - 1}")
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val msg = readBody(conn).take(200)
+                throw AsmrApiException("读取音频头部失败：HTTP $code $msg")
+            }
+            val out = ByteArray(count)
+            var filled = 0
+            conn.inputStream.use { input ->
+                while (filled < count) {
+                    val read = input.read(out, filled, count - filled)
+                    if (read <= 0) break
+                    filled += read
+                }
+            }
+            if (filled == count) out else out.copyOf(filled)
+        } catch (e: AsmrApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw AsmrApiException(friendlyMessage(e), e)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     /** 封面兜底地址（作品没有 *_cover_url 字段时使用） */
     fun coverUrl(workId: Int): String = "$host/api/cover/$workId"    /** 音频流兜底地址（音频节点的 mediaStreamUrl 为空时构造） */
     fun streamUrl(hash: String, token: String = ""): String = buildString {

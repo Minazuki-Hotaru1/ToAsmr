@@ -409,6 +409,39 @@ object AsmrRepository {
         return api.downloadToFile(url, target, onProgress)
     }
 
+    /**
+     * 取一个音轨文件的**头部字节**（查内嵌歌词用）。
+     *
+     * 优先读本地已下载的文件（整段离线可用，零请求）；否则只向服务端要前
+     * [count] 字节（`Range`），**绝不整首下载** —— 单首 wav 可能上百 MB，
+     * 而歌词标签总在文件最前面。
+     *
+     * 任何失败都返回 null：内嵌歌词只是兜底来源，读不到就等于"这首没有"。
+     */
+    suspend fun readAudioHead(
+        track: Track,
+        workId: Int,
+        count: Int = com.asmrone.app.data.lyrics.AudioTagReader.HEAD_BYTES
+    ): ByteArray? {
+        if (count <= 0) return null
+        val local = runCatching { DownloadStore.localFileFor(workId, track.path) }.getOrNull()
+        if (local != null) {
+            return runCatching {
+                java.io.RandomAccessFile(local, "r").use { file ->
+                    val length = minOf(count.toLong(), file.length()).toInt()
+                    if (length <= 0) null else ByteArray(length).also { file.readFully(it) }
+                }
+            }.getOrNull()
+        }
+        val url = track.mediaStreamUrl.orEmpty().ifBlank {
+            track.mediaDownloadUrl.orEmpty().ifBlank {
+                if (track.hash.isNullOrBlank()) "" else api.streamUrl(track.hash)
+            }
+        }
+        if (url.isBlank()) return null
+        return runCatching { api.readPrefix(url, count) }.getOrNull()
+    }
+
     /** 本地已有的标签（只读内存/磁盘，不碰网络）；没有则空列表 */
     fun cachedSearchTags(): List<Tag> = TagDictionary.entries(AppPrefs.host.value)
 

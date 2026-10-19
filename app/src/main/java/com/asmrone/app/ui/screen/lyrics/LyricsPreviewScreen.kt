@@ -135,7 +135,16 @@ private fun AppleMusicLyrics(
     focusedColor: Color? = null,
     inactiveColor: Color? = null,
     translationColor: Color? = null,
-    rowHorizontalPadding: Dp = 16.dp
+    rowHorizontalPadding: Dp = 16.dp,
+    /**
+     * 行能不能点（点了跳到那行的时间点）。
+     *
+     * 内嵌且**没有时间轴**的歌词必须关掉 —— 那些行的 `startMs` 全是 0，
+     * 点哪一行都会把播放拉回开头，是明确的错误行为。
+     */
+    seekable: Boolean = true,
+    /** 是否把当前行放大/加亮。无时间轴的歌词没有"当前行"，关掉后整段同等显示 */
+    highlightCurrent: Boolean = true
 ) {
     if (lines.isEmpty()) return
     val cs = MaterialTheme.colorScheme
@@ -208,7 +217,8 @@ private fun AppleMusicLyrics(
         val browsingActive = browsing || returning
         // 字体突出 / 颜色只跟随**正在播放的那一行**（currentIndex）；
         // 浏览或惯性时不让“离锚点最近的行”抢走这个样式。
-        val focusedIndex = currentIndex
+        // 无时间轴的歌词（内嵌纯文本）没有当前行，-1 表示"谁都不突出"。
+        val focusedIndex = if (highlightCurrent) currentIndex else -1
 
         // 松手后的惯性：把手指速度交给 splineBasedDecay，Animatable 的上下界负责在
         // 第一行 / 最后一行自然停住；跑完后重新起 3 秒回位计时。
@@ -377,6 +387,7 @@ private fun AppleMusicLyrics(
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
+                                    enabled = seekable,
                                     onClick = { onSeek(line.startMs) }
                                 )
                                 .graphicsLayer {
@@ -490,7 +501,8 @@ fun PlayerLyrics(
         LyricsLoad.None -> LyricsPlaceholder(
             loading = false,
             title = "未找到匹配的歌词",
-            hint = "需要有一个与音频同名的歌词文件（可放在任意文件夹）"
+            hint = "需要有一个与音频同名的歌词文件（可放在任意文件夹），" +
+                "音频内嵌的歌词也会被读取"
         )
 
         is LyricsLoad.Failed -> LyricsPlaceholder(
@@ -500,9 +512,15 @@ fun PlayerLyrics(
         )
 
         is LyricsLoad.Ready -> {
-            val currentIndex = load.lines
-                .indexOfLast { it.startMs <= positionMs }
-                .coerceAtLeast(0)
+            // 无时间轴（内嵌纯文本）：整段静态显示，不跟随、不点行跳转
+            val untimed = load.untimed
+            val currentIndex = if (untimed) {
+                0
+            } else {
+                load.lines
+                    .indexOfLast { it.startMs <= positionMs }
+                    .coerceAtLeast(0)
+            }
             AppleMusicLyrics(
                 currentIndex = currentIndex,
                 lines = load.lines,
@@ -512,7 +530,9 @@ fun PlayerLyrics(
                 inactiveColor = Color.White.copy(alpha = 0.8f),
                 translationColor = Color.White.copy(alpha = 0.55f),
                 // 与封面页的左右留白对齐（封面页是 26dp），歌词不会显得贴边
-                rowHorizontalPadding = 26.dp
+                rowHorizontalPadding = 26.dp,
+                seekable = !untimed,
+                highlightCurrent = !untimed
             )
         }
     }

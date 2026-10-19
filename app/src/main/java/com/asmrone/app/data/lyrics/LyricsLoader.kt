@@ -9,7 +9,16 @@ import java.util.Locale
 
 /** 歌词加载结果 */
 sealed interface LyricsLoad {
-    data class Ready(val lines: List<LyricLine>, val sourceTitle: String) : LyricsLoad
+    /**
+     * @param untimed 没有时间轴（内嵌的 `USLT`、FLAC 的一整段 `LYRICS=` 常见）——
+     *   界面应当只把文字排出来，不跟随播放、不响应点行跳转
+     */
+    data class Ready(
+        val lines: List<LyricLine>,
+        val sourceTitle: String,
+        val untimed: Boolean = false
+    ) : LyricsLoad
+
     data object None : LyricsLoad
     data class Failed(val message: String) : LyricsLoad
 }
@@ -55,6 +64,13 @@ object LyricsLoader {
     private val lyricDirHints = listOf(
         "lyric", "lyrics", "歌詞", "歌词", "字幕", "subtitle", "subtitles", "lrc", "vtt", "srt"
     )
+
+    /** 内嵌歌词的来源标题（界面上显示这段文字来自哪里） */
+    private const val EMBEDDED_TITLE = "内嵌歌词"
+    private const val EMBEDDED_UNTIMED_TITLE = "内嵌歌词（无时间轴）"
+
+    /** 无时间轴的内嵌歌词最多收多少行，防止个别文件塞进整本书 */
+    private const val MAX_PLAIN_LINES = 500
 
     private val lrcTag = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]""")
     private val lrcWordTag = Regex("""<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>""")
@@ -168,6 +184,15 @@ object LyricsLoader {
             }
         val lyric = findLyricTrack(tree, trackPath, trackTitle)
         if (lyric == null) {
+            // ④ 兜底：作品里没有独立歌词文件 → 看音频容器自己有没有内嵌歌词
+            val embedded = loadEmbedded(tree, workId, trackPath)
+            if (embedded != null) {
+                remember(workId, trackPath, embedded)
+                if (embedded is LyricsLoad.Ready) {
+                    LyricsStore.save(sourceId, workId, trackPath, embedded)
+                }
+                return embedded
+            }
             // "这部作品里没有与它同名的歌词"是个稳定结论，缓存下来避免每次重算
             remember(workId, trackPath, LyricsLoad.None)
             return LyricsLoad.None
@@ -247,6 +272,70 @@ object LyricsLoader {
     /** 叶子节点的文件名（`path` 的最后一段，退回落 `title`） */
     private fun stemOf(node: Track): String =
         normalizeStem(node.path.substringAfterLast('/').ifBlank { node.title })
+
+    // ─────────────────────────── 内嵌歌词 ───────────────────────────
+
+    /**
+     * 从音频容器里读内嵌歌词（MP3 的 `USLT`/`SYLT`、FLAC 的 `LYRICS`）。
+     *
+     * 只在「作品里找不到同名歌词文件」时才走到这里 —— 排在同名文件之后是刻意的：
+     * 独立 `.lrc` 通常是人整理过的（带翻译、时间轴准），内嵌标签经常只是整段纯文本，
+     * 让它顶替会把本来好用的歌词变差。它的价值只在于填补"一首歌词都拿不到"。
+     *
+     * 只读文件头部（[AsmrRepository.readAudioHead]，远程走 `Range`），不下载整首。
+     */
+    private suspend fun loadEmbedded(
+        tree: List<Track>,
+        workId: Int,
+        trackPath: String
+    ): LyricsLoad? {
+        val audio = findAudioNode(tree, trackPath) ?: return null
+        // wav 没有标签容器、m4a/ogg 还不支持：先判掉，别白读 512KB
+        val name = audio.path.substringAfterLast('/').ifBlank { audio.title }
+        if (!AudioTagReader.canContain(name)) return null
+        val head = AsmrRepository.readAudioHead(audio, workId) ?: return null
+        return when (val embedded = AudioTagReader.read(head)) {
+            null -> null
+
+            is EmbeddedLyric.Timed -> {
+                val lines = parseLyrics(embedded.text, "内嵌歌词.lrc")
+                if (lines.isEmpty()) null else LyricsLoad.Ready(lines, EMBEDDED_TITLE)
+            }
+
+            is EmbeddedLyric.Plain -> {
+                val lines = plainLyricLines(embedded.text)
+                if (lines.isEmpty()) {
+                    null
+                } else {
+                    LyricsLoad.Ready(lines, EMBEDDED_UNTIMED_TITLE, untimed = true)
+                }
+            }
+        }
+    }
+
+    /** 没有时间轴的内嵌歌词：按行拆开，全部标在 0 时刻（界面不跟随播放，所以时间无意义） */
+    internal fun plainLyricLines(text: String): List<LyricLine> {
+        val out = ArrayList<LyricLine>()
+        text.replace("\r\n", "\n").replace('\r', '\n').split('\n').forEach { raw ->
+            val line = raw.trim()
+            if (line.isEmpty()) return@forEach
+            if (out.size >= MAX_PLAIN_LINES) return@forEach
+            out += LyricLine(original = line, translation = "", startMs = 0L)
+        }
+        return out
+    }
+
+    /** 在树里找指定路径的叶子节点（内嵌歌词要读它对应的音频文件） */
+    private fun findAudioNode(nodes: List<Track>, path: String): Track? {
+        nodes.forEach { node ->
+            if (node.children.isEmpty()) {
+                if (node.path == path) return node
+            } else {
+                findAudioNode(node.children, path)?.let { return it }
+            }
+        }
+        return null
+    }
 
     /** 节点的文件名（带扩展名） */
     private fun fileNameOf(node: Track): String =

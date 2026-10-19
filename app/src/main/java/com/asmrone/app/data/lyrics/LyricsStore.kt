@@ -97,7 +97,17 @@ internal object LyricsStore {
                 if (o.optInt("v", 0) != SCHEMA) return@runCatching null
                 val title = o.optString("title")
                 val lines = readLines(o.optJSONArray("lines"))
-                if (lines.isEmpty()) null else LyricsLoad.Ready(lines = lines, sourceTitle = title)
+                if (lines.isEmpty()) {
+                    null
+                } else {
+                    LyricsLoad.Ready(
+                        lines = lines,
+                        sourceTitle = title,
+                        // 内嵌的无时间轴歌词也要记住是"静态文字"，否则重启后会被当成
+                        // 时间轴全 0 的歌词，界面会把它错当成"播放到第一行"
+                        untimed = o.optBoolean("untimed", false)
+                    )
+                }
             }.getOrNull()
 
             if (parsed != null) {
@@ -121,6 +131,7 @@ internal object LyricsStore {
             val json = JSONObject().apply {
                 put("v", SCHEMA)
                 put("title", ready.sourceTitle)
+                if (ready.untimed) put("untimed", true)
                 put(
                     "lines",
                     JSONArray().apply {
