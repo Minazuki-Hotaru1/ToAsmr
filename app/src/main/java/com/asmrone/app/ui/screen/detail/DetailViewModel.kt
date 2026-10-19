@@ -7,6 +7,9 @@ import com.asmrone.app.data.model.AudioFormatOption
 import com.asmrone.app.data.model.AudioFormatPreference
 import com.asmrone.app.data.cache.ExternalOpenFiles
 import com.asmrone.app.data.cache.FolderStateStore
+import com.asmrone.app.data.download.DownloadManager
+import com.asmrone.app.data.download.DownloadStore
+import com.asmrone.app.data.download.filterTreeTo
 import com.asmrone.app.data.model.CollectionStatus
 import com.asmrone.app.data.model.OpenableFile
 import com.asmrone.app.data.model.Track
@@ -20,6 +23,7 @@ import com.asmrone.app.ui.component.collectFolderPaths
 import com.asmrone.app.ui.error.MarkFailure
 import com.asmrone.app.ui.error.classifyMarkFailure
 import com.asmrone.app.ui.error.notLoggedInFailure
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -62,12 +66,27 @@ data class DetailUiState(
      * "又发生了一次"，所以用序号驱动。
      */
     val toastMessage: String? = null,
-    val toastSeq: Int = 0
+    val toastSeq: Int = 0,
+    /**
+     * **完整的**文件树（不做下载过滤），下载选择器要用它。
+     *
+     * 详情页本身只显示已下载的内容（[tracks] 已经是过滤后的），但"再下几个文件"
+     * 必须能看到还没下的那些 —— 所以原始树单独留一份。
+     */
+    val downloadTree: List<Track> = emptyList(),
+    /** 已下载的文件路径；非空即表示"这部作品下载过" */
+    val downloadedPaths: Set<String> = emptySet()
 ) {
     val tracks: List<Track> get() = work?.tracks ?: emptyList()
     val selectedFormat: AudioFormatOption? get() = formatOptions.getOrNull(selectedFormatIndex)
     /** 当前分支的播放列表（交给播放器的就是它） */
     val playbackList: List<Track> get() = selectedFormat?.tracks ?: emptyList()
+
+    /** 这部作品是否下载过（下载过就只显示本地已有的内容） */
+    val isDownloaded: Boolean get() = downloadedPaths.isNotEmpty()
+
+    /** 选择器里要展示的树：优先用原始树（可能还没到），退回当前树 */
+    val pickerTree: List<Track> get() = downloadTree.ifEmpty { tracks }
 }
 
 class DetailViewModel : ViewModel() {
@@ -87,65 +106,143 @@ class DetailViewModel : ViewModel() {
     /** 上一次标记尝试的完整意图（含两层"清空"语义），供失败后「重试」用 */
     private var lastAttempt: CollectionAttempt? = null
 
+    /** 监听下载完成的协程（每个 ViewModel 只挂一个） */
+    private var downloadObserverJob: Job? = null
+
     fun load(workId: Int, forceRefresh: Boolean = false) {
         if (!forceRefresh && loadedId == workId && _state.value.work != null) return
         loadedId = workId
         foldersTouched = false
 
-        // 先用列表页缓存把界面铺出来（标题/封面/评分立刻可见），再去补齐文件树
+        // 已下载的作品只显示本地已有的内容。这里用同步的 cached 读数：
+        // 启动时 DownloadManager 会预热，命中时第一帧就是过滤后的树，不会先闪一下全量。
+        val cachedDownloaded = DownloadStore.cached(workId)?.paths.orEmpty()
         val peeked = AsmrRepository.peekWork(workId)
         val peekedTracks = AsmrRepository.peekTracks(workId)
+        val peekedVisible = filterDownloaded(peekedTracks ?: emptyList(), cachedDownloaded)
         _state.value = DetailUiState(
             loading = peeked == null,
             refreshing = peeked != null,
-            work = peeked?.copy(tracks = peekedTracks ?: emptyList()),
-            formatOptions = (peekedTracks ?: emptyList()).audioFormatOptions(),
+            work = peeked?.copy(tracks = peekedVisible),
+            formatOptions = peekedVisible.audioFormatOptions(),
             selectedFormatIndex = preferredIndex(
-                (peekedTracks ?: emptyList()).audioFormatOptions(),
+                peekedVisible.audioFormatOptions(),
                 AppPrefs.audioFormat.value
-            )
+            ),
+            downloadTree = peekedTracks ?: emptyList(),
+            downloadedPaths = cachedDownloaded
         )
 
         viewModelScope.launch {
             // 上次展开过哪些文件夹。和树一起用 —— 只有树到了才知道这些路径还有没有效
             val remembered = FolderStateStore.load(workId)
+            // 清单可能还没预热到，这里补一次（已缓存的直接返回内存里的那份）
+            val downloaded = DownloadStore.load(workId)?.paths.orEmpty()
 
             // 内存里没有（冷启动直接从收藏页点进来）→ 先用**磁盘那份**铺界面。
             // 仍然不发请求：真正要不要联网由 getWorkDetail 里的保鲜期决定
             if (_state.value.work == null) {
                 AsmrRepository.cachedWorkMeta(workId)?.let { cached ->
                     val tree = peekedTracks ?: cached.tracks
-                    val options = tree.audioFormatOptions()
+                    val visible = filterDownloaded(tree, downloaded)
+                    val options = visible.audioFormatOptions()
                     _state.value = DetailUiState(
                         loading = false,
                         refreshing = true,
-                        work = cached.copy(tracks = tree),
-                        expanded = restoreExpanded(remembered, tree),
+                        work = cached.copy(tracks = visible),
+                        expanded = restoreExpanded(remembered, visible),
                         formatOptions = options,
-                        selectedFormatIndex = preferredIndex(options, AppPrefs.audioFormat.value)
+                        selectedFormatIndex = preferredIndex(options, AppPrefs.audioFormat.value),
+                        downloadTree = tree,
+                        downloadedPaths = downloaded
                     )
                 }
             }
 
             val result = AsmrRepository.getWorkDetail(workId, forceRefresh)
-            val tree = result.work?.tracks ?: emptyList()
-            val options = tree.audioFormatOptions()
+            // 仓库返回的永远是**完整树**（已下载的作品则来自本地清单），
+            // 过滤只发生在展示层 —— 这样"再下几个"还能选到没下的文件
+            val fullTree = result.work?.tracks ?: _state.value.downloadTree
+            val visible = filterDownloaded(fullTree, downloaded)
+            val options = visible.audioFormatOptions()
             _state.value = _state.value.copy(
                 loading = false,
                 refreshing = false,
-                work = result.work ?: _state.value.work,
+                work = (result.work ?: _state.value.work)?.copy(tracks = visible),
                 metaError = result.metaError,
-                tracksError = if (tree.isEmpty()) result.tracksError else null,
+                tracksError = if (fullTree.isEmpty()) result.tracksError else null,
                 // 用户本次手动改过就听他的；否则回填上次展开的那些文件夹
-                expanded = if (foldersTouched) _state.value.expanded else restoreExpanded(remembered, tree),
+                expanded = if (foldersTouched) _state.value.expanded else restoreExpanded(remembered, visible),
                 formatOptions = options,
-                selectedFormatIndex = preferredIndex(options, AppPrefs.audioFormat.value)
+                selectedFormatIndex = preferredIndex(options, AppPrefs.audioFormat.value),
+                downloadTree = fullTree,
+                downloadedPaths = downloaded
             )
+        }
+
+        // 下载完成 / 删除后重新过滤（纯本地，不发请求）
+        if (downloadObserverJob?.isActive != true) {
+            downloadObserverJob = viewModelScope.launch {
+                DownloadManager.tasks.collect { tasks ->
+                    // 用 loadedId 而不是外层捕获的 workId：同一个 ViewModel 可能被
+                    // 复用去加载另一部作品（如点语言版本），捕获值会过期
+                    val task = tasks[loadedId] ?: return@collect
+                    if (task.isActive) return@collect
+                    if (_state.value.work == null) return@collect
+                    applyDownloadedState()
+                }
+            }
         }
     }
 
+    /** 把当前内存里的完整树按磁盘上的下载记录重新过滤一遍 */
+    private suspend fun applyDownloadedState() {
+        val workId = loadedId
+        if (workId == 0) return
+        val downloaded = DownloadStore.load(workId)?.paths.orEmpty()
+        val full = _state.value.downloadTree
+        if (full.isEmpty()) return
+        val visible = filterDownloaded(full, downloaded)
+        val options = visible.audioFormatOptions()
+        _state.value = _state.value.copy(
+            work = _state.value.work?.copy(tracks = visible),
+            expanded = _state.value.expanded.intersect(collectFolderPaths(visible, Int.MAX_VALUE).toSet()),
+            formatOptions = options,
+            selectedFormatIndex = _state.value.selectedFormatIndex.coerceIn(
+                0,
+                (options.size - 1).coerceAtLeast(0)
+            ),
+            downloadedPaths = downloaded
+        )
+    }
+
+    /**
+     * 详情页只显示已下载的内容。
+     *
+     * [paths] 为空 = 没下载过 → 原样返回（不是"什么都不显示"）。
+     */
+    private fun filterDownloaded(tree: List<Track>, paths: Set<String>): List<Track> =
+        if (paths.isEmpty()) tree else filterTreeTo(tree, paths)
+
     fun refresh() {
         if (loadedId != 0) load(loadedId, forceRefresh = true)
+    }
+
+    // ─────────────────────────── 下载 ───────────────────────────
+
+    /**
+     * 开始下载选中的文件（树内路径），并给一条"已加入下载"的提示。
+     *
+     * 这里**只入队**：真正的网络请求由 [DownloadManager] 在后台排队执行，
+     * 详情页不必等待，用户可以立刻返回或退出。
+     */
+    fun downloadSelected(paths: Collection<String>) {
+        val work = _state.value.work ?: return
+        val tree = _state.value.pickerTree
+        if (paths.isEmpty() || tree.isEmpty()) return
+        DownloadManager.enqueue(work, tree, paths)
+        val count = paths.size
+        notify("已加入下载队列（$count 个文件），可在「下载」页查看进度")
     }
 
     // ─────────────────────────── 我的收藏（云端状态）───────────────────────────

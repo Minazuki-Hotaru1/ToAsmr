@@ -83,6 +83,7 @@ import com.asmrone.app.ui.error.MarkFailureCard
 import com.asmrone.app.ui.screen.library.CollectionStatusDialog
 import com.asmrone.app.ui.screen.library.PlaylistPickerDialog
 import com.asmrone.app.ui.screen.library.PlaylistPickerViewModel
+import com.asmrone.app.ui.screen.download.DownloadPickerSheet
 import com.asmrone.app.ui.theme.ErrorColor
 import com.asmrone.app.ui.component.LiquidCapsule
 import com.asmrone.app.ui.component.backdropButton
@@ -148,6 +149,8 @@ fun DetailScreen(
 
     // 「加入收藏夹」弹窗（详情页的收藏按钮走这条路）
     var pickerOpen by remember { mutableStateOf(false) }
+    // 「下载」选择弹窗（下半屏文件树 + 勾选）
+    var downloadOpen by remember { mutableStateOf(false) }
     // 「标记」（/api/review 的收听状态）选择弹窗
     var collectionDialogOpen by remember { mutableStateOf(false) }
     val pickerViewModel: PlaylistPickerViewModel = viewModel()
@@ -267,7 +270,8 @@ fun DetailScreen(
                     item(key = "tree_header") {
                         TrackTreeHeader(
                             state = state,
-                            onRetry = { viewModel.refresh() }
+                            onRetry = { viewModel.refresh() },
+                            onDownload = { downloadOpen = true }
                         )
                     }
 
@@ -437,6 +441,17 @@ fun DetailScreen(
                 Text("正在下载，准备打开…", style = MaterialTheme.typography.bodyMedium)
             }
         }
+    }
+
+    // 「下载」选择弹窗：只列**还没下完**的内容，已下载的会显示「已下载」并置灰
+    if (downloadOpen) {
+        DownloadPickerSheet(
+            workTitle = state.work?.title.orEmpty(),
+            tree = state.pickerTree,
+            downloadedPaths = state.downloadedPaths,
+            onDownload = { paths -> viewModel.downloadSelected(paths) },
+            onDismiss = { downloadOpen = false }
+        )
     }
 
     // 「我的收藏」状态选择弹窗
@@ -951,7 +966,8 @@ private fun TagsBlock(work: Work, onTagClick: (id: Int, name: String) -> Unit = 
 @Composable
 private fun TrackTreeHeader(
     state: DetailUiState,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    onDownload: () -> Unit
 ) {
     Column(modifier = Modifier.padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(SectionGap))
@@ -965,9 +981,31 @@ private fun TrackTreeHeader(
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = trackTreeSummary(state.tracks),
+                    // 下载过的作品只显示本地内容，这时摘要要说清楚"这是本地的那部分"，
+                    // 否则用户会以为文件丢了
+                    text = if (state.isDownloaded) {
+                        "已下载 ${state.downloadedPaths.size} 个文件 · ${trackTreeSummary(state.tracks)}"
+                    } else {
+                        trackTreeSummary(state.tracks)
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            // 下载入口：文字按钮（先不做图标）。树还没到时也允许点 ——
+            // 选择器会用空树提示，而不是让按钮"看起来能点却什么也不做"
+            TextButton(
+                onClick = onDownload,
+                enabled = state.pickerTree.isNotEmpty()
+            ) {
+                Text(
+                    text = if (state.isDownloaded) "继续下载" else "下载",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (state.pickerTree.isEmpty()) {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    }
                 )
             }
         }

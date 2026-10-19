@@ -35,6 +35,7 @@ import com.asmrone.app.data.cache.SyncTrigger
 import com.asmrone.app.data.cache.TrackTreeStore
 import com.asmrone.app.data.cache.WorkMetaStore
 import com.asmrone.app.data.cache.WorkPageCodec
+import com.asmrone.app.data.download.DownloadStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.remote.ApiConfig
 import com.asmrone.app.data.remote.AsmrOneApi
@@ -195,6 +196,17 @@ object AsmrRepository {
      */
     suspend fun getWorkMeta(id: Int, forceRefresh: Boolean = false): Work {
         var stale: Work? = null
+        // 第 0 级：**已下载的作品一律读本地**，一个请求都不发。
+        // 下载的语义就是"这部作品已经完整地在本地了"，点进去还要先联网等一圈是不合理的，
+        // 而且用户常常就是在没网的时候才想听下载好的内容。
+        // 这一级刻意不看 forceRefresh：本地的就是权威，刷新没有意义。
+        DownloadStore.load(id)?.workJson?.let { raw ->
+            runCatching { Work.fromJson(JSONObject(raw), host) }.getOrNull()?.let { work ->
+                val merged = work.copy(tracks = trackCache[id] ?: work.tracks)
+                workCache[id] = merged
+                return merged
+            }
+        }
         if (!forceRefresh) {
             workCache[id]?.let { return it }
             WorkMetaStore.load(id, host)?.let { cached ->
@@ -259,6 +271,12 @@ object AsmrRepository {
         forceRefresh: Boolean = false
     ): List<Track> {
         val knownSourceId = sourceId ?: workCache[id]?.sourceId
+        // 第 0 级：已下载作品的树存在清单里（原始完整树），读它即可，不联网
+        DownloadStore.load(id)?.tree?.takeIf { it.isNotEmpty() }?.let { local ->
+            trackCache[id] = local
+            workCache[id]?.let { workCache[id] = it.copy(tracks = local) }
+            return local
+        }
         if (!forceRefresh) {
             trackCache[id]?.let { return it }
             TrackTreeStore.load(knownSourceId, id)?.let { cached ->
@@ -359,6 +377,37 @@ object AsmrRepository {
      * URL 是服务端直接给的绝对地址（CDN 或 API 代理），所以**不拼 host**。
      */
     suspend fun fetchBytes(url: String): ByteArray = api.fetchBytes(url)
+
+    /**
+     * 作品的**原始 JSON 字符串**（`/api/work/{id}?v=2`）。
+     *
+     * 下载时要把它一起存进清单，这样之后打开已下载的作品就完全不用联网。
+     * 优先用磁盘上已有的副本（[WorkMetaStore]）—— 用户大概率是刚看过详情页才点的下载。
+     */
+    suspend fun rawWorkJson(id: Int): String? {
+        WorkMetaStore.load(id, host)?.json?.let { return it.toString() }
+        return runCatching { api.getWorkJson(id).toString() }.getOrNull()
+    }
+
+    /**
+     * 把一个音轨文件流式下载到 [target]，返回写入的字节数。
+     *
+     * 地址优先 `mediaStreamUrl`（服务端已带鉴权参数），缺失时退回按 hash 拼的
+     * `streamUrl`——有些作品的树里只有 hash。
+     */
+    suspend fun downloadToFile(
+        track: Track,
+        target: java.io.File,
+        onProgress: (Long, Long) -> Unit = { _, _ -> }
+    ): Long {
+        val url = track.mediaStreamUrl.orEmpty().ifBlank {
+            track.mediaDownloadUrl.orEmpty().ifBlank {
+                if (track.hash.isNullOrBlank()) "" else api.streamUrl(track.hash)
+            }
+        }
+        if (url.isBlank()) throw IllegalStateException("该音轨没有可用的下载地址")
+        return api.downloadToFile(url, target, onProgress)
+    }
 
     /** 本地已有的标签（只读内存/磁盘，不碰网络）；没有则空列表 */
     fun cachedSearchTags(): List<Tag> = TagDictionary.entries(AppPrefs.host.value)

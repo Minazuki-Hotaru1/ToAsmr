@@ -167,19 +167,26 @@ object LyricsLoader {
                 return LyricsLoad.Failed(it.message ?: "无法获取作品文件列表")
             }
         val lyric = findLyricTrack(tree, trackPath, trackTitle)
-        val url = lyric?.mediaStreamUrl?.takeIf { it.isNotBlank() }
-        if (url == null) {
+        if (lyric == null) {
             // "这部作品里没有与它同名的歌词"是个稳定结论，缓存下来避免每次重算
             remember(workId, trackPath, LyricsLoad.None)
             return LyricsLoad.None
         }
         val lyricName = lyric.path.substringAfterLast('/').ifBlank { lyric.title }
 
+        // ③' 歌词文件本身也下载过 → 直接读本地，断网可用（与音频同理）
+        val localLyric = runCatching {
+            com.asmrone.app.data.download.DownloadStore.localFileFor(workId, lyric.path)
+        }.getOrNull()
+        val url = lyric.mediaStreamUrl?.takeIf { it.isNotBlank() }
+        if (localLyric == null && url == null) {
+            remember(workId, trackPath, LyricsLoad.None)
+            return LyricsLoad.None
+        }
+
         val result = runCatching {
-            val decoded = TextDecoder.decode(
-                bytes = AsmrRepository.fetchBytes(url),
-                fileName = lyricName
-            )
+            val bytes = localLyric?.readBytes() ?: AsmrRepository.fetchBytes(url.orEmpty())
+            val decoded = TextDecoder.decode(bytes = bytes, fileName = lyricName)
             val lines = parseLyrics(decoded.text, lyricName)
             if (lines.isEmpty()) {
                 LyricsLoad.Failed("歌词文件里没有可识别的时间轴（支持 LRC / VTT / SRT / ASS）")

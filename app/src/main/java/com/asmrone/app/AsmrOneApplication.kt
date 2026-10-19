@@ -14,6 +14,8 @@ import com.asmrone.app.data.cache.WorkMetaStore
 import com.asmrone.app.data.lyrics.LyricsStore
 import com.asmrone.app.data.cache.SyncCacheStore
 import com.asmrone.app.data.cache.VoiceActorDictionary
+import com.asmrone.app.data.download.DownloadManager
+import com.asmrone.app.data.download.DownloadStore
 import com.asmrone.app.data.prefs.AccountStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.prefs.LibraryStore
@@ -49,6 +51,9 @@ class AsmrOneApplication : Application() {
         FolderStateStore.init(this)
         // 已解析歌词的本地持久化：冷启动直接读盘，不再为同一首歌词重复联网
         LyricsStore.init(this)
+        // 已下载作品的磁盘根目录（filesDir/downloads）：详情页、播放器、歌词都直接读它，
+        // 所以要早于首次组合 —— 否则"打开已下载作品"的第一帧会以为本地没有而联网
+        DownloadStore.init(this)
         // 搜索用的三本字典（本地 JSON）：标签 / 声优 / 社团。
         // 搜索界面会直接读它们，所以要早于首次组合。
         TagDictionary.init(this)
@@ -69,6 +74,9 @@ class AsmrOneApplication : Application() {
             // 否则那些**已经缓存过**的作品还要再拉一遍树才读得到。
             TrackTreeStore.backfillPointers()
             AudioCacheMaintenance.run()
+            // 下载页的列表要等清单解析完才有内容，而它有可能是几十部作品：
+            // 放进后台预热，用户切到下载页时就是直接出图
+            DownloadManager.init(this@AsmrOneApplication)
         }
 
         // 调试期把网络日志落盘，便于用 adb 取出分析。

@@ -6,6 +6,7 @@ import com.asmrone.app.data.prefs.PlaybackSessionStore
 import com.asmrone.app.data.audio.LocalAudioProxy
 import com.asmrone.app.data.audio.TrackCacheLedger
 import com.asmrone.app.data.audio.AudioCacheStore
+import com.asmrone.app.data.download.DownloadStore
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
@@ -393,7 +394,15 @@ object AudioController {
         val s = _state.value
         val track = s.currentTrack ?: return
         val url = track.mediaStreamUrl
-        if (url.isNullOrBlank()) {
+
+        // 已下载的文件：直接读本地路径，连本地代理都不走。
+        //
+        // 两条好处：① 断网、退号、换主机之后照样能放；② 绕开代理意味着不会
+        // 再为这一轨的每个字节做一次"缓存命中"记账 —— 已经完整躺在磁盘上了，
+        // 再记一遍只会把单曲缓存额度算成超限。
+        val localFile = runCatching { DownloadStore.localFileFor(s.workId, track.path) }.getOrNull()
+
+        if (localFile == null && url.isNullOrBlank()) {
             _state.value = s.copy(
                 isBuffering = false,
                 error = "该音轨没有可用的播放地址（可能需要登录或更换主机）"
@@ -419,23 +428,33 @@ object AudioController {
             appContext?.let { ctx ->
                 runCatching { p.setWakeMode(ctx, PowerManager.PARTIAL_WAKE_LOCK) }
             }
-            // 记下实际交给播放内核的地址：验证"边播边缓存"是否生效，
-            // 最直接的证据就是它究竟是 127.0.0.1 还是上游域名
-            val playbackUrl = playbackUrlFor(url)
-            // 开始新的一轨 → 新建缓存记账。
-            //
-            // ⚠️ 必须重置：复用上一轨的记账会让这一轨一上来就被判定
-            // "已达单曲上限"而**完全不再缓存**（表现为第二首起缓存永远是 0）。
-            // 这里同时重新读一次用户配置的单曲上限，所以改完设置下一首就生效。
-            TrackCacheLedger.startFor(
-                AudioCacheStore.idFor(url),
-                AppPrefs.perTrackCacheLimitMb.value.toLong() * 1024L * 1024L
-            )
-            HttpLog.request(
-                "开始播放：${track.title}  地址=" +
-                    if (playbackUrl.contains("127.0.0.1")) "本地代理(${proxy.port})" else "直连上游"
-            )
-            p.setDataSource(playbackUrl)
+            if (localFile != null) {
+                // 本地文件：缓存记账直接标满，界面上的"已缓存"才是诚实的
+                TrackCacheLedger.startFor(
+                    AudioCacheStore.idFor(url.orEmpty().ifBlank { track.path }),
+                    AppPrefs.perTrackCacheLimitMb.value.toLong() * 1024L * 1024L
+                )
+                HttpLog.request("开始播放：${track.title}  地址=本地下载文件")
+                p.setDataSource(localFile.absolutePath)
+            } else {
+                // 记下实际交给播放内核的地址：验证"边播边缓存"是否生效，
+                // 最直接的证据就是它究竟是 127.0.0.1 还是上游域名
+                val playbackUrl = playbackUrlFor(url.orEmpty())
+                // 开始新的一轨 → 新建缓存记账。
+                //
+                // ⚠️ 必须重置：复用上一轨的记账会让这一轨一上来就被判定
+                // "已达单曲上限"而**完全不再缓存**（表现为第二首起缓存永远是 0）。
+                // 这里同时重新读一次用户配置的单曲上限，所以改完设置下一首就生效。
+                TrackCacheLedger.startFor(
+                    AudioCacheStore.idFor(url.orEmpty()),
+                    AppPrefs.perTrackCacheLimitMb.value.toLong() * 1024L * 1024L
+                )
+                HttpLog.request(
+                    "开始播放：${track.title}  地址=" +
+                        if (playbackUrl.contains("127.0.0.1")) "本地代理(${proxy.port})" else "直连上游"
+                )
+                p.setDataSource(playbackUrl)
+            }
             p.setOnPreparedListener { mp ->
                 val duration = mp.duration.coerceAtLeast(0)
                 // 用「当前 state 的位置」而不是调用 startCurrent 时的旧值：

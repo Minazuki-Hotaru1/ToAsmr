@@ -10,12 +10,16 @@ import com.asmrone.app.data.model.PlaylistPage
 import com.asmrone.app.data.model.TagItem
 import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.Work
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -294,10 +298,88 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
         }
     }
 
-    /** 封面兜底地址（作品没有 *_cover_url 字段时使用） */
-    fun coverUrl(workId: Int): String = "$host/api/cover/$workId"
+    /**
+     * 把 [url] 的字节**流式**写入 [target]（下载用；不要用 [fetchBytes]，那个把整个文件读进内存）。
+     *
+     * ## 断点续传
+     *
+     * 先写到 `<target.name>.part`，中途失败时 `.part` 留着；下次再下同一文件会先看
+     * `.part` 的长度并发 `Range: bytes=N-`：
+     *  - 服务端支持 → 206，从那一位往后追加；
+     *  - 服务端不支持（有些反代/存储会忽略 Range）→ 200 + 完整内容，这时**截断重写**，
+     *    否则会得到一个前面旧、后面新拼接起来的坏文件。
+     *
+     * 只有全部写成功才 `rename` 成正式文件名 —— 所以"文件存在"就等价于"文件完整"，
+     * [com.asmrone.app.data.download.DownloadStore] 和播放器都依赖这个前提。
+     *
+     * @param onProgress 已写入字节数 / 总字节数（总长度未知时为 0）
+     * @return 最终文件长度
+     */
+    suspend fun downloadToFile(
+        url: String,
+        target: File,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }
+    ): Long = withContext(Dispatchers.IO) {
+        val cfg = configProvider()
+        val dir = target.parentFile
+        if (dir == null || (!dir.exists() && !dir.mkdirs())) {
+            throw AsmrApiException("下载失败：无法创建本地目录")
+        }
+        val part = File(dir, target.name + ".part")
+        var resumeFrom = if (part.isFile) part.length() else 0L
 
-    /** 音频流兜底地址（音频节点的 mediaStreamUrl 为空时构造） */
+        HttpLog.response("下载开始 ${target.name}" + if (resumeFrom > 0) "（续传自 $resumeFrom）" else "")
+        val conn = open(url, cfg, "GET")
+        if (resumeFrom > 0) conn.setRequestProperty("Range", "bytes=$resumeFrom-")
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val detail = runCatching { readBody(conn).take(180) }.getOrDefault("")
+                throw AsmrApiException("下载失败：HTTP $code" + if (detail.isBlank()) "" else " $detail")
+            }
+            val append = resumeFrom > 0 && code == 206
+            if (!append) resumeFrom = 0L
+            val length = conn.contentLengthLong
+            val total = when {
+                length <= 0L -> 0L
+                append -> length + resumeFrom
+                else -> length
+            }
+            RandomAccessFile(part, "rw").use { raf ->
+                if (!append) raf.setLength(0L)
+                raf.seek(resumeFrom)
+                var done = resumeFrom
+                onProgress(done, total)
+                conn.inputStream.use { input ->
+                    val buffer = ByteArray(BUFFER_BYTES)
+                    while (true) {
+                        if (!isActive) throw CancellationException("下载已取消")
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        raf.write(buffer, 0, read)
+                        done += read
+                        onProgress(done, total)
+                    }
+                }
+            }
+            if (part.length() <= 0L) throw AsmrApiException("下载失败：文件内容为空")
+            if (target.isFile) target.delete()
+            if (!part.renameTo(target)) throw AsmrApiException("下载失败：无法保存到本地")
+            target.length()
+        } catch (e: CancellationException) {
+            // 主动取消：留着 .part 供续传，把异常原样抛给调用方
+            throw e
+        } catch (e: AsmrApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw AsmrApiException(friendlyMessage(e), e)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** 封面兜底地址（作品没有 *_cover_url 字段时使用） */
+    fun coverUrl(workId: Int): String = "$host/api/cover/$workId"    /** 音频流兜底地址（音频节点的 mediaStreamUrl 为空时构造） */
     fun streamUrl(hash: String, token: String = ""): String = buildString {
         append("$host/api/media/stream/$hash")
         if (token.isNotBlank()) append("?token=$token")
@@ -1199,6 +1281,9 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
 
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 45_000
+
+        /** 下载时的读缓冲：64KB。比默认 8KB 少一个量级的系统调用，又不至于占内存 */
+        private const val BUFFER_BYTES = 64 * 1024
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
     }

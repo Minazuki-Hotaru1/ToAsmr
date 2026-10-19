@@ -23,6 +23,7 @@ import com.asmrone.app.ui.screen.auth.AccountSettingsScreen
 import com.asmrone.app.ui.screen.auth.LoginScreen
 import com.asmrone.app.ui.screen.detail.DetailScreen
 import com.asmrone.app.ui.screen.detail.DetailViewModel
+import com.asmrone.app.ui.screen.download.DownloadsScreen
 import com.asmrone.app.ui.screen.home.HomeScreen
 import com.asmrone.app.ui.screen.home.HomeViewModel
 import com.asmrone.app.ui.screen.library.LibraryScreen
@@ -66,6 +67,13 @@ object Routes {
     const val LIBRARY = "library"
     const val SETTINGS = "settings"
 
+    /**
+     * 下载（本地已下载的作品）。
+     *
+     * 它是**顶级页签**：不依赖登录、不依赖网络，所以和首页一样常驻底栏。
+     */
+    const val DOWNLOADS = "downloads"
+
     const val DETAIL = "detail/{workId}"
     fun detail(workId: Int) = "detail/$workId"
 
@@ -91,7 +99,7 @@ object Routes {
     const val LOGIN = "login"
 
     /** 显示底部导航栏的顶层路由 */
-    val topLevel = setOf(HOME, SEARCH, LIBRARY, SETTINGS)
+    val topLevel = setOf(HOME, SEARCH, DOWNLOADS, LIBRARY, SETTINGS)
 }
 
 /**
@@ -202,6 +210,12 @@ fun AppNavGraph(
                     onWorkClick = { navController.navigate(Routes.detail(it)) }
                 )
             }
+        }
+
+        composable(Routes.DOWNLOADS) {
+            DownloadsScreen(
+                onWorkClick = { navController.navigate(Routes.detail(it)) }
+            )
         }
 
         composable(Routes.LIBRARY) {

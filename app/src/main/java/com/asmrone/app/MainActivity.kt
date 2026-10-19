@@ -83,10 +83,16 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 
-/** 底部导航项（4 项：音声库 / 搜索 / 收藏 / 设置；图标为 Fluent 矢量图资源） */
+/** 底部导航项（5 项：音声库 / 搜索 / 下载 / 收藏 / 设置；图标为 Fluent 矢量图资源） */
 private val bottomNavItems = listOf(
     GlassTabItem(Routes.HOME, "音声库", R.drawable.ic_home_fluent, R.drawable.ic_home_outline_fluent),
     GlassTabItem(Routes.SEARCH, "搜索", R.drawable.ic_search_fluent, R.drawable.ic_search_outline_fluent),
+    GlassTabItem(
+        // 「下载」：折叠夹 / 打勾的文件夹 —— "已经在本地"比箭头更贴切。
+        // 这个图标是先借用的，等有专门的下载图标再换（不影响布局）。
+        Routes.DOWNLOADS, "下载",
+        R.drawable.ic_folder_check_fluent, R.drawable.ic_folder_fluent
+    ),
     GlassTabItem(
         // 「收藏」：用书签图标（与详情页收藏按钮语义一致），选中实心 / 未选线框
         Routes.LIBRARY, "收藏",
