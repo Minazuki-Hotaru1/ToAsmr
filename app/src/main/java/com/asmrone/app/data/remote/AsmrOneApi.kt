@@ -430,16 +430,18 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
      * 官方站不需要，所以只在两者缺一时附带。
      *
      * [clearProgress] 为 true 时**显式**把 `progress` 送成 JSON `null`，
-     * 表示"把这个作品的状态清空"（详见 [buildReviewRequest]）。
+     * 表示"把这个作品的状态清空"；[clearRating] 同理作用于 `rating`。
+     * 详见 [buildReviewRequest]。
      */
     suspend fun updateCollection(
         workId: Int,
         progress: String?,
         rating: Int? = null,
         reviewText: String? = null,
-        clearProgress: Boolean = false
+        clearProgress: Boolean = false,
+        clearRating: Boolean = false
     ): JSONObject {
-        val req = buildReviewRequest(workId, progress, rating, reviewText, clearProgress)
+        val req = buildReviewRequest(workId, progress, rating, reviewText, clearProgress, clearRating)
         return requestJson(
             url = host + "/api/review" + req.query,
             method = "PUT",
@@ -480,9 +482,11 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
      *   → GET /api/review 复查：progress=[] rating=[5]      ← 状态清空、评分保留
      * PUT {"work_id":1681251,"progress":null}               ← 不带 rating 键
      *   → GET /api/review 复查：progress=[] rating=[5]      ← 评分同样没被动
+     * PUT {"work_id":1681251,"rating":null,"progress":"marked"}
+     *   → GET /api/review 复查：progress=[marked] rating=[]  ← 评分清空、状态保留
      * DELETE /api/review?work_id=…                          ← 整条移除才用它
      * ```
-     * 于是清空状态必须**显式**送 `null`，由 [clearProgress] 控制。
+     * 于是清空某个字段必须**显式**送 `null`，由 [clearProgress] / [clearRating] 控制。
      * 默认仍是 false：`null` 与"不传"语义完全不同，不能让调用方在不知情的情况下清掉用户的标记。
      *
      * @return [ReviewRequest.query] 恒为空串，保留字段是为了以后接自建站时不用改签名
@@ -492,16 +496,21 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
         progress: String?,
         rating: Int? = null,
         reviewText: String? = null,
-        clearProgress: Boolean = false
+        clearProgress: Boolean = false,
+        clearRating: Boolean = false
     ): ReviewRequest {
         val body = JSONObject().apply {
             put("work_id", workId)
+            // 显式清空：JSONObject.NULL 会序列化成字面量 `null`。
+            // 有值时以值为准 —— 一次请求不该同时"给值"和"清空"同一个字段。
             when {
-                // 显式清空：JSONObject.NULL 会序列化成 `"progress":null`
-                clearProgress -> put("progress", JSONObject.NULL)
                 progress != null -> put("progress", progress)
+                clearProgress -> put("progress", JSONObject.NULL)
             }
-            if (rating != null) put("rating", rating)
+            when {
+                rating != null -> put("rating", rating)
+                clearRating -> put("rating", JSONObject.NULL)
+            }
             if (reviewText != null) put("review_text", reviewText)
         }
         return ReviewRequest(body = body, query = "")

@@ -84,8 +84,8 @@ class DetailViewModel : ViewModel() {
      */
     private var foldersTouched: Boolean = false
 
-    /** 上一次标记尝试的内容，供失败后「重试」用 */
-    private var lastAttempt: Triple<CollectionStatus?, Int?, Boolean>? = null
+    /** 上一次标记尝试的完整意图（含两层"清空"语义），供失败后「重试」用 */
+    private var lastAttempt: CollectionAttempt? = null
 
     fun load(workId: Int, forceRefresh: Boolean = false) {
         if (!forceRefresh && loadedId == workId && _state.value.work != null) return
@@ -176,16 +176,37 @@ class DetailViewModel : ViewModel() {
      *
      * 保留这个入口是因为失败原因多为**暂时性**的（网络、登录失效后重登），
      * 让用户能一键重来，而不是重新点开弹窗再选一遍状态和星级。
+     *
+     * 清空意图必须**沿用上次算好的结果**，不能在重试时重新推断：
+     * 那时界面上的 work 已经被乐观更新改成了目标值（评分已变 null），
+     * 再推断一次就会得出"原本没有评分"，于是这次重试什么也不发 —— 意图静默丢失。
      */
     fun retryCollectionWrite() {
         val attempt = lastAttempt ?: return
-        performCollectionWrite(attempt.first, attempt.second, attempt.third)
+        performCollectionWrite(
+            status = attempt.status,
+            rating = attempt.rating,
+            remove = attempt.remove,
+            clearStatusOverride = attempt.clearStatus,
+            clearRatingOverride = attempt.clearRating
+        )
     }
+
+    /** 一次标记尝试的完整意图（含两层"清空"语义），供重试原样复用 */
+    private data class CollectionAttempt(
+        val status: CollectionStatus?,
+        val rating: Int?,
+        val remove: Boolean,
+        val clearStatus: Boolean,
+        val clearRating: Boolean
+    )
 
     private fun performCollectionWrite(
         status: CollectionStatus?,
         rating: Int?,
-        remove: Boolean
+        remove: Boolean,
+        clearStatusOverride: Boolean? = null,
+        clearRatingOverride: Boolean? = null
     ) {
         val work = _state.value.work ?: return
         if (!AuthManager.state.value.isLoggedIn) {
@@ -194,19 +215,30 @@ class DetailViewModel : ViewModel() {
             return
         }
 
-        lastAttempt = Triple(status, rating, remove)
-
         // 移除整条标记时，两个字段都要清空
         val targetStatus = if (remove) null else status
         val targetRating = if (remove) null else rating
 
-        val previous = _state.value.work
-        // 乐观更新：状态与评分一起改，界面立刻反映（也顺手把 work 里的评分更新，
-        // 否则下一次操作又会从这份旧值回落到错误的评分）
+        // 写入前的快照，失败时回滚用（就是上面那个非空 work）
+        val previous = work
+        // 「清空某个字段」只有**本地原本确实有这个值**时才成立：
+        //   - 用户想清空 → 弹窗里原本亮着的星星 / 选中的状态被他点掉，previous 里当然有值
+        //   - 本地原本就是空 → 那不是「清空」，而是「本来没有」，不该向云端送 null。
+        //     云端可能其实有（本地用的是过期的离线副本），送 null 会**静默删掉用户的真实标记**。
+        // 所以不能用「目标值为空」推断清空，必须看「原来有、现在没有」。
+        val clearStatus = clearStatusOverride
+            ?: (!remove && targetStatus == null && previous.progress != null)
+        val clearRating = clearRatingOverride
+            ?: (!remove && targetRating == null && previous.userRating != null)
+        lastAttempt = CollectionAttempt(targetStatus, targetRating, remove, clearStatus, clearRating)
+
+        // 乐观更新：状态与评分一起改，界面立刻反映。
+        // ⚠️ 评分这里**不能**写成 `targetRating ?: work.userRating`：
+        // 那样"清空评分"会被回填成旧值，星星跳回来，用户以为没生效。
         _state.value = _state.value.copy(
             work = work.copy(
                 progress = targetStatus?.apiValue,
-                userRating = targetRating ?: work.userRating
+                userRating = targetRating
             ),
             collectionBusy = true,
             collectionFailure = null
@@ -224,9 +256,11 @@ class DetailViewModel : ViewModel() {
                     // 这样收藏能立刻显示，而不是等一次云端核对
                     work = work,
                     // 弹窗里的选中值就是**完整的目标状态**（它从当前状态初始化），
-                    // 所以"状态为空"表达的是"清掉状态、保留评分"，
+                    // 所以"状态被点掉"表达的是"清掉状态、保留评分"，
                     // 必须显式告诉服务端 —— 不然 PUT 是部分更新，云端会原样留着旧状态
-                    clearStatus = !remove && targetStatus == null
+                    clearStatus = clearStatus,
+                    // 同理：星级被点掉 = 清空评分（保留状态）
+                    clearRating = clearRating
                 )
             }
             _state.value = if (result.isSuccess) {

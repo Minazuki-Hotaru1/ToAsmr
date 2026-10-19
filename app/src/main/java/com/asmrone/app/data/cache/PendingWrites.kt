@@ -14,11 +14,13 @@ import org.json.JSONObject
  */
 sealed interface PendingWrite {
     /**
-     * 作品在 `/api/review` 上的标记状态。
+     * 作品在 `/api/review` 上的标记状态与评分。
      *
-     * [status] 为 null 时有两种完全不同的意图，靠 [clearStatus] 区分：
+     * `status == null` 时有两种完全不同的意图，靠 [clearStatus] 区分：
      *  - `false`（默认）→ **移除整条标记**（`DELETE /api/review`）
      *  - `true`         → **只清空状态、保留评分**（`PUT` 带 `"progress": null`）
+     *
+     * [rating] 为 null 时同理靠 [clearRating] 区分"清空评分"与"不动评分"。
      *
      * 早期只有前者，于是"清空状态"的意图补写时会被当成"移除"，
      * 连用户的评分一起删掉 —— 那是比丢状态更严重的结果。
@@ -29,9 +31,11 @@ sealed interface PendingWrite {
         val rating: Int? = null,
         override val createdAt: Long,
         /** 见类注释：status 为 null 时区分"移除整条"与"只清状态" */
-        val clearStatus: Boolean = false
+        val clearStatus: Boolean = false,
+        /** rating 为 null 时区分"清空评分"与"不动评分" */
+        val clearRating: Boolean = false
     ) : PendingWrite {
-        /** 这一条是不是"移除整条标记"（而不是"只清状态"） */
+        /** 这一条是不是"移除整条标记"（而不是"只清字段"） */
         val isRemoval: Boolean get() = status == null && !clearStatus
 
         override val dedupeKey: String get() = "mark|$workId"
@@ -84,8 +88,9 @@ internal fun pendingWriteFromJson(o: JSONObject): PendingWrite? {
             status = CollectionStatus.fromApi(o.optString("status", "")),
             rating = o.optInt("rating", 0).takeIf { it > 0 },
             createdAt = createdAt,
-            // 旧文件没有这个键：默认 false，与旧语义（status 为 null 即移除）一致
-            clearStatus = o.optBoolean("clearStatus", false)
+            // 旧文件没有这两个键：默认 false，与旧语义（status 为 null 即移除）一致
+            clearStatus = o.optBoolean("clearStatus", false),
+            clearRating = o.optBoolean("clearRating", false)
         )
 
         "plAdd" -> PendingWrite.PlaylistAdd(
@@ -114,6 +119,7 @@ internal fun PendingWrite.toJson(): JSONObject = JSONObject().apply {
             put("rating", rating ?: 0)
             // 只在 true 时写，旧版本读到不认识的键也不会出问题，文件还能小一点
             if (clearStatus) put("clearStatus", true)
+            if (clearRating) put("clearRating", true)
         }
 
         is PendingWrite.PlaylistAdd -> {

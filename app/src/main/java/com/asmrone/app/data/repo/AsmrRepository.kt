@@ -818,10 +818,11 @@ object AsmrRepository {
         rating: Int? = null,
         remove: Boolean = false,
         work: Work? = null,
-        clearStatus: Boolean = false
+        clearStatus: Boolean = false,
+        clearRating: Boolean = false
     ): String? {
         val result: Result<Unit> = runCatching {
-            updateCollectionOrThrow(workId, status, rating, remove, work, clearStatus)
+            updateCollectionOrThrow(workId, status, rating, remove, work, clearStatus, clearRating)
         }
         return result.exceptionOrNull()?.let { e -> e.message ?: "收藏操作失败" }
     }
@@ -859,15 +860,17 @@ object AsmrRepository {
         rating: Int? = null,
         remove: Boolean = false,
         work: Work? = null,
-        clearStatus: Boolean = false
+        clearStatus: Boolean = false,
+        clearRating: Boolean = false
     ) {
         if (!AuthManager.state.value.isLoggedIn) {
             throw AuthRejectedException("尚未登录", 401)
         }
 
         val targetStatus = if (remove) null else status
-        // 整条移除走 DELETE，"清空状态"才需要显式 null
+        // 整条移除走 DELETE；"清空某个字段"才需要显式送 null
         val targetClear = !remove && clearStatus
+        val targetClearRating = !remove && clearRating
         // 本地写入需要作品的标题/封面等字段（新加时要插进列表）。
         // 调用方通常会传；没传就退回缓存里那份，再退回一个只带 id 的最小对象。
         val targetWork = work
@@ -875,7 +878,10 @@ object AsmrRepository {
             ?: Work(id = workId, title = "作品 $workId")
 
         // ① 本地先行 —— 网络成败都不影响它
-        patchCollectionCache(targetWork, targetStatus, rating, remove, markDirty = true)
+        patchCollectionCache(
+            targetWork, targetStatus, rating, remove,
+            clearRating = targetClearRating, markDirty = true
+        )
 
         try {
             if (remove) {
@@ -886,7 +892,8 @@ object AsmrRepository {
                     // 只有真的要设状态时才带 progress
                     progress = targetStatus?.apiValue,
                     rating = rating,
-                    clearProgress = targetClear
+                    clearProgress = targetClear,
+                    clearRating = targetClearRating
                 )
             }
         } catch (e: Exception) {
@@ -902,7 +909,8 @@ object AsmrRepository {
                         status = targetStatus,
                         rating = rating,
                         createdAt = System.currentTimeMillis(),
-                        clearStatus = targetClear
+                        clearStatus = targetClear,
+                        clearRating = targetClearRating
                     )
                 )
             }
@@ -916,7 +924,10 @@ object AsmrRepository {
         clearPending(PendingWrite.CollectionMark(workId, null, null, 0L))
         // 记下"刚和服务端写过"：紧接着的自动对齐是多余的
         // 云端已确认 → 清掉 dirty（本地内容此刻与云端一致）
-        patchCollectionCache(targetWork, targetStatus, rating, remove, markDirty = false)
+        patchCollectionCache(
+            targetWork, targetStatus, rating, remove,
+            clearRating = targetClearRating, markDirty = false
+        )
         invalidateWorkMeta(workId)
     }
 
@@ -947,7 +958,8 @@ object AsmrRepository {
                                 workId = write.workId,
                                 progress = write.status?.apiValue,
                                 rating = write.rating,
-                                clearProgress = write.clearStatus
+                                clearProgress = write.clearStatus,
+                                clearRating = write.clearRating
                             )
                         }
                         invalidateWorkMeta(write.workId)
@@ -1021,7 +1033,8 @@ object AsmrRepository {
                                 workId = write.workId,
                                 progress = write.status?.apiValue,
                                 rating = write.rating,
-                                clearProgress = write.clearStatus
+                                clearProgress = write.clearStatus,
+                                clearRating = write.clearRating
                             )
                         }
                         invalidateWorkMeta(write.workId)
@@ -1081,6 +1094,7 @@ object AsmrRepository {
         status: CollectionStatus?,
         rating: Int?,
         remove: Boolean,
+        clearRating: Boolean,
         markDirty: Boolean
     ) {
         val state = AuthManager.state.value
@@ -1089,7 +1103,9 @@ object AsmrRepository {
         // 这次操作后作品应有的样子
         val target = work.copy(
             progress = if (remove) null else status?.apiValue,
-            userRating = if (remove) null else (rating ?: work.userRating)
+            // ⚠️ 不能写成 `rating ?: work.userRating`：那样"清空评分"会被回填成旧值，
+            // 界面上的星星跳回来、而云端其实已经清掉了 —— 两边不一致且用户无法复核。
+            userRating = if (remove || clearRating) null else (rating ?: work.userRating)
         )
 
         // 只维护**一份**本地列表（「全部」那份）。

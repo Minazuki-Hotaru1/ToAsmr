@@ -82,6 +82,47 @@ class PendingWriteTest {
     }
 
     @Test
+    fun `★ 只清评分的待补写往返后仍带着状态且不是移除`() {
+        // 与"只清状态"对称：清空评分时状态要留着，整条标记不能被删
+        val original = PendingWrite.CollectionMark(
+            workId = 1681251,
+            status = CollectionStatus.MARKED,
+            rating = null,
+            createdAt = 4L,
+            clearRating = true
+        )
+        val restored = roundTrip(original) as PendingWrite.CollectionMark
+        assertTrue("clearRating 必须往返保留", restored.clearRating)
+        assertFalse("只清评分不是移除", restored.isRemoval)
+        assertEquals("状态不能丢", CollectionStatus.MARKED, restored.status)
+    }
+
+    @Test
+    fun `clearRating 为 false 时文件里不写这个键`() {
+        val json = PendingWrite.CollectionMark(
+            workId = 1,
+            status = CollectionStatus.MARKED,
+            rating = 5,
+            createdAt = 1L
+        ).toJson()
+        assertFalse("只在 true 时写，别把文件写胖", json.has("clearRating"))
+        assertFalse(json.has("clearStatus"))
+    }
+
+    @Test
+    fun `旧格式文件（没有 clearRating 键）按不动评分解释`() {
+        val legacy = JSONObject().apply {
+            put("op", "mark")
+            put("workId", 9)
+            put("status", "listened")
+            put("createdAt", 1L)
+        }
+        val write = pendingWriteFromJson(legacy) as PendingWrite.CollectionMark
+        assertFalse("升级前的数据从来没有「清空评分」这种意图", write.clearRating)
+        assertEquals(CollectionStatus.LISTENED, write.status)
+    }
+
+    @Test
     fun `收藏夹加入与移除往返正确`() {
         val add = roundTrip(
             PendingWrite.PlaylistAdd("pl-1", 42, createdAt = 9L)

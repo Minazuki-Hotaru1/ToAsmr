@@ -324,8 +324,10 @@ class CollectionViewModel : ViewModel() {
                 status = status,
                 work = work,
                 // 列表页点掉已选中的状态 = 清空状态（评分不动）。
-                // 不显式说明的话 PUT 里就没有 progress，云端会一直留着旧状态
-                clearStatus = status == null
+                // 不显式说明的话 PUT 里就没有 progress，云端会一直留着旧状态。
+                // 但也只在「这份列表原本确实显示着状态」时才送 null：
+                // 本地可能是过期副本，凭空送 null 会删掉云端真实存在的标记
+                clearStatus = status == null && work.progress != null
             )
             if (error != null) {
                 _state.value = _state.value.copy(mutatingId = null, error = error)
