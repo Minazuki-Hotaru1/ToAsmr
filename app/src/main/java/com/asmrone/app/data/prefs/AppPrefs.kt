@@ -121,6 +121,15 @@ object AppPrefs {
     private val _sleepTimerMinutes = MutableStateFlow(0)
     val sleepTimerMinutes: StateFlow<Int> = _sleepTimerMinutes.asStateFlow()
 
+    /**
+     * 睡眠定时器到点后是否"等这一首放完再停"。
+     *
+     * 默认 true：用户按分钟定时，意图是"听着睡着"，而不是"听到一半突然安静"。
+     * 到点时若这一轨还没放完，就等到自然结束再暂停，并**不**继续播下一轨。
+     */
+    private val _sleepUntilTrackEnd = MutableStateFlow(true)
+    val sleepUntilTrackEnd: StateFlow<Boolean> = _sleepUntilTrackEnd.asStateFlow()
+
     /** 主题模式：0 = 跟随系统，1 = 强制亮色，2 = 强制暗色 */
     private val _themeMode = MutableStateFlow(0)
     val themeMode: StateFlow<Int> = _themeMode.asStateFlow()
@@ -244,6 +253,7 @@ object AppPrefs {
             AudioCachePolicy.DEFAULT_PER_TRACK_MB
         ).coerceIn(AudioCachePolicy.MIN_PER_TRACK_MB, AudioCachePolicy.MAX_PER_TRACK_MB)
         _sleepTimerMinutes.value = sp.getInt(KEY_SLEEP_TIMER, 0)
+        _sleepUntilTrackEnd.value = sp.getBoolean(KEY_SLEEP_UNTIL_TRACK_END, true)
         _themeMode.value = sp.getInt(KEY_THEME_MODE, 0)
         _libraryTab.value = sp.getInt(KEY_LIBRARY_TAB, 0)
         _lastSelectedPlaylistId.value = sp.getString(KEY_LAST_PLAYLIST, "") ?: ""
@@ -327,6 +337,11 @@ object AppPrefs {
         sp.edit().putInt(KEY_SLEEP_TIMER, value).apply()
     }
 
+    fun setSleepUntilTrackEnd(value: Boolean) {
+        _sleepUntilTrackEnd.value = value
+        sp.edit().putBoolean(KEY_SLEEP_UNTIL_TRACK_END, value).apply()
+    }
+
     private const val KEY_HOST = "host"
     private const val KEY_AUDIO_FORMAT = "audio_format"
     private const val KEY_HOME_ENABLED = "home_enabled"
@@ -339,6 +354,7 @@ object AppPrefs {
     private const val KEY_AUDIO_CACHE_LIMIT_MB = "audio_cache_limit_mb"
     private const val KEY_PER_TRACK_CACHE_LIMIT_MB = "per_track_cache_limit_mb"
     private const val KEY_SLEEP_TIMER = "sleep_timer"
+    private const val KEY_SLEEP_UNTIL_TRACK_END = "sleep_until_track_end"
     private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_LIBRARY_TAB = "library_tab"
     private const val KEY_LAST_PLAYLIST = "last_selected_playlist"

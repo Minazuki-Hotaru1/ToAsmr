@@ -82,6 +82,12 @@ object AudioController {
     private var player: MediaPlayer? = null
     private var ticker: Job? = null
     private var sleepJob: Job? = null
+    /**
+     * "定时到点了，但这一首还没放完" —— 等当前轨自然结束后暂停，不续下一轨。
+     *
+     * 只在 [AppPrefs.sleepUntilTrackEnd] 打开时会被置起（见 [setSleepTimer]）。
+     */
+    private var stopAfterTrack = false
     private var gain: Float = 1.0f
     /** 上次写播放快照的时间（uptimeMillis），避免每 500ms tick 都写盘 */
     private var lastPersistAt = 0L
@@ -188,6 +194,8 @@ object AudioController {
             _state.value = _state.value.copy(error = "这部作品没有可播放的音轨")
             return
         }
+        // 换整部作品 = 一次全新的收听意图，清掉上一轮定时留下的"等这首放完"待办
+        stopAfterTrack = false
         _state.value = PlayerState(
             workId = work.id,
             workSourceId = work.sourceId,
@@ -279,6 +287,9 @@ object AudioController {
     /** 睡眠定时器：到点自动暂停 */
     fun setSleepTimer(minutes: Int) {
         sleepJob?.cancel()
+        // 重新设定 / 取消定时都清掉"等这一首放完"的待办，否则旧的待办会
+        // 在下一次自然结束时把刚设好的新定时提前掐掉。
+        stopAfterTrack = false
         if (minutes <= 0) {
             _state.value = _state.value.copy(sleepTimerRemainingMs = 0L)
             return
@@ -291,8 +302,13 @@ object AudioController {
                 remaining -= 1_000
             }
             _state.value = _state.value.copy(sleepTimerRemainingMs = 0L)
-            player?.let { if (it.isPlaying) { it.pause(); stopTicker() } }
-            _state.value = _state.value.copy(isPlaying = false)
+            if (AppPrefs.sleepUntilTrackEnd.value && player?.isPlaying == true) {
+                // 到点但还在放：不立刻静音，交给完成回调在这首歌结束时停
+                stopAfterTrack = true
+            } else {
+                player?.let { if (it.isPlaying) { it.pause(); stopTicker() } }
+                _state.value = _state.value.copy(isPlaying = false)
+            }
             persistSession()
         }
     }
@@ -301,6 +317,7 @@ object AudioController {
     fun stop() {
         ticker?.cancel()
         sleepJob?.cancel()
+        stopAfterTrack = false
         player?.let {
             runCatching { if (it.isPlaying) it.stop() }
             runCatching { it.reset() }
@@ -379,7 +396,13 @@ object AudioController {
             }
             p.setOnCompletionListener {
                 val cur = _state.value
-                if (cur.hasNext) {
+                if (stopAfterTrack) {
+                    // 定时到点后的"自然收尾"：停在这里，不续下一轨
+                    stopAfterTrack = false
+                    stopTicker()
+                    _state.value = cur.copy(isPlaying = false, positionMs = cur.durationMs)
+                    persistSession()
+                } else if (cur.hasNext) {
                     playTrackAt(cur.index + 1)
                 } else {
                     stopTicker()

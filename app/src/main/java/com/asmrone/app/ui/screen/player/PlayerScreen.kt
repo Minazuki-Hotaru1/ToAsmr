@@ -39,6 +39,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.asmrone.app.ui.component.LiquidSlider
@@ -70,6 +72,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -80,6 +83,7 @@ import coil.request.ImageRequest
 import com.asmrone.app.R
 import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.Work
+import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.player.AudioController
 import com.asmrone.app.ui.component.CoverImage
 import com.asmrone.app.ui.component.PlayingIndicator
@@ -115,6 +119,9 @@ fun PlayerScreen(
 ) {
     val state by AudioController.state.collectAsState()
     var showQueue by remember { mutableStateOf(false) }
+    var showSleepTimer by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    val sleepUntilTrackEnd by AppPrefs.sleepUntilTrackEnd.collectAsState()
 
     // 播放器是深色沉浸页：临时把系统栏图标切成白色，离开时恢复应用主题的设置。
     // 作为「迷你播放器展开」的覆盖层时，只有铺满屏幕后才切，避免在亮色 app 上提前出现白图标。
@@ -155,6 +162,13 @@ fun PlayerScreen(
             if (isNotEmpty()) append(" · ")
             append("第 ${state.index + 1} / ${state.tracks.size} 首")
         }
+    }
+
+    // 定时进行中时把剩余时间直接做进按钮文案，省掉一层"看一眼还剩多久"的弹窗
+    val sleepTimerLabel = if (state.sleepTimerRemainingMs > 0L) {
+        "定时 ${formatClock(state.sleepTimerRemainingMs)}"
+    } else {
+        "定时"
     }
 
     // 第 0 页 = 封面（初始页，左），第 1 页 = 歌词（右）。
@@ -407,6 +421,33 @@ fun PlayerScreen(
                 }
             }
 
+            Spacer(Modifier.height(6.dp))
+
+            // ── 底部三个文字入口：定时 / 播放队列 / 设置 ──
+            //
+            // 刻意用纯文字而不是图标：这三项都是低频操作，文字反而更好认；
+            // 也和 Apple Music 底部那一排"歌词 / 播放队列 / 更多"的观感一致。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PlayerTextButton(
+                    text = sleepTimerLabel,
+                    onClick = { showSleepTimer = true }
+                )
+                PlayerTextButton(
+                    text = "播放队列",
+                    onClick = { showQueue = true }
+                )
+                PlayerTextButton(
+                    text = "设置",
+                    onClick = { showSettings = true }
+                )
+            }
+
             Spacer(Modifier.height(20.dp))
         }
     }
@@ -422,6 +463,44 @@ fun PlayerScreen(
             onDismiss = { showQueue = false }
         )
     }
+
+    if (showSleepTimer) {
+        SleepTimerSheet(
+            remainingMs = state.sleepTimerRemainingMs,
+            untilTrackEnd = sleepUntilTrackEnd,
+            onToggleUntilTrackEnd = { AppPrefs.setSleepUntilTrackEnd(it) },
+            onStart = { minutes ->
+                AudioController.setSleepTimer(minutes)
+                showSleepTimer = false
+            },
+            onCancel = {
+                AudioController.setSleepTimer(0)
+                showSleepTimer = false
+            },
+            onDismiss = { showSleepTimer = false }
+        )
+    }
+
+    if (showSettings) {
+        PlayerSettingsSheet(onDismiss = { showSettings = false })
+    }
+}
+
+/** 播放器底部的文字入口（定时 / 播放队列 / 设置） */
+@Composable
+private fun PlayerTextButton(text: String, onClick: () -> Unit) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge.copy(
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
+        ),
+        color = PlayerSecondary,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    )
 }
 
 /** 播放器顶部的小圆形描边按钮（收起 / 队列） */
@@ -780,4 +859,213 @@ private fun LyricsBackdrop(pagerState: PagerState) {
             .fillMaxSize()
             .background(PlayerBackground.copy(alpha = 0.55f * progress))
     )
+}
+
+/** 睡眠定时可调范围（分钟） */
+private const val SLEEP_TIMER_MIN_MINUTES = 1f
+private const val SLEEP_TIMER_MAX_MINUTES = 120f
+
+/** 打开弹窗时的默认值：半小时，是最常用的"听着睡着"时长 */
+private const val SLEEP_TIMER_DEFAULT_MINUTES = 30f
+
+/**
+ * 底部「定时」弹窗：滑轨选分钟数 → 开始。
+ *
+ * 只做两件事，刻意保持简单：一个 1–120 分钟的滑轨，一个"开始"按钮。
+ * 另外给一个**持久化**开关 [AppPrefs.sleepUntilTrackEnd]：到点时这一首没放完，
+ * 是立刻静音还是等它自然结束 —— 后者才符合"听着睡着"的实际场景。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SleepTimerSheet(
+    remainingMs: Long,
+    untilTrackEnd: Boolean,
+    onToggleUntilTrackEnd: (Boolean) -> Unit,
+    onStart: (Int) -> Unit,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var minutes by remember { mutableFloatStateOf(SLEEP_TIMER_DEFAULT_MINUTES) }
+    val picked = minutes.roundToInt().coerceIn(
+        SLEEP_TIMER_MIN_MINUTES.roundToInt(),
+        SLEEP_TIMER_MAX_MINUTES.roundToInt()
+    )
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = PlayerSheet,
+        contentColor = PlayerText,
+        dragHandle = {
+            BottomSheetDefaults.DragHandle(color = Color.White.copy(alpha = 0.28f))
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 26.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(
+                text = "定时关闭",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                color = PlayerText
+            )
+
+            Spacer(Modifier.height(18.dp))
+
+            Text(
+                text = "$picked 分钟",
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = PlayerText
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            LiquidSlider(
+                value = { minutes },
+                onValueChange = { minutes = it },
+                valueRange = SLEEP_TIMER_MIN_MINUTES..SLEEP_TIMER_MAX_MINUTES,
+                // 一分钟一档：滑轨总宽只有几百 dp，阈值给 0.5 分钟即可稳定吸附
+                visibilityThreshold = 0.5f,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(32.dp)
+            )
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "${SLEEP_TIMER_MIN_MINUTES.roundToInt()} 分钟",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                    color = PlayerTertiary
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "${SLEEP_TIMER_MAX_MINUTES.roundToInt()} 分钟",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                    color = PlayerTertiary
+                )
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "自动延时到歌曲播放完毕",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = PlayerText
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "到点时这一首还没放完，就等它放完再停",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                        color = PlayerTertiary
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(
+                    checked = untilTrackEnd,
+                    onCheckedChange = onToggleUntilTrackEnd,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.Black,
+                        checkedTrackColor = PlayerText,
+                        uncheckedThumbColor = PlayerTertiary,
+                        uncheckedTrackColor = PlayerChrome
+                    )
+                )
+            }
+
+            Spacer(Modifier.height(22.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(PlayerText)
+                    .clickable { onStart(picked) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "开始",
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    color = Color.Black
+                )
+            }
+
+            if (remainingMs > 0L) {
+                Text(
+                    text = "取消定时（剩余 ${formatClock(remainingMs)}）",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PlayerTertiary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onCancel)
+                        .padding(vertical = 14.dp),
+                    textAlign = TextAlign.Center
+                )
+            } else {
+                Spacer(Modifier.height(14.dp))
+            }
+        }
+    }
+}
+
+/**
+ * 底部「设置」弹窗 —— 目前只是个占位。
+ *
+ * 播放器自己的设置（播放速度、跳过间隔、后台行为…）还没定，
+ * 先把入口和弹窗骨架占住，避免以后再加时又要动底部那一排。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = PlayerSheet,
+        contentColor = PlayerText,
+        dragHandle = {
+            BottomSheetDefaults.DragHandle(color = Color.White.copy(alpha = 0.28f))
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 26.dp)
+                .padding(bottom = 32.dp)
+        ) {
+            Text(
+                text = "设置",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                color = PlayerText
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "播放器设置项还在设计中，先留一个入口。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = PlayerSecondary
+            )
+        }
+    }
+}
+
+/**
+ * 毫秒 → `m:ss`。
+ *
+ * 定时上限 120 分钟，不会出现小时段，所以只做到分钟。
+ */
+private fun formatClock(ms: Long): String {
+    val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
+    return "${totalSeconds / 60}:${(totalSeconds % 60).toString().padStart(2, '0')}"
 }

@@ -66,6 +66,7 @@ import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.model.CollectionStatus
 import com.asmrone.app.data.model.LanguageEdition
 import com.asmrone.app.data.model.Track
+import com.asmrone.app.data.model.sameFolderQueue
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.player.AudioController
@@ -295,12 +296,15 @@ fun DetailScreen(
                                 when (kind) {
                                     TrackKind.AUDIO -> {
                                         if (node.isPlayable) {
-                                            val index = viewModel.indexInPlaybackList(node)
+                                            // 队列收窄到"这一轨所在的文件夹"（跨目录歌词
+                                            // 匹配不依赖它，见 sameFolderQueue 的说明）
+                                            val queue = playbackList.sameFolderQueue(node.path)
+                                            val index = queue.indexOfFirst { it.path == node.path }
                                             if (index >= 0) {
                                                 AudioController.playWork(
                                                     work = work,
                                                     coverUrl = work.coverUrl(AsmrRepository.host),
-                                                    tracks = playbackList,
+                                                    tracks = queue,
                                                     startIndex = index
                                                 )
                                                 onOpenPlayer()

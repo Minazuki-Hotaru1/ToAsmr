@@ -313,10 +313,6 @@ class DetailViewModel : ViewModel() {
             ?: AppPrefs.setAudioFormat(AudioFormatPreference.ALL.value)
     }
 
-    /** 点击某个音频节点时，它在当前播放列表里的下标 */
-    fun indexInPlaybackList(node: Track): Int =
-        _state.value.playbackList.indexOfFirst { it.path == node.path }
-
     // ─────────────────── 非音频节点：图片 / 视频 / 文本 / PDF ───────────────────
     //
     // 文件树里除音频外还有四类内容（实测比例：图片 : 音频 ≈ 1.16 : 1）：
