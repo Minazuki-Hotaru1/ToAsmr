@@ -428,14 +428,18 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
      * 因此这里要求调用方至少给一个值。自建服务端还会认两个查询参数
      * `starOnly` / `progressOnly` 来区分"只打分"和"只改状态"——
      * 官方站不需要，所以只在两者缺一时附带。
+     *
+     * [clearProgress] 为 true 时**显式**把 `progress` 送成 JSON `null`，
+     * 表示"把这个作品的状态清空"（详见 [buildReviewRequest]）。
      */
     suspend fun updateCollection(
         workId: Int,
         progress: String?,
         rating: Int? = null,
-        reviewText: String? = null
+        reviewText: String? = null,
+        clearProgress: Boolean = false
     ): JSONObject {
-        val req = buildReviewRequest(workId, progress, rating, reviewText)
+        val req = buildReviewRequest(workId, progress, rating, reviewText, clearProgress)
         return requestJson(
             url = host + "/api/review" + req.query,
             method = "PUT",
@@ -464,17 +468,39 @@ class AsmrOneApi(private val configProvider: () -> ApiConfig) {
      * 现在对齐官方站的写法：**一个查询参数都不带**，只靠 body 里的字段表达意图
      * （`progress` 不传就是不改状态，`rating` 不传就是不改评分）。
      *
+     * ## `"progress": null` 与"不传 progress"不是一回事（实测确认）
+     *
+     * `PUT /api/review` 是**部分更新**：body 里没有的键表示"别动这个字段"。
+     * 所以"取消状态"是表达不出来的 —— 不传 `progress` 只会让服务端原样保留。
+     * 结果就是用户在 App 里把状态清掉，本地看着已经没有了，一刷新云端又回来了。
+     *
+     * 2026-10 对着 api.asmr-200.com 实测（作品 1681251，当时 状态=marked、评分=5）：
+     * ```
+     * PUT {"work_id":1681251,"rating":5,"progress":null}
+     *   → GET /api/review 复查：progress=[] rating=[5]      ← 状态清空、评分保留
+     * PUT {"work_id":1681251,"progress":null}               ← 不带 rating 键
+     *   → GET /api/review 复查：progress=[] rating=[5]      ← 评分同样没被动
+     * DELETE /api/review?work_id=…                          ← 整条移除才用它
+     * ```
+     * 于是清空状态必须**显式**送 `null`，由 [clearProgress] 控制。
+     * 默认仍是 false：`null` 与"不传"语义完全不同，不能让调用方在不知情的情况下清掉用户的标记。
+     *
      * @return [ReviewRequest.query] 恒为空串，保留字段是为了以后接自建站时不用改签名
      */
     internal fun buildReviewRequest(
         workId: Int,
         progress: String?,
         rating: Int? = null,
-        reviewText: String? = null
+        reviewText: String? = null,
+        clearProgress: Boolean = false
     ): ReviewRequest {
         val body = JSONObject().apply {
             put("work_id", workId)
-            if (progress != null) put("progress", progress)
+            when {
+                // 显式清空：JSONObject.NULL 会序列化成 `"progress":null`
+                clearProgress -> put("progress", JSONObject.NULL)
+                progress != null -> put("progress", progress)
+            }
             if (rating != null) put("rating", rating)
             if (reviewText != null) put("review_text", reviewText)
         }

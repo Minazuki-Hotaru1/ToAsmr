@@ -13,13 +13,27 @@ import org.json.JSONObject
  * 所以失败时把意图**记在这里**，等下次有机会再补写到云端。
  */
 sealed interface PendingWrite {
-    /** 作品在 `/api/review` 上的标记状态；[status] 为 null 表示移除标记 */
+    /**
+     * 作品在 `/api/review` 上的标记状态。
+     *
+     * [status] 为 null 时有两种完全不同的意图，靠 [clearStatus] 区分：
+     *  - `false`（默认）→ **移除整条标记**（`DELETE /api/review`）
+     *  - `true`         → **只清空状态、保留评分**（`PUT` 带 `"progress": null`）
+     *
+     * 早期只有前者，于是"清空状态"的意图补写时会被当成"移除"，
+     * 连用户的评分一起删掉 —— 那是比丢状态更严重的结果。
+     */
     data class CollectionMark(
         override val workId: Int,
         val status: CollectionStatus?,
         val rating: Int? = null,
-        override val createdAt: Long
+        override val createdAt: Long,
+        /** 见类注释：status 为 null 时区分"移除整条"与"只清状态" */
+        val clearStatus: Boolean = false
     ) : PendingWrite {
+        /** 这一条是不是"移除整条标记"（而不是"只清状态"） */
+        val isRemoval: Boolean get() = status == null && !clearStatus
+
         override val dedupeKey: String get() = "mark|$workId"
     }
 
@@ -69,7 +83,9 @@ internal fun pendingWriteFromJson(o: JSONObject): PendingWrite? {
             // 空串代表"移除标记"，与 null 同义
             status = CollectionStatus.fromApi(o.optString("status", "")),
             rating = o.optInt("rating", 0).takeIf { it > 0 },
-            createdAt = createdAt
+            createdAt = createdAt,
+            // 旧文件没有这个键：默认 false，与旧语义（status 为 null 即移除）一致
+            clearStatus = o.optBoolean("clearStatus", false)
         )
 
         "plAdd" -> PendingWrite.PlaylistAdd(
@@ -96,6 +112,8 @@ internal fun PendingWrite.toJson(): JSONObject = JSONObject().apply {
             put("op", "mark")
             put("status", status?.apiValue ?: "")
             put("rating", rating ?: 0)
+            // 只在 true 时写，旧版本读到不认识的键也不会出问题，文件还能小一点
+            if (clearStatus) put("clearStatus", true)
         }
 
         is PendingWrite.PlaylistAdd -> {

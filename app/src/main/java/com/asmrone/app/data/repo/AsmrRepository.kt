@@ -753,7 +753,8 @@ object AsmrRepository {
      */
     fun pendingAddIds(): Set<Int> = pendingWrites()
         .filterIsInstance<PendingWrite.CollectionMark>()
-        .filter { it.status != null }
+        // "只清状态"也算待上传：云端还留着旧状态，本地这份必须保住
+        .filter { !it.isRemoval }
         .map { it.workId }
         .toSet()
 
@@ -766,7 +767,8 @@ object AsmrRepository {
      */
     fun pendingRemoveIds(): Set<Int> = pendingWrites()
         .filterIsInstance<PendingWrite.CollectionMark>()
-        .filter { it.status == null }
+        // 只有"整条移除"才是待删除；"只清状态"的作品还在收藏里，不能藏起来
+        .filter { it.isRemoval }
         .map { it.workId }
         .toSet()
 
@@ -805,6 +807,8 @@ object AsmrRepository {
      * 设置 / 更新某个作品的收藏状态与评分（**写穿**：本地先改，再打服务端）。
      *
      * [status] 为 null 时表示"只评分、不打状态"；[remove] 为 true 时才真的移除整条标记。
+     * [clearStatus] 为 true 时表示"把状态清掉、但保留评分"——它必须显式传给服务端，
+     * 因为 `PUT /api/review` 是部分更新（不传 `progress` 等于"别动"）。
      * 详见 [updateCollectionOrThrow] —— 这里只是把它转成"错误文案或 null"的老签名，
      * 供不关心失败原因的调用方（列表页改状态）使用。
      */
@@ -813,10 +817,11 @@ object AsmrRepository {
         status: CollectionStatus?,
         rating: Int? = null,
         remove: Boolean = false,
-        work: Work? = null
+        work: Work? = null,
+        clearStatus: Boolean = false
     ): String? {
         val result: Result<Unit> = runCatching {
-            updateCollectionOrThrow(workId, status, rating, remove, work)
+            updateCollectionOrThrow(workId, status, rating, remove, work, clearStatus)
         }
         return result.exceptionOrNull()?.let { e -> e.message ?: "收藏操作失败" }
     }
@@ -840,19 +845,29 @@ object AsmrRepository {
      *      只把异常抛给界面，让用户去重新登录。
      *
      * 本地写入是**先行且独立**的：网络成功与否都不影响界面已经显示的内容。
+     *
+     * ## [clearStatus]：清空状态 ≠ 不改状态
+     *
+     * `PUT /api/review` 是部分更新，body 里没有 `progress` 键就等于"别动状态"。
+     * 于是"取消标记、但保留评分"必须由调用方显式说明意图（[clearStatus] = true），
+     * 这里才会把 `"progress": null` 真的送出去、并把这个意图记进待补写队列。
+     * 不这么做的话：本地已经清掉、云端原样保留，下次对齐又被云端数据覆盖回来。
      */
     suspend fun updateCollectionOrThrow(
         workId: Int,
         status: CollectionStatus?,
         rating: Int? = null,
         remove: Boolean = false,
-        work: Work? = null
+        work: Work? = null,
+        clearStatus: Boolean = false
     ) {
         if (!AuthManager.state.value.isLoggedIn) {
             throw AuthRejectedException("尚未登录", 401)
         }
 
         val targetStatus = if (remove) null else status
+        // 整条移除走 DELETE，"清空状态"才需要显式 null
+        val targetClear = !remove && clearStatus
         // 本地写入需要作品的标题/封面等字段（新加时要插进列表）。
         // 调用方通常会传；没传就退回缓存里那份，再退回一个只带 id 的最小对象。
         val targetWork = work
@@ -870,7 +885,8 @@ object AsmrRepository {
                     workId = workId,
                     // 只有真的要设状态时才带 progress
                     progress = targetStatus?.apiValue,
-                    rating = rating
+                    rating = rating,
+                    clearProgress = targetClear
                 )
             }
         } catch (e: Exception) {
@@ -885,7 +901,8 @@ object AsmrRepository {
                         workId = workId,
                         status = targetStatus,
                         rating = rating,
-                        createdAt = System.currentTimeMillis()
+                        createdAt = System.currentTimeMillis(),
+                        clearStatus = targetClear
                     )
                 )
             }
@@ -923,13 +940,14 @@ object AsmrRepository {
             val result = runCatching {
                 when (write) {
                     is PendingWrite.CollectionMark -> {
-                        if (write.status == null) {
+                        if (write.isRemoval) {
                             api.deleteCollection(write.workId)
                         } else {
                             api.updateCollection(
                                 workId = write.workId,
-                                progress = write.status.apiValue,
-                                rating = write.rating
+                                progress = write.status?.apiValue,
+                                rating = write.rating,
+                                clearProgress = write.clearStatus
                             )
                         }
                         invalidateWorkMeta(write.workId)
@@ -995,14 +1013,15 @@ object AsmrRepository {
             val ok = runCatching {
                 when (write) {
                     is PendingWrite.CollectionMark -> {
-                        if (write.status == null) {
-                            // status == null 即"待删除"：本地已删，这里把云端也删掉
+                        if (write.isRemoval) {
+                            // 整条移除：本地已删，这里把云端也删掉
                             api.deleteCollection(write.workId)
                         } else {
                             api.updateCollection(
                                 workId = write.workId,
-                                progress = write.status.apiValue,
-                                rating = write.rating
+                                progress = write.status?.apiValue,
+                                rating = write.rating,
+                                clearProgress = write.clearStatus
                             )
                         }
                         invalidateWorkMeta(write.workId)

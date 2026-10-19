@@ -319,7 +319,14 @@ class CollectionViewModel : ViewModel() {
         if (_state.value.mutatingId != null) return
         _state.value = _state.value.copy(mutatingId = work.id)
         viewModelScope.launch {
-            val error = AsmrRepository.updateCollection(work.id, status, work = work)
+            val error = AsmrRepository.updateCollection(
+                workId = work.id,
+                status = status,
+                work = work,
+                // 列表页点掉已选中的状态 = 清空状态（评分不动）。
+                // 不显式说明的话 PUT 里就没有 progress，云端会一直留着旧状态
+                clearStatus = status == null
+            )
             if (error != null) {
                 _state.value = _state.value.copy(mutatingId = null, error = error)
                 return@launch

@@ -222,7 +222,11 @@ class DetailViewModel : ViewModel() {
                     remove = remove,
                     // 把作品本体传下去：新标记时要靠它的标题/封面插进本地列表，
                     // 这样收藏能立刻显示，而不是等一次云端核对
-                    work = work
+                    work = work,
+                    // 弹窗里的选中值就是**完整的目标状态**（它从当前状态初始化），
+                    // 所以"状态为空"表达的是"清掉状态、保留评分"，
+                    // 必须显式告诉服务端 —— 不然 PUT 是部分更新，云端会原样留着旧状态
+                    clearStatus = !remove && targetStatus == null
                 )
             }
             _state.value = if (result.isSuccess) {

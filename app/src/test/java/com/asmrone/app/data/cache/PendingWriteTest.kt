@@ -1,7 +1,9 @@
 package com.asmrone.app.data.cache
 
 import com.asmrone.app.data.model.CollectionStatus
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -45,6 +47,38 @@ class PendingWriteTest {
         val restored = roundTrip(original) as PendingWrite.CollectionMark
         assertNull("null 必须保持 null，不能被读成未标记以外的状态", restored.status)
         assertNull(restored.rating)
+        assertTrue("没有 clearStatus 的 null 状态就是整条移除", restored.isRemoval)
+    }
+
+    @Test
+    fun `★ 只清状态的待补写往返后仍不是移除`() {
+        // 这是"取消标记后云端不生效"那个 bug 的补写侧：
+        // 以前 status == null 一律当移除重放，会把用户保留的评分一起删掉
+        val original = PendingWrite.CollectionMark(
+            workId = 1681251,
+            status = null,
+            rating = 5,
+            createdAt = 3L,
+            clearStatus = true
+        )
+        val restored = roundTrip(original) as PendingWrite.CollectionMark
+        assertTrue("clearStatus 必须往返保留", restored.clearStatus)
+        assertFalse("★ 补写时不能把它当成整条移除（那会连评分一起删掉）", restored.isRemoval)
+        assertEquals("保留的评分不能丢", 5, restored.rating)
+    }
+
+    @Test
+    fun `旧格式文件（没有 clearStatus 键）仍按移除解释`() {
+        val legacy = JSONObject().apply {
+            put("op", "mark")
+            put("workId", 9)
+            put("status", "")
+            put("rating", 0)
+            put("createdAt", 1L)
+        }
+        val write = pendingWriteFromJson(legacy) as PendingWrite.CollectionMark
+        assertNull(write.status)
+        assertTrue("升级前的数据里 status 为空就是移除，语义不能漂移", write.isRemoval)
     }
 
     @Test
