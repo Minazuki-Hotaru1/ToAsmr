@@ -1,9 +1,15 @@
 package com.asmrone.app
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
@@ -42,8 +48,10 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -107,6 +115,15 @@ private const val OVERLAY_VISIBILITY_THRESHOLD = 0.0002f
 
 class MainActivity : ComponentActivity() {
 
+    /**
+     * "请求展开播放器"的计数。
+     *
+     * 通知栏 / 锁屏点进来时，希望直接看到播放器而不是停在首页。Activity 是
+     * `singleTask`，已经在运行时系统走 `onNewIntent` 而**不会**重建 onCreate，
+     * 所以两条入口都要处理。用计数而不是 Boolean：连点两次也要能各触发一次。
+     */
+    private var openPlayerRequest by mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -121,6 +138,13 @@ class MainActivity : ComponentActivity() {
         PlaybackSessionStore.init(this)
         AudioController.init(this)
         AudioController.restoreSession()
+
+        // 通知 / 锁屏入口：先把"已存在实例被再次唤醒"的情况接住，
+        // 再消费本次启动 Intent 里可能带着的同一个标记。
+        addOnNewIntentListener { incoming ->
+            if (incoming.getBooleanExtra(EXTRA_OPEN_PLAYER, false)) openPlayerRequest++
+        }
+        if (intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true) openPlayerRequest++
 
         setContent {
             val themeMode by AppPrefs.themeMode.collectAsState()
@@ -152,7 +176,7 @@ class MainActivity : ComponentActivity() {
                     LocalStableStatusBarTop provides stableStatusTop,
                     LocalStableNavigationBarBottom provides stableNavBottom
                 ) {
-                    MainApp()
+                    MainApp(openPlayerRequest = openPlayerRequest)
                 }
             }
         }
@@ -163,10 +187,17 @@ class MainActivity : ComponentActivity() {
         AudioController.persistSession(synchronous = true)
         super.onStop()
     }
+
+    companion object {
+        /**
+         * 通知栏 / 锁屏点击进入时带上的标记：[PlaybackService] 用它让 App 直接展开播放器。
+         */
+        const val EXTRA_OPEN_PLAYER = "com.asmrone.app.extra.OPEN_PLAYER"
+    }
 }
 
 @Composable
-fun MainApp() {
+fun MainApp(openPlayerRequest: Int = 0) {
     val navController = rememberNavController()
     val homeViewModel: HomeViewModel = viewModel()
     val searchViewModel: SearchViewModel = viewModel()
@@ -191,6 +222,27 @@ fun MainApp() {
     val bottomBarState = remember { BottomBarState() }
     val collapseBottomBar by AppPrefs.collapseBottomBar.collectAsState()
     val playerState by AudioController.state.collectAsState()
+
+    /**
+     * 通知权限（Android 13+）。
+     *
+     * 放在"第一次真的开始播放"这一刻问，而不是一打开 App 就弹：那时用户还不知道
+     * 这个权限是干嘛用的。没有它的话前台服务仍然在跑、声音照旧，但通知与系统
+     * 媒体卡片不显示 —— 等于白接了一套媒体会话。
+     */
+    val context = LocalContext.current
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+    LaunchedEffect(playerState.isPlaying) {
+        if (!playerState.isPlaying) return@LaunchedEffect
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return@LaunchedEffect
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -244,6 +296,11 @@ fun MainApp() {
             )
             playerOverlayVisible = false
         }
+    }
+
+    // 从通知 / 锁屏点进来：直接展开播放器，而不是停在首页让用户自己点迷你栏
+    LaunchedEffect(openPlayerRequest) {
+        if (openPlayerRequest > 0 && playerState.isActive) openPlayerOverlay()
     }
 
     // 注意：返回键处理放在 PlayerSlideOverlay 内部。

@@ -8,7 +8,9 @@ import com.asmrone.app.data.audio.TrackCacheLedger
 import com.asmrone.app.data.audio.AudioCacheStore
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.PowerManager
 import android.os.SystemClock
 import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.Work
@@ -78,6 +80,9 @@ data class PlayerState(
  */
 object AudioController {
 
+    /** 焦点被"允许压低"（导航播报等）时的音量系数 */
+    private const val DUCK_FACTOR = 0.2f
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var player: MediaPlayer? = null
     private var ticker: Job? = null
@@ -89,8 +94,19 @@ object AudioController {
      */
     private var stopAfterTrack = false
     private var gain: Float = 1.0f
+    /**
+     * 焦点被"允许压低"时的音量系数（乘在 [gain] 上）。
+     *
+     * 单独一个字段而不是直接改 [gain]：压低是**临时**的，焦点回来要还原成用户设的音量，
+     * 而用户设的音量本身要留着（否则还原时就找不回来了）。
+     */
+    private var duckFactor: Float = 1.0f
     /** 上次写播放快照的时间（uptimeMillis），避免每 500ms tick 都写盘 */
     private var lastPersistAt = 0L
+
+    /** 应用上下文（`init` 时记下），供前台服务、音频焦点、唤醒锁使用 */
+    private var appContext: Context? = null
+    private var focus: AudioFocusCoordinator? = null
 
     /**
      * 音频缓存：存储层 + 本地代理（"边播边缓存"的实现，见 LocalAudioProxy）。
@@ -116,6 +132,7 @@ object AudioController {
      */
     fun init(context: Context) {
         if (player != null) return
+        appContext = context.applicationContext
 
         // 音频缓存的存储层与本地代理：一起初始化。
         // 用 applicationContext 的 cacheDir —— 可以再生的数据，系统空间紧张时
@@ -133,6 +150,12 @@ object AudioController {
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
+            // 屏幕熄灭后继续出声：部分机型在锁屏几十秒后会把播放线程挂起，
+            // 表现为"锁屏听一会儿就停了"。持有 PARTIAL_WAKE_LOCK 才能稳定后台播放
+            // （权限见 AndroidManifest 的 WAKE_LOCK）。
+            runCatching {
+                setWakeMode(context.applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
+            }
         }
     }
 
@@ -218,10 +241,28 @@ object AudioController {
         startCurrent()
     }
 
+    /**
+     * 播放 / 暂停的开关。
+     *
+     * 真正的实现拆在 [pause] 与 [resume] 里：系统媒体控件（通知、锁屏、耳机线控、
+     * 蓝牙）需要的是"明确暂停"和"明确播放"两个动作，而不是"切换"—— 用切换的话，
+     * 系统连点两次会得到相反的状态。
+     */
     fun togglePlayPause() {
-        val p = player ?: return
+        if (_state.value.isPlaying) pause() else resume()
+    }
+
+    /** 暂停（界面、通知、锁屏、焦点丢失都走这里） */
+    fun pause() {
+        pauseInternal(fromFocusLoss = false)
+    }
+
+    /** 播放 / 从暂停恢复（界面、通知、锁屏、焦点恢复都走这里） */
+    fun resume() {
         val s = _state.value
+        if (s.isPlaying) return
         if (!s.isPrepared) {
+            // 冷启动恢复会话后还没 prepare：这就是"点播放，从上次的位置继续"
             if (s.isBuffering) return
             if (s.tracks.isNotEmpty()) {
                 _state.value = s.copy(isBuffering = true, error = null)
@@ -229,16 +270,27 @@ object AudioController {
             }
             return
         }
-        if (p.isPlaying) {
-            p.pause()
-            stopTicker()
-            _state.value = s.copy(isPlaying = false)
-        } else {
-            p.start()
-            applyGain()
-            startTicker()
-            _state.value = s.copy(isPlaying = true)
-        }
+        val p = player ?: return
+        ensureFocus()?.request()
+        // 服务可能已被系统回收（暂停态不是前台服务），从通知/锁屏续播时要重新拉起
+        appContext?.let { PlaybackService.start(it) }
+        p.start()
+        applyGain()
+        startTicker()
+        _state.value = _state.value.copy(isPlaying = true)
+        persistSession()
+    }
+
+    /**
+     * @param fromFocusLoss 焦点丢失导致的暂停。此时**不能**让出焦点 ——
+     *   让出之后的焦点恢复事件就收不到了，"临时丢失（导航播报）结束后自动续播"会失效。
+     */
+    private fun pauseInternal(fromFocusLoss: Boolean) {
+        val s = _state.value
+        player?.let { runCatching { if (it.isPlaying) it.pause() } }
+        stopTicker()
+        if (s.isPlaying) _state.value = s.copy(isPlaying = false)
+        if (!fromFocusLoss) ensureFocus()?.abandon()
         persistSession()
     }
 
@@ -306,8 +358,8 @@ object AudioController {
                 // 到点但还在放：不立刻静音，交给完成回调在这首歌结束时停
                 stopAfterTrack = true
             } else {
-                player?.let { if (it.isPlaying) { it.pause(); stopTicker() } }
-                _state.value = _state.value.copy(isPlaying = false)
+                // 到点直接暂停：走统一入口，顺带让出音频焦点
+                pauseInternal(fromFocusLoss = false)
             }
             persistSession()
         }
@@ -318,12 +370,14 @@ object AudioController {
         ticker?.cancel()
         sleepJob?.cancel()
         stopAfterTrack = false
+        ensureFocus()?.abandon()
         player?.let {
             runCatching { if (it.isPlaying) it.stop() }
             runCatching { it.reset() }
         }
         PlaybackSessionStore.clear()
         _state.value = PlayerState()
+        appContext?.let { PlaybackService.stop(it) }
     }
 
     fun release() {
@@ -347,6 +401,12 @@ object AudioController {
             return
         }
         runCatching {
+            // 先跟系统对齐：拿音频焦点（来电/别家在放时让位）+ 拉起前台服务
+            // （通知栏、锁屏、耳机与蓝牙线控都靠它）。两者失败都不影响出声本身，
+            // 所以这里不检查返回值。
+            ensureFocus()?.request()
+            appContext?.let { PlaybackService.start(it) }
+
             p.reset()
             p.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -354,6 +414,11 @@ object AudioController {
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
+            // reset() 之后重新挂一次唤醒锁：万一内核在 reset 时把它丢了，症状是
+            // "锁屏后播放停住"，而这种问题只在真机后台才复现，很难回头定位。
+            appContext?.let { ctx ->
+                runCatching { p.setWakeMode(ctx, PowerManager.PARTIAL_WAKE_LOCK) }
+            }
             // 记下实际交给播放内核的地址：验证"边播边缓存"是否生效，
             // 最直接的证据就是它究竟是 127.0.0.1 还是上游域名
             val playbackUrl = playbackUrlFor(url)
@@ -412,6 +477,8 @@ object AudioController {
             }
             p.setOnErrorListener { _, what, extra ->
                 stopTicker()
+                // 已经不播了就别再占着音频焦点，否则别的 App 会被我们一起压着
+                ensureFocus()?.abandon()
                 _state.value = _state.value.copy(
                     isPlaying = false,
                     isBuffering = false,
@@ -423,6 +490,7 @@ object AudioController {
             }
             p.prepareAsync()
         }.onFailure { e ->
+            ensureFocus()?.abandon()
             _state.value = s.copy(
                 isBuffering = false,
                 error = "无法打开音频流：${e.message ?: "未知错误"}"
@@ -432,7 +500,34 @@ object AudioController {
     }
 
     private fun applyGain() {
-        player?.let { runCatching { it.setVolume(gain, gain) } }
+        val effective = gain * duckFactor
+        player?.let { runCatching { it.setVolume(effective, effective) } }
+    }
+
+    /**
+     * 焦点被"允许压低"时的音量处理。
+     *
+     * 保留这条路径是因为部分定制系统不发 `LOSS_TRANSIENT`、只发 `CAN_DUCK`；
+     * 正常情况下 [AudioFocusCoordinator] 已经用 `setWillPauseWhenDucked(true)`
+     * 把压低换成了"暂停 → 焦点回来续播"。
+     */
+    private fun setDucked(ducked: Boolean) {
+        duckFactor = if (ducked) DUCK_FACTOR else 1f
+        applyGain()
+    }
+
+    /** 音频焦点协调器：懒建，因为要等 `init` 拿到 Context */
+    private fun ensureFocus(): AudioFocusCoordinator? {
+        focus?.let { return it }
+        val ctx = appContext ?: return null
+        val audioManager = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return null
+        return AudioFocusCoordinator(
+            audioManager = audioManager,
+            onPause = { pauseInternal(fromFocusLoss = true) },
+            onResume = { resume() },
+            onDuck = { setDucked(it) }
+        ).also { focus = it }
     }
 
     private fun startTicker() {

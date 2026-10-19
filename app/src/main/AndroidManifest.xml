@@ -5,6 +5,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      后台持续播放：媒体类型的前台服务。
+      Android 14 起光有 FOREGROUND_SERVICE 不够，还必须声明具体类型对应的权限，
+      否则 startForeground 会抛 SecurityException。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
         android:name=".AsmrOneApplication"
@@ -30,6 +37,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          播放控制服务：MediaSession（锁屏 / 系统媒体卡片 / 耳机与蓝牙线控）
+          + 媒体通知 + 前台服务态。
+
+          `exported=false` 是对的：它的入口只有本 App 发的 PendingIntent（通知上的
+          三个按钮）与系统投递的媒体按键 —— 都不需要对外暴露。
+        -->
+        <service
+            android:name=".player.PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <!--
           文件树里 PDF 的「交给外部阅读器打开」通道。
