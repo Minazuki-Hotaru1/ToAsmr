@@ -87,10 +87,6 @@ internal object LyricsStore {
 
     // ─────────────────────────── 读写 ───────────────────────────
 
-    /** 这首歌词是否已经落过盘（只做 stat，不解析内容） */
-    fun has(sourceId: String?, workId: Int, trackPath: String): Boolean =
-        candidates(sourceId, workId, trackPath).any { it.exists() }
-
     suspend fun load(sourceId: String?, workId: Int, trackPath: String): LyricsLoad.Ready? =
         withContext(Dispatchers.IO) {
             val file = candidates(sourceId, workId, trackPath).firstOrNull { it.exists() }

@@ -311,29 +311,6 @@ fun MainApp() {
     }
 
     /**
-     * 整部作品的歌词补写 —— **真正开始播放之后**，把这套音轨的歌词全部取一遍并落盘。
-     *
-     * 为什么整部补而不是只补当前这首：歌词极小（一部 40 首通常不到 200KB），
-     * 补齐之后无论切歌还是重启都只读本地；只补当前这首的话，切一次歌就可能
-     * 多一次联网。
-     *
-     * 为什么等 `isPlaying`：冷启动恢复出来的是暂停态，那时候用户什么都没点，
-     * 不该替他把一整部作品的歌词都拉下来。按下播放之后再补写，语义上就是
-     * "听到这部作品了，进入歌词缓存阶段"。
-     *
-     * 并发与去重都在 [LyricsLoader.prefetchWork] 里（并发 3、同作品去重、
-     * 已落盘跳过、失败下次重试）。
-     */
-    LaunchedEffect(playerState.workId, playerState.workSourceId, playerState.isPlaying) {
-        if (!playerState.isPlaying) return@LaunchedEffect
-        LyricsLoader.prefetchWork(
-            workId = playerState.workId,
-            sourceId = playerState.workSourceId,
-            tracks = playerState.tracks
-        )
-    }
-
-    /**
      * 封面加载不需要在这里预热。
      *
      * 播放器覆盖层现在**常驻组合**（见下方 `playerOverlayWarm`），它的
