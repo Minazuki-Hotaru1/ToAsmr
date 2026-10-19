@@ -68,7 +68,7 @@ class SearchDisplayNameGuardTest {
 
     @Test
     fun `★ 候选行显示的是 displayName 而不是 name`() {
-        val body = functionBody(searchScreen, "private fun SuggestionList(")
+        val body = functionBody(searchScreen, "private fun SuggestionDropdown(")
         assertTrue(
             "候选行必须用 displayName（译名）渲染",
             body.contains("text = item.displayName")
@@ -81,12 +81,60 @@ class SearchDisplayNameGuardTest {
 
     @Test
     fun `★ 已选中的输入栏胶囊显示的也是 displayName`() {
-        val body = functionBody(searchScreen, "private fun SlotField(")
+        // 条件行把 displayName 交给胶囊；胶囊只负责排版，不能自己去读 name
+        val row = functionBody(searchScreen, "private fun ConditionRow(")
         assertTrue(
             "胶囊是用户刚点出来的，必须与候选上看到的名字一致",
-            body.contains("text = selected.displayName")
+            row.contains("label = selected.displayName")
         )
-        assertFalse(body.contains("text = selected.name"))
+        assertFalse(row.contains("label = selected.name"))
+
+        val chip = functionBody(searchScreen, "private fun SelectedTagChip(")
+        assertFalse("胶囊里不该出现原始名", chip.contains(".name"))
+    }
+
+    @Test
+    fun `★ 条件行必须有包含排除与删除按钮`() {
+        // 用户明确要求：高级搜索的条件行要像 comicApp 一样有「包含/排除」与「删除」
+        val row = functionBody(searchScreen, "private fun ConditionRow(")
+        assertTrue("缺少包含/排除 chip", row.contains("AsmrFilterChip("))
+        assertTrue("缺少删除按钮", row.contains("ic_delete_fluent"))
+    }
+
+    @Test
+    fun `★ 高级搜索的输入框提示统一为「搜索关键词」`() {
+        // 用户要求：高级搜索里的每一栏都用同一句提示，不再写「第 N 栏：…」
+        assertTrue(
+            "提示统一为「搜索关键词」",
+            searchScreen.contains("placeholder = \"搜索关键词\"")
+        )
+        assertFalse(
+            "不该再有「第 N 栏：…」这种说明",
+            searchScreen.contains("第 \${index + 1} 栏")
+        )
+    }
+
+    @Test
+    fun `★ 高级搜索的输入框与普通搜索一样高`() {
+        // FilterChip 默认会把布局撑到 48dp，行高就比普通搜索的 40dp 输入框高；
+        // 关掉最小触控尺寸后，行高由输入框决定。
+        val row = functionBody(searchScreen, "private fun ConditionRow(")
+        assertTrue(
+            "把最小触控尺寸设成 40dp（否则 Material 会撑到 48dp，行高比普通搜索高）",
+            row.contains("LocalMinimumInteractiveComponentSize provides 40.dp")
+        )
+    }
+
+    @Test
+    fun `★ 结果数量放在列表第一行，而不是顶栏副标题`() {
+        val result = read("ui/screen/search/SearchResultScreen.kt")
+        assertTrue("数量交给列表首行", result.contains("headerText ="))
+        assertFalse(
+            "顶栏不再挂数量副标题",
+            result.contains("subtitle = if (state.totalCount")
+        )
+        val grid = read("ui/component/WorkResultGrid.kt")
+        assertTrue("公共列表要支持首行说明", grid.contains("headerText: String?"))
     }
 
     // ═══════════════ 选中之后回显 ═══════════════
@@ -115,12 +163,30 @@ class SearchDisplayNameGuardTest {
 
     @Test
     fun `★ 结果页与历史的摘要用 displayName`() {
-        val state = functionBody(searchViewModel, "val description: String")
+        // 摘要现在由分段拼成：VM 只把 slot 交给 SearchSummarySegment，
+        // 真正取名字的那一步在 ofCondition 里 —— 两处都要守。
+        val segments = functionBody(searchViewModel, "val descriptionSegments")
         assertTrue(
             "摘要里出现原始名，用户会以为搜的是另一个标签",
-            state.contains("selected.displayName")
+            segments.contains("SearchSummarySegment.ofCondition")
         )
-        assertFalse(state.contains("selected.name"))
+        assertFalse(segments.contains("selected.name"))
+
+        // SearchSummary.kt 是一个只负责"怎么拼文本"的小文件，整文件断言更稳
+        // （ofCondition 是表达式函数体，没有大括号可配对）
+        val summary = read("data/model/SearchSummary.kt")
+        assertTrue(summary.contains("condition.displayName"))
+        assertFalse(summary.contains("condition.name"))
+    }
+
+    @Test
+    fun `★ 排除项以 - 开头，界面据此画红`() {
+        val summary = read("data/model/SearchSummary.kt")
+        assertTrue("排除项要加前缀横杠", summary.contains("if (condition.exclude) \"-\""))
+        assertTrue(
+            "分段要带上 exclude，界面才知道该画红",
+            summary.contains("exclude = condition.exclude")
+        )
     }
 
     @Test

@@ -43,7 +43,7 @@ import com.asmrone.app.ui.component.CompactSearchField
 import com.asmrone.app.ui.component.FlatDivider
 import com.asmrone.app.ui.component.FlatRow
 import com.asmrone.app.ui.component.FlatSection
-import com.asmrone.app.ui.screen.settings.SettingsSubPage
+import com.asmrone.app.ui.screen.settings.SettingsScaffold
 import com.asmrone.app.ui.theme.ErrorColor
 import com.asmrone.app.ui.theme.SuccessColor
 import com.asmrone.app.ui.theme.TouchTarget
@@ -87,7 +87,7 @@ fun LoginScreen(
         }
     }
 
-    SettingsSubPage(
+    SettingsScaffold(
         title = if (ui.registerMode) "注册账号" else "登录",
         onBack = onBack
     ) {

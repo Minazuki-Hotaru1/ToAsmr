@@ -1,189 +1,205 @@
 package com.asmrone.app.ui.component
 
 import androidx.annotation.DrawableRes
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Icon
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.BlurredEdgeTreatment
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.asmrone.app.ui.theme.Elevation
-import com.asmrone.app.ui.theme.Glass
-import com.asmrone.app.ui.theme.Sizes
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.HazeStyle
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
+import com.asmrone.app.ui.theme.GlassStylePrefs
+import com.asmrone.app.ui.theme.Liquid
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.shapes.Capsule
 
 /**
- * ─────────────────────────────────────────────────────────────
- * 液态玻璃材质套件（对齐 comicApp 2026-10-14 重做的新配方）
+ * ═══════════════════════════════════════════════════════════
+ * 液态玻璃材质内核（与 comicApp 的 `GlassSurface.kt` 同一份实现）
  *
- * 相比上一版（模糊 26dp / 噪点 0.05 / 1dp 渐变高光描边），新版：
- *  - **轻模糊**：真实背景模糊半径降到 12dp —— 玻璃要"透"，糊成一片就失去玻璃感；
- *  - **半透明色纱**：surface 约 60% 不透明度（参考实现 #F2F2F7 @ 63%）；
- *  - **发丝描边**：0.8dp 纯白（浅色主题 40% / 深色主题 20%），这是观感变精致的关键；
- *  - **去噪点**、投影收敛到 8dp。
+ * 材质由 Backdrop 提供：
+ *  - `vibrancy()`        —— 让底下的颜色透上来更"鲜活"
+ *  - `blur(dp)`          —— 轻模糊，玻璃要"透"，糊成一片就失去玻璃感
+ *  - `lens(h, amount)`   —— **边缘折射**，这是"液态"的关键；可开启色散
+ *  - `onDrawSurface`     —— 半透明色纱（默认 surface @ 38%）
  *
- * 参数全部来自 `ui/theme/Tokens.kt` 的 [Glass]，想整体调风格只改那一处。
- * ─────────────────────────────────────────────────────────────
+ * 所有数值来自 [GlassStylePrefs]（设置 → 外观 → 液态玻璃可实时调），
+ * 所以全应用的玻璃永远保持一致。
+ *
+ * ⚠️ 使用前提：被取样的页面内容层要挂
+ * `Modifier.layerBackdrop(backdrop)`，玻璃元素再把同一个 backdrop 传给 `drawBackdrop`。
+ * ═══════════════════════════════════════════════════════════
  */
 
 /**
- * 顶部「渐变模糊」底衬 —— 全应用统一：二级页面的悬浮顶栏、主页面的透明顶栏都用它。
+ * 液态玻璃按钮的统一配方。
  *
- * 用「普通模糊 + 竖直渐变遮罩」实现：顶部模糊最强、向下渐隐到无，
- * 比 Haze 的 progressive 更平滑可控，性能开销也可以忽略。
- * 挂着它的这一层要位于**内容之上、标题/药丸之下**。
- */
-fun Modifier.topGradientBlur(hazeState: HazeState): Modifier = hazeEffect(state = hazeState) {
-    blurRadius = Glass.topBlurRadius
-    noiseFactor = 0f
-    mask = Brush.verticalGradient(
-        colors = listOf(
-            Color.Black,                       // 顶部：模糊最强
-            Color.Black.copy(alpha = 0.5f),
-            Color.Transparent                  // 底部：完全不模糊
-        )
-    )
-}
-
-/**
- * 发丝描边的颜色：浅色主题白色 40%、深色主题白色 20%。
+ * 顶栏标题胶囊、返回/刷新圆钮、详情页「开始播放」、迷你播放器都用这一份：
+ *  - 有 backdrop：`vibrancy + blur + lens` + 半透明色纱
+ *  - 没有 backdrop（如弹窗、未挂取样层的页面）：退化为半透明实底 + 0.8dp 白描边
  *
- * 按**页面背景亮度**判断深浅色，而不是 `isSystemInDarkTheme()` ——
- * 这样应用内的主题切换（跟随系统 / 强制亮色 / 强制暗色）同样生效。
+ * @param scaleX/scaleY 按压缩放。传进来时玻璃层自己会反向变换，
+ *        所以折射不会因为缩放而错位。
  */
 @Composable
-fun glassHairline(): Color {
-    val dark = MaterialTheme.colorScheme.background.luminanceIsDark()
-    return Color.White.copy(alpha = if (dark) Glass.HAIRLINE_DARK else Glass.HAIRLINE_LIGHT)
-}
-
-/**
- * 全应用统一的「液态玻璃」材质 —— 底部导航栏、二级页面顶部栏、迷你播放器共用。
- *
- *  - 有 [hazeState] 时：用 Haze 取下方内容做**真实背景模糊** + 半透明色纱；
- *  - 没有时：退化为半透明实底（不模糊）；
- *  - 最后叠 0.8dp 发丝描边与投影。
- *
- * 注意：使用 [hazeState] 时，被取样的内容需要挂 `Modifier.hazeSource(state)`。
- */
-@Composable
-fun Modifier.glassSurface(
+fun Modifier.backdropButton(
+    backdrop: Backdrop?,
     shape: Shape,
-    hazeState: HazeState?,
-    elevation: Dp = Elevation.glass,
-    tintAlpha: Float = Glass.TINT_ALPHA,
-    blurRadius: Dp = Glass.blurRadius
+    surfaceColor: Color = MaterialTheme.colorScheme.surface,
+    scaleX: Float = 1f,
+    scaleY: Float = 1f
 ): Modifier {
-    val cs = MaterialTheme.colorScheme
-    val hairline = glassHairline()
-    // 注意：这里必须显式从 Modifier 起头，不能用隐式接收者（`this`），
-    // 否则会把调用方传入的 Modifier 再串一次（内边距/inset 被重复应用）。
-    val filled = if (hazeState != null) {
-        Modifier.hazeEffect(
-            state = hazeState,
-            style = HazeStyle(
-                backgroundColor = Color.Transparent,
-                tint = HazeTint(cs.surface.copy(alpha = tintAlpha)),
-                blurRadius = blurRadius,
-                noiseFactor = Glass.NOISE
-            )
+    val style by GlassStylePrefs.style.collectAsState()
+    val fallbackBorder = Color.White.copy(alpha = 0.35f)
+    return if (backdrop != null) {
+        this.drawBackdrop(
+            backdrop = backdrop,
+            shape = { shape },
+            effects = {
+                vibrancy()
+                blur(style.blurRadius.dp.toPx())
+                lens(
+                    refractionHeight = style.refractionHeight.dp.toPx(),
+                    refractionAmount = style.refractionAmount.dp.toPx(),
+                    chromaticAberration = style.chromaticAberration
+                )
+            },
+            layerBlock = if (scaleX != 1f || scaleY != 1f) {
+                {
+                    this.scaleX = scaleX
+                    this.scaleY = scaleY
+                }
+            } else {
+                null
+            },
+            onDrawSurface = { drawRect(surfaceColor.copy(alpha = style.surfaceAlpha)) }
         )
     } else {
-        Modifier.background(cs.surface.copy(alpha = Glass.FALLBACK_ALPHA), shape)
+        this
+            .background(
+                surfaceColor.copy(alpha = (style.surfaceAlpha + 0.45f).coerceAtMost(0.9f)),
+                shape
+            )
+            .border(0.8.dp, fallbackBorder, shape)
     }
-    return this
-        .shadow(elevation = elevation, shape = shape, clip = false)
-        .clip(shape)
-        .then(filled)
-        .border(width = Glass.borderWidth, color = hairline, shape = shape)
 }
 
 /**
- * 圆形玻璃药丸按钮（返回 / 收藏 / 刷新等），默认 44dp。
+ * 顶栏下方的柔和底色过渡（替代旧的「渐变模糊」）。
  *
- * 与 [glassSurface] 的差别：**不使用 `shadow`**。
- * 诊断结论：小尺寸节点上再叠一层 shadow 的图形层，会在图标周围留下白色渲染杂讯
- * （去掉玻璃即消失）。所以圆形按钮只用「圆形裁剪 → Haze 真实模糊 → 发丝描边」实现：
- *  - `blurredEdgeTreatment = Unbounded`：避免圆形边缘的模糊被截断；
- *  - 显式给 `fallbackTint`：系统不支持模糊时退化为半透明玻璃底，而不是白底；
- *  - 图标作为兄弟节点单独绘制，不参与玻璃层。
+ * 二级页的药丸本身已经提供了足够的可读性，所以用较低的不透明度保留封面；
+ * 主页面的大标题没有玻璃底，使用更高的不透明度压住滚动内容。
+ */
+@Composable
+fun Modifier.topBarFade(maxAlpha: Float = Liquid.TOP_FADE_ALPHA): Modifier {
+    val background = MaterialTheme.colorScheme.background
+    // 显式返回接收者，否则 matchParentSize 等布局修饰符会丢失
+    return this.drawBehind {
+        drawRect(
+            Brush.verticalGradient(
+                0.0f to background.copy(alpha = maxAlpha),
+                0.55f to background.copy(alpha = maxAlpha * 0.45f),
+                1.0f to Color.Transparent
+            )
+        )
+    }
+}
+
+/**
+ * 圆形液态玻璃按钮（返回 / 收藏 / 播放…），默认 48dp。
  *
- * 图标为 Fluent 矢量图资源（`@DrawableRes`）。
+ * 与 [backdropButton] 的区别在于**它自己处理按压动画**：
+ * 整个玻璃圆盘轻微缩小到 0.94，`drawBackdrop` 的 layerBlock 会同步反向变换背景。
+ * 加载中只替换内容（换成一枚 20dp 的进度圈），外框尺寸保持不变。
+ *
+ * ⚠️ 这里**不叠 `shadow`**：小尺寸节点上再叠一层阴影的图形层，
+ * 会在图标周围留下白色渲染杂讯（comicApp 里记过同样一条坑）。
  */
 @Composable
 fun GlassCircleButton(
-    hazeState: HazeState?,
+    backdrop: Backdrop?,
     @DrawableRes iconRes: Int,
     contentDescription: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    // 与顶栏标题药丸共用同一个高度 Token，保证两者永远等高
-    size: Dp = Sizes.TOP_BAR_CONTROL,
-    tint: Color = MaterialTheme.colorScheme.onBackground
+    size: Dp = Liquid.CONTROL_HEIGHT,
+    tint: Color = MaterialTheme.colorScheme.onBackground,
+    loading: Boolean = false
 ) {
     val cs = MaterialTheme.colorScheme
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) Liquid.CIRCLE_PRESSED_SCALE else 1f,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 700f),
+        label = "glassCircleScale"
+    )
+
     Box(
         modifier = modifier
             .size(size)
+            // 点击区域包在玻璃外层：整个圆盘都可点，不会被内部绘制层裁小
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interactionSource,
                 indication = null,
+                enabled = !loading,
                 onClick = onClick
+            )
+            .backdropButton(
+                backdrop = backdrop,
+                shape = CircleShape,
+                surfaceColor = cs.surface,
+                scaleX = scale,
+                scaleY = scale
             ),
         contentAlignment = Alignment.Center
     ) {
-        // 第一层：玻璃本体（不含内容，也不叠 shadow）
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .clip(CircleShape)
-                .then(
-                    if (hazeState != null) {
-                        Modifier.hazeEffect(
-                            state = hazeState,
-                            style = HazeStyle(
-                                backgroundColor = Color.Transparent,
-                                tint = HazeTint(cs.surface.copy(alpha = Glass.PILL_TINT_ALPHA)),
-                                blurRadius = Glass.pillBlurRadius,
-                                noiseFactor = Glass.NOISE,
-                                fallbackTint = HazeTint(cs.surface.copy(alpha = Glass.FALLBACK_ALPHA))
-                            )
-                        ) { blurredEdgeTreatment = BlurredEdgeTreatment.Unbounded }
-                    } else {
-                        Modifier.background(cs.surface.copy(alpha = Glass.FALLBACK_ALPHA), CircleShape)
-                    }
-                )
-                .border(width = Glass.borderWidth, color = glassHairline(), shape = CircleShape)
-        )
-        // 第二层：图标（独立于玻璃层）
-        Icon(
-            painter = painterResource(iconRes),
-            contentDescription = contentDescription,
-            tint = tint,
-            modifier = Modifier.size(20.dp)
-        )
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = cs.primary
+            )
+        } else {
+            FluentIcon(
+                res = iconRes,
+                contentDescription = contentDescription,
+                tint = tint,
+                size = 22.dp
+            )
+        }
     }
 }
 
-/** 底色偏暗判定（0.299 / 0.587 / 0.114 是常用的亮度近似权重） */
+/** 标题药丸 / 大按钮统一使用的胶囊形状。 */
+val LiquidCapsule = Capsule()
+
+/**
+ * 底色偏暗判定（0.299 / 0.587 / 0.114 是常用的亮度近似权重）。
+ *
+ * 用**页面背景亮度**判断深浅色，而不是 `isSystemInDarkTheme()` ——
+ * 这样应用内的主题切换（跟随系统 / 强制亮色 / 强制暗色）同样生效。
+ */
 internal fun Color.luminanceIsDark(): Boolean =
     (0.299f * red + 0.587f * green + 0.114f * blue) < 0.5f

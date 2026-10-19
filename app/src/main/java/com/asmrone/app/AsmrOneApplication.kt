@@ -3,11 +3,13 @@ package com.asmrone.app
 import android.app.Application
 import android.content.pm.ApplicationInfo
 import com.asmrone.app.data.audio.AudioCacheMaintenance
+import com.asmrone.app.data.cache.CacheFiles
 import com.asmrone.app.data.cache.CircleDictionary
 import com.asmrone.app.data.diag.HttpLog
 import com.asmrone.app.data.cache.PendingWriteStore
 import com.asmrone.app.data.cache.TagDictionary
 import com.asmrone.app.data.cache.TrackTreeStore
+import com.asmrone.app.data.lyrics.LyricsStore
 import com.asmrone.app.data.cache.SyncCacheStore
 import com.asmrone.app.data.cache.VoiceActorDictionary
 import com.asmrone.app.data.prefs.AccountStore
@@ -30,12 +32,17 @@ class AsmrOneApplication : Application() {
         AccountStore.init(this)
         // 搜索历史（SharedPreferences）；搜索页会直接读它，所以要早于首次组合
         SearchHistoryStore.init(this)
+        // 缓存结构升级：版本不一致就作废旧 JSON 并重置"今天已对齐"的记账。
+        // 必须在 SyncCacheStore 之前 —— 否则会先读到旧结构、又因为 304 永不重写。
+        CacheFiles.ensureSchema(this)
         // 收藏类数据的本地镜像（JSON 文件）；必须在第一次读取收藏之前就绪
         SyncCacheStore.init(this)
         // 待补写队列：装的是"用户已表达、但还没写到云端"的操作，同样要早于首次读取
         PendingWriteStore.init(this)
         // 文件树的本地持久化（按 RJ 号）：进入作品时写入，冷启动后播放器/歌词页直接读
         TrackTreeStore.init(this)
+        // 已解析歌词的本地持久化：冷启动直接读盘，不再为同一首歌词重复联网
+        LyricsStore.init(this)
         // 搜索用的三本字典（本地 JSON）：标签 / 声优 / 社团。
         // 搜索界面会直接读它们，所以要早于首次组合。
         TagDictionary.init(this)

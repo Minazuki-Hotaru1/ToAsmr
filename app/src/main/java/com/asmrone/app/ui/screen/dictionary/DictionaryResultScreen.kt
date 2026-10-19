@@ -2,11 +2,8 @@ package com.asmrone.app.ui.screen.dictionary
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -28,10 +25,11 @@ import com.asmrone.app.data.repo.DictionaryQuery
 import com.asmrone.app.ui.component.EmptyHint
 import com.asmrone.app.ui.component.ErrorHint
 import com.asmrone.app.ui.component.GlassTopBar
-import com.asmrone.app.ui.component.LocalStableStatusBarTop
+import com.asmrone.app.ui.theme.Liquid
+import com.asmrone.app.ui.component.rememberStatusBarTopDp
 import com.asmrone.app.ui.component.WorkResultGrid
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 「某一项字典资源的作品」页 —— 详情页点标签 / 声优 / 社团**直达**的结果页。
@@ -60,17 +58,16 @@ fun DictionaryResultScreen(
     val state by viewModel.state.collectAsState()
     val host = remember { AsmrRepository.host }
     val progressMap by LibraryStore.progress.collectAsState()
-    val hazeState = rememberHazeState()
+    val backdrop = rememberLayerBackdrop()
 
     val density = LocalDensity.current
-    val statusTopDp = LocalStableStatusBarTop.current
-        ?: with(density) { WindowInsets.statusBars.asPaddingValues().calculateTopPadding() }
+    val statusTopDp = rememberStatusBarTopDp()
     var barHeight by remember {
-        mutableIntStateOf(with(density) { (statusTopDp + 56.dp).roundToPx() })
+        mutableIntStateOf(with(density) { (statusTopDp + Liquid.TOP_BAR_HEIGHT).roundToPx() })
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Box(modifier = Modifier.fillMaxSize().hazeSource(hazeState)) {
+        Box(modifier = Modifier.fillMaxSize().layerBackdrop(backdrop)) {
             when {
                 state.loading -> Box(
                     modifier = Modifier.fillMaxSize(),
@@ -95,29 +92,29 @@ fun DictionaryResultScreen(
                     progressMap = progressMap,
                     // 顶部让开玻璃栏的高度（与搜索结果页同一套算法）
                     contentPadding = PaddingValues(
-                        top = with(density) { barHeight.toDp() } + 12.dp,
-                        bottom = 100.dp
+                        top = with(density) { barHeight.toDp() } + Liquid.CONTENT_TOP_GAP,
+                        bottom = Liquid.CONTENT_BOTTOM_INSET
                     ),
                     onWorkClick = onWorkClick,
                     onLoadMore = { viewModel.loadMore() },
-                    totalCount = state.totalCount,
-                    description = state.description,
+                    // 「N 部作品 · 按什么筛出来的」不再放顶栏副标题，
+                    // 而是和搜索结果页一样作为列表**第一行**，随内容一起滚动
+                    headerText = if (state.totalCount > 0) {
+                        "${state.totalCount} 部作品 · ${state.description}"
+                    } else {
+                        state.description
+                    },
                     hasMore = state.hasMore,
                     loadingMore = state.loadingMore
                 )
             }
         }
 
-        // 标题就是这一项的名字；副标题说清"这是按什么筛出来的"
+        // 标题就是这一项的名字；数量与"按什么筛出来的"已移到列表第一行
         GlassTopBar(
             title = state.title.ifBlank { query.displayName },
-            subtitle = if (state.totalCount > 0) {
-                "${state.totalCount} 部作品 · ${state.description}"
-            } else {
-                state.description
-            },
             onBack = onBack,
-            hazeState = hazeState,
+            backdrop = backdrop,
             modifier = Modifier.onSizeChanged { barHeight = it.height }
         )
     }

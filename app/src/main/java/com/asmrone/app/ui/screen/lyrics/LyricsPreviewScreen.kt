@@ -24,12 +24,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import com.asmrone.app.ui.component.LiquidSlider
+import com.asmrone.app.ui.component.rememberStatusBarTopDp
+import com.asmrone.app.ui.theme.Liquid
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -47,7 +48,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -60,104 +64,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.asmrone.app.R
 import com.asmrone.app.data.lyrics.LyricLine
 import com.asmrone.app.data.lyrics.LyricsLoad
 import com.asmrone.app.data.lyrics.LyricsLoader
-import com.asmrone.app.ui.component.GlassCircleButton
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-// ───────────────────────────── 演示数据 ─────────────────────────────
-
-/** 演示总时长：**精确 2:00**。进度条范围、时钟循环、歌词时间轴都以它为准 */
-private const val DEMO_TOTAL_MS = 120_000L
-
-/** 前奏空白 / 结尾空白（毫秒） */
-private const val LYRIC_INTRO_MS = 600L
-private const val LYRIC_TAIL_MS = 600L
-
-/**
- * 演示歌词（**假数据**，与真实音频无关）。
- *
- * 时间轴按 [DEMO_TOTAL_MS] **自动分配**：把「总时长 − 前奏 − 结尾」均分给所有行，
- * 每行只记录**起始时间**（不再有逐字时间片），最后一行也必然落在 2:00 之前。
- */
-private val DemoLyrics: List<LyricLine> = run {
-    val seed = listOf(
-        "こんばんは。今日も一日、お疲れさま。" to "晚上好。今天一整天，辛苦了。",
-        "ここに来てくれて、ありがとう。" to "谢谢你来到这里。",
-        "まずは、深く息を吸ってみて。" to "先深深吸一口气。",
-        "ゆっくり、口から吐いて。もう一度。" to "再慢慢从嘴里吐出来，再一次。",
-        "肩の力を、すとんと抜いてね。" to "让肩膀的力气，一下子松掉。",
-        "頭のてっぺんから、ゆるめていくよ。" to "从头顶开始，一点点放松。",
-        "おでこ、まぶた、頬……" to "额头、眼皮、脸颊……",
-        "あごの力も、いらないよ。" to "下巴的力气也不需要了。",
-        "首の後ろが、あったかくなってきた。" to "后颈开始变得暖暖的。",
-        "手のひらを、ゆっくり開いて。" to "慢慢把手掌张开。",
-        "指の先まで、力が抜けていく。" to "力气一直松到指尖。",
-        "足のつま先まで、ぽかぽかしてる。" to "连脚尖都暖暖的。",
-        "今、君のそばで、息をしているよ。" to "现在，我就在你身边呼吸着。",
-        "耳元で、小さく話しているから。" to "在你耳边轻轻地说话。",
-        "髪を、そっと撫でてあげる。" to "轻轻抚摸你的头发。",
-        "眠くなってきたら、そのままでいい。" to "如果困了，就这样睡吧。",
-        "頑張らなくていいんだよ。" to "不用努力也没关系的。",
-        "何も考えなくて、大丈夫。" to "什么都不用想，没问题的。",
-        "僕の声だけ、追いかけてみて。" to "只要跟着我的声音就好。",
-        "遠くの音は、聞こえなくていい。" to "远处的声音，听不见也没关系。",
-        "雨の音みたいに、静かに。" to "像雨声一样，安安静静地。",
-        "呼吸が、少しずつ深くなる。" to "呼吸一点点变深了。",
-        "まぶたが、だんだん重いね。" to "眼皮渐渐变重了呢。",
-        "その重さに、身をあずけて。" to "把身体交给那份重量。",
-        "大丈夫、ここは安全だから。" to "没关系，这里是安全的。",
-        "朝まで、ずっとそばにいるよ。" to "我会一直在你身边，直到早上。",
-        "もし目が覚めたら、また呼んで。" to "如果醒了，再叫我一声。",
-        "おやすみ。いい夢を見てね。" to "晚安。做个好梦。",
-        "また明日、ここで会おうね。" to "明天也在这里见面吧。",
-        "ゆっくり、休んでいいよ。" to "慢慢休息就好。",
-        "焦らなくて、いいからね。" to "不用着急，也没关系。",
-        "今夜は、何もしなくていい。" to "今晚什么也不用做。",
-        "静かな部屋で、ふたりきり。" to "安静的房间，只有我们两个。",
-        "時計の音だけが、聞こえるね。" to "只听得见钟表的声音呢。",
-        "その音に、合わせて呼吸して。" to "跟着那个声音呼吸。",
-        "体中が、ふわふわしてきた。" to "整个身体都轻飘飘的。",
-        "夢の入り口に、立っているよ。" to "我们正站在梦的入口。",
-        "手を、つないでおくね。" to "我牵着你的手。",
-        "離さないから、安心して。" to "不会放开，所以安心吧。",
-        "明日のことは、明日でいい。" to "明天的事，明天再说就好。",
-        "今はただ、眠ってね。" to "现在只管睡吧。",
-        "ゆっくり、深く、眠ってね。" to "慢慢地、深深地，睡去吧。",
-        "ゆっくり、目を閉じてごらん。" to "慢慢试着闭上眼睛。",
-        "おやすみなさい。また明日。" to "晚安，明天见。"
-    )
-    // 把可用时长均分：每行占一个等长的时间片，行首 = 前奏 + index * pitch
-    val pitchMs = (DEMO_TOTAL_MS - LYRIC_INTRO_MS - LYRIC_TAIL_MS) / seed.size
-    var cursor = LYRIC_INTRO_MS
-    seed.map { (original, translation) ->
-        val start = cursor
-        cursor += pitchMs
-        LyricLine(
-            original = original,
-            translation = translation,
-            startMs = start
-        )
-    }
-}
-
-/** 演示总时长（与进度条 / 时钟循环一致，精确 2:00） */
-private val DemoDurationMs: Long
-    get() = DEMO_TOTAL_MS
-
 // ───────────────────── Apple Music 风格的参数（对齐参考实现） ─────────────────────
 
-/** 每行的固定高度（含行间距）：固定行高让滚动换算确定 */
-private val LyricRowHeight = 104.dp
+/** 每行的固定高度（含行间距）：固定行高让滚动换算确定。88dp 是缩小后的值 —— 原 104dp 行间空隙偏大 */
+private val LyricRowHeight = 88.dp
 
 /** 当前行距视口顶部的固定距离 —— Apple Music 的歌词不居中，而是锚在偏上位置 */
 private val FocusAnchor = 64.dp
@@ -191,144 +112,6 @@ private const val MAX_ANIMATED_DISTANCE = 12
  */
 private const val MAX_BLURRED_DISTANCE = 6
 
-// ───────────────────────────── 页面 ─────────────────────────────
-
-/**
- * 歌词效果预览页（独立演示页，**不接真实音频**）。
- *
- * 效果：**Apple Music 风格的逐字卡拉OK + 交错滚动 + 浏览式拖动**。
- * 参数与做法对齐参考项目 `accompanist-lyrics-ui`（其目标就是复刻 Apple Music）。
- *
- * 交互约定：
- *  - **点击某一行** → 跳到该行（唯一的跳转入口）；
- *  - **上下拖动** → 只是浏览歌词，**不改播放位置**：歌词跟手、逐字填充随手指**连续**变化、
- *    **不做模糊**；松手后若 **3 秒无操作**，平滑回到当前播放的歌词；
- *  - 3 秒窗口内**再次拖动**会**接着上次浏览的位置**继续（不会弹回播放行）。
- */
-@Composable
-fun LyricsPreviewScreen(onBack: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    val hazeState = rememberHazeState()
-
-    var playing by remember { mutableStateOf(true) }
-    var browsingLyrics by remember { mutableStateOf(false) }
-
-    // 播放时钟（按帧推进，播到末尾回到开头循环）
-    val clock = remember { mutableLongStateOf(0L) }
-    val currentIndex by remember {
-        derivedStateOf {
-            DemoLyrics.indexOfLast { it.startMs <= clock.longValue }.coerceAtLeast(0)
-        }
-    }
-
-    LaunchedEffect(playing) {
-        if (!playing) return@LaunchedEffect
-        var lastFrame = 0L
-        while (true) {
-            withFrameNanos { now ->
-                if (lastFrame != 0L) {
-                    val deltaMs = (now - lastFrame) / 1_000_000L
-                    val next = clock.longValue + deltaMs
-                    clock.longValue = if (next >= DemoDurationMs) next - DemoDurationMs else next
-                }
-                lastFrame = now
-            }
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(cs.background)
-            .hazeSource(hazeState)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
-            // ── 顶栏 ──
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                GlassCircleButton(
-                    hazeState = hazeState,
-                    iconRes = R.drawable.ic_arrow_left_fluent,
-                    contentDescription = "返回",
-                    onClick = onBack
-                )
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "歌词效果预览",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = cs.onBackground
-                    )
-                    Text(
-                        text = "Apple Music 风格 · 点击歌词跳转 · 拖拽浏览（松手惯性 · 3 秒后返回）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = cs.onSurfaceVariant
-                    )
-                }
-            }
-
-            // ── 歌词区 ──
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                AppleMusicLyrics(
-                    currentIndex = currentIndex,
-                    lines = DemoLyrics,
-                    onSeek = { startMs ->
-                        // 点击歌词 = 跳转（唯一的跳转入口）
-                        clock.longValue = startMs
-                        playing = true
-                    },
-                    onBrowsingChange = { browsingLyrics = it }
-                )
-            }
-
-            // ── 底部：播放/暂停 + 进度（拖动歌词不会改动它）──
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                GlassCircleButton(
-                    hazeState = hazeState,
-                    iconRes = if (playing) R.drawable.ic_pause_fluent else R.drawable.ic_play_fluent,
-                    contentDescription = if (playing) "暂停" else "播放",
-                    onClick = { playing = !playing }
-                )
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = if (browsingLyrics) {
-                            "浏览歌词中 · 3 秒后回到当前歌词"
-                        } else {
-                            "${formatMs(clock.longValue)} / ${formatMs(DemoDurationMs)}"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (browsingLyrics) cs.primary else cs.onSurfaceVariant
-                    )
-                    Slider(
-                        value = clock.longValue.toFloat(),
-                        onValueChange = { value ->
-                            playing = false
-                            clock.longValue = value.toLong()
-                        },
-                        valueRange = 0f..DemoDurationMs.toFloat(),
-                        modifier = Modifier.height(30.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
 // ─────────────── Apple Music 风格歌词（交错 + 浏览式拖动 + 松手惯性） ───────────────
 
 /**
@@ -352,17 +135,44 @@ private fun AppleMusicLyrics(
     focusedColor: Color? = null,
     inactiveColor: Color? = null,
     translationColor: Color? = null,
-    fadeColor: Color? = null
+    rowHorizontalPadding: Dp = 16.dp
 ) {
     if (lines.isEmpty()) return
     val cs = MaterialTheme.colorScheme
     val resolvedFocusedColor = focusedColor ?: cs.primary
     val resolvedInactiveColor = inactiveColor ?: cs.onSurfaceVariant
     val resolvedTranslationColor = translationColor ?: cs.onSurfaceVariant.copy(alpha = 0.75f)
-    val resolvedFadeColor = fadeColor ?: cs.background
-    BoxWithConstraints(modifier = Modifier.fillMaxSize().clipToBounds()) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds()
+            // 上下边缘的淡出用 **DstIn 蒙版**，而不是盖一层深色。
+            //
+            // 盖深色的问题：在歌词页上会形成一块边界清楚的暗色区域 ——
+            // 播放器里尤其明显（上下是透明顶栏 / 深色控件，中间突然一块更黑），
+            // 看起来像"把歌词组件贴进了一个分区"。
+            // 蒙版则是把歌词**本身**渐隐到透明，露出来的是页面原本的背景，
+            // 与封面页、顶栏、底部控件自然连成一片。
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithContent {
+                drawContent()
+                val h = size.height
+                if (h <= 0f) return@drawWithContent
+                // 顶部只让"当前行上方 48dp"渐隐（当前行保持完全清晰）；
+                // 底部从 62% 开始渐隐到屏幕底。
+                val topFade = (48.dp.toPx() / h).coerceIn(0.02f, 0.45f)
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        topFade to Color.Black,
+                        0.62f to Color.Black,
+                        1f to Color.Transparent
+                    ),
+                    blendMode = BlendMode.DstIn
+                )
+            }
+    ) {
         val density = LocalDensity.current
-        val viewportPx = with(density) { maxHeight.toPx() }
         val rowPx = with(density) { LyricRowHeight.toPx() }
         val anchorPx = with(density) { FocusAnchor.toPx() }
 
@@ -579,7 +389,7 @@ private fun AppleMusicLyrics(
                                 .then(
                                     if (blurable) Modifier.blur(blurRadius.dp) else Modifier
                                 )
-                                .padding(horizontal = 16.dp),
+                                .padding(horizontal = rowHorizontalPadding),
                             verticalArrangement = Arrangement.Center
                         ) {
                             LyricLineText(
@@ -589,7 +399,7 @@ private fun AppleMusicLyrics(
                                 inactiveColor = resolvedInactiveColor
                             )
                             if (line.translation.isNotBlank()) {
-                                Spacer(Modifier.height(4.dp))
+                                Spacer(Modifier.height(2.dp))
                                 Text(
                                     text = line.translation,
                                     fontSize = 13.sp,
@@ -623,30 +433,8 @@ private fun AppleMusicLyrics(
             }
         }
 
-        // 边缘渐隐：顶部渐隐到「锚点上方 16dp」为止（不盖住当前行），底部下半屏渐隐
-        val topFadeEnd = (anchorPx - with(density) { 16.dp.toPx() }).coerceAtLeast(1f)
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(0f to resolvedFadeColor, 1f to Color.Transparent),
-                        startY = 0f,
-                        endY = topFadeEnd
-                    )
-                )
-        )
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(0f to Color.Transparent, 1f to resolvedFadeColor),
-                        startY = viewportPx * 0.5f,
-                        endY = viewportPx
-                    )
-                )
-        )
+        // 边缘渐隐已经由外层的 DstIn 蒙版完成（见 BoxWithConstraints 的 modifier），
+        // 这里不再盖深色渐变 —— 那正是"分区感"的来源。
     }
 }
 
@@ -667,6 +455,16 @@ private fun AppleMusicLyrics(
  *  3. 只有缓存没命中（预热还没完成 / 预热失败）才回落到异步加载。
  *
  * 所以正常路径下，滑到歌词页看到的已经是成品。
+ *
+ * ## [active]：不显示时不联网
+ *
+ * 播放器覆盖层是常驻组合的（冷启动就挂上）。如果一挂上就来这里加载歌词，
+ * 就会出现"用户什么都没点，网络日志里却多了 `/api/media/stream/...`"。
+ *
+ * 所以由覆盖层把"是否正在显示"传进来：
+ *  - `false` → 只读内存与本地磁盘（[LyricsLoader] 落过盘的歌词照样秒出，
+ *    预热效果不丢）；没有就保持加载态，**不发请求**；
+ *  - `true`  → 允许联网补齐。
  */
 @Composable
 fun PlayerLyrics(
@@ -675,16 +473,23 @@ fun PlayerLyrics(
     trackPath: String,
     trackTitle: String,
     positionMs: Long,
-    onSeekTo: (Long) -> Unit
+    onSeekTo: (Long) -> Unit,
+    active: Boolean = true
 ) {
     // 首帧直接拿预热好的结果：命中时整个组合过程不产生挂起
     var result by remember(workId, trackPath) {
         mutableStateOf(LyricsLoader.cached(workId, trackPath))
     }
 
-    LaunchedEffect(workId, trackPath, trackTitle, sourceId) {
+    LaunchedEffect(workId, trackPath, trackTitle, sourceId, active) {
         if (result != null) return@LaunchedEffect
-        result = LyricsLoader.load(workId, sourceId, trackPath, trackTitle)
+        result = LyricsLoader.load(
+            workId = workId,
+            sourceId = sourceId,
+            trackPath = trackPath,
+            trackTitle = trackTitle,
+            allowNetwork = active
+        )
     }
 
     when (val load = result) {
@@ -718,7 +523,8 @@ fun PlayerLyrics(
                 focusedColor = Color.White,
                 inactiveColor = Color.White.copy(alpha = 0.8f),
                 translationColor = Color.White.copy(alpha = 0.55f),
-                fadeColor = Color(0xFF0B0B0D).copy(alpha = 0.78f)
+                // 与封面页的左右留白对齐（封面页是 26dp），歌词不会显得贴边
+                rowHorizontalPadding = 26.dp
             )
         }
     }

@@ -32,14 +32,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.asmrone.app.R
 import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.model.Account
-import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.ui.component.BlockingProgressOverlay
 import com.asmrone.app.ui.component.FlatDivider
 import com.asmrone.app.ui.component.FlatRow
 import com.asmrone.app.ui.component.FlatSection
 import com.asmrone.app.ui.component.SmallTagChip
 import com.asmrone.app.ui.component.TagTone
-import com.asmrone.app.ui.screen.settings.SettingsSubPage
+import com.asmrone.app.ui.screen.settings.SettingsScaffold
 import com.asmrone.app.ui.theme.ErrorColor
 import com.asmrone.app.ui.theme.SuccessColor
 import com.asmrone.app.ui.theme.TouchTarget
@@ -63,13 +62,12 @@ fun AccountSettingsScreen(
     val viewModel: AccountViewModel = viewModel()
     val ui by viewModel.ui.collectAsState()
     val authState by AuthManager.state.collectAsState()
-    val host by AppPrefs.host.collectAsState()
 
     var pendingSwitch by remember { mutableStateOf<Account?>(null) }
     var pendingDelete by remember { mutableStateOf<Account?>(null) }
     var confirmLogout by remember { mutableStateOf(false) }
 
-    SettingsSubPage(title = "账号", onBack = onBack) {
+    SettingsScaffold(title = "账号", onBack = onBack) {
 
         // ── 当前身份 ──────────────────────────────────────
         FlatSection(title = "当前状态") {
@@ -199,7 +197,7 @@ fun AccountSettingsScreen(
             if (ui.accounts.isEmpty()) {
                 FlatRow(
                     title = "还没有保存的账号",
-                    description = "登录成功后会自动记住账号，方便下次一键切换"
+                    description = "登录后会自动保存"
                 )
             }
         }
@@ -209,7 +207,7 @@ fun AccountSettingsScreen(
         FlatSection(title = "操作") {
             FlatRow(
                 title = "添加账号 / 登录其它账号",
-                description = "在同一台设备上保存多个站点的账号",
+                description = "可在一台设备保存多个账号",
                 onClick = onOpenLogin,
                 enabled = !ui.busy,
                 trailing = {
@@ -225,7 +223,7 @@ fun AccountSettingsScreen(
                 FlatDivider()
                 FlatRow(
                     title = "退出登录",
-                    description = "只清除登录状态，已保存的账号会保留",
+                    description = "已保存的账号会保留",
                     onClick = { confirmLogout = true },
                     enabled = !ui.busy,
                     trailing = {
@@ -240,25 +238,6 @@ fun AccountSettingsScreen(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
-
-        // ── 云端数据 ──────────────────────────────────────
-        FlatSection(title = "云端数据") {
-            FlatRow(
-                title = "我的收藏",
-                description = if (authState.isLoggedIn) {
-                    "带「想听 / 在听 / 听过 / 重听 / 搁置」五种状态的收藏，在「收藏」页查看"
-                } else {
-                    "登录后才能使用"
-                }
-            )
-            FlatDivider()
-            FlatRow(
-                title = "当前服务器",
-                description = host
-            )
-        }
-
         ui.error?.let { error ->
             Spacer(Modifier.height(10.dp))
             Text(
@@ -269,21 +248,6 @@ fun AccountSettingsScreen(
             )
         }
 
-        Spacer(Modifier.height(24.dp))
-
-        FlatSection(title = "说明") {
-            FlatRow(
-                title = "密码如何保存",
-                description = "为了支持一键切换账号，密码会明文保存在应用私有存储中；" +
-                    "卸载应用即会一并删除。"
-            )
-            FlatDivider()
-            FlatRow(
-                title = "我的收藏与本地收藏",
-                description = "「我的收藏」是服务器上的状态标记，需要登录；" +
-                    "「本地收藏」只是这台设备上的书签，不需要登录。"
-            )
-        }
     }
 
     // ── 切换账号确认（对齐参考实现的二次确认）──────────────

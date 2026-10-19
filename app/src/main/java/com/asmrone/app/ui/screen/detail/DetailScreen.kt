@@ -11,6 +11,7 @@ import com.asmrone.app.data.model.TrackKind
 import com.asmrone.app.data.model.OpenableFile
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,8 +22,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,7 +29,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -74,7 +72,7 @@ import com.asmrone.app.player.AudioController
 import com.asmrone.app.ui.component.CoverImage
 import com.asmrone.app.ui.component.FileTreeRow
 import com.asmrone.app.ui.component.GlassTopBar
-import com.asmrone.app.ui.component.LocalStableStatusBarTop
+import com.asmrone.app.ui.component.rememberStatusBarTopDp
 import com.asmrone.app.ui.component.SmallTagChip
 import com.asmrone.app.ui.component.TagTone
 import com.asmrone.app.ui.component.TagWallChip
@@ -85,12 +83,15 @@ import com.asmrone.app.ui.screen.library.CollectionStatusDialog
 import com.asmrone.app.ui.screen.library.PlaylistPickerDialog
 import com.asmrone.app.ui.screen.library.PlaylistPickerViewModel
 import com.asmrone.app.ui.theme.ErrorColor
+import com.asmrone.app.ui.component.LiquidCapsule
+import com.asmrone.app.ui.component.backdropButton
+import com.asmrone.app.ui.theme.Liquid
 import com.asmrone.app.ui.theme.RatingStar
-import com.asmrone.app.ui.theme.TouchTarget
 import com.asmrone.app.ui.theme.Sizes
 import com.asmrone.app.ui.theme.WorkTitleStyle
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 作品详情页（单页统一信息）。
@@ -126,15 +127,14 @@ fun DetailScreen(
     LaunchedEffect(workId) { viewModel.load(workId) }
 
     val state by viewModel.state.collectAsState()
-    val hazeState = rememberHazeState()
+    val backdrop = rememberLayerBackdrop()
     val playerState by AudioController.state.collectAsState()
     val listState = rememberLazyListState()
 
     val density = LocalDensity.current
-    val statusTopDp = LocalStableStatusBarTop.current
-        ?: with(density) { WindowInsets.statusBars.asPaddingValues().calculateTopPadding() }
+    val statusTopDp = rememberStatusBarTopDp()
     var barHeight by remember {
-        mutableIntStateOf(with(density) { (statusTopDp + 56.dp).roundToPx() })
+        mutableIntStateOf(with(density) { (statusTopDp + Liquid.TOP_BAR_HEIGHT).roundToPx() })
     }
 
     // 只在展开状态或树本身变化时重新拍平（未展开的子树完全不遍历）
@@ -218,44 +218,23 @@ fun DetailScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background)
-                    .hazeSource(hazeState)
+                    .layerBackdrop(backdrop)
             ) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
-                        top = with(density) { barHeight.toDp() } + 12.dp,
+                        top = with(density) { barHeight.toDp() } + Liquid.CONTENT_TOP_GAP,
                         // 悬浮「开始播放」胶囊已移除；底部只在迷你播放器出现时才需要让位
-                        bottom = if (playerState.isActive) 96.dp else 32.dp
+                        bottom = if (playerState.isActive) Liquid.CONTENT_BOTTOM_INSET else 32.dp
                     )
                 ) {
                     // ① 头图
                     item(key = "hero") { HeroCover(work) }
 
-                    // ② 标题（右侧紧挨收藏按钮）+ 角标
+                    // ② 标题 + 角标（动作在顶栏，见 GlassTopBar 的 actions）
                     item(key = "title") {
-                        TitleBlock(
-                            work = work,
-                            // 收藏按钮现在对应「收藏夹」：已在收藏夹里才点亮（进入页面时未知，
-                            // 由弹窗里的成员检查给出准确状态，见 PlaylistPickerViewModel）
-                            collected = pickerState.workInside && pickerState.selectedId.isNotBlank(),
-                            onToggleFavorite = {
-                                if (authState.isLoggedIn) {
-                                    pickerOpen = true
-                                    pickerViewModel.open(work)
-                                } else {
-                                    toastState.show("请先到「设置 → 账号」登录后再收藏")
-                                }
-                            },
-                            onOpenWork = onOpenWork,
-                            onOpenCollection = {
-                                if (authState.isLoggedIn) {
-                                    collectionDialogOpen = true
-                                } else {
-                                    viewModel.setCollectionStatus(null)
-                                }
-                            }
-                        )
+                        TitleBlock(work = work, onOpenWork = onOpenWork)
                     }
 
                     // ②b 标记失败的**详细**报错（分类原因 + 建议 + 原始详情 + 重试）
@@ -381,12 +360,35 @@ fun DetailScreen(
                 }
             }
 
-            // 悬浮玻璃顶栏：**只有返回 + 标题**两个 UI（收藏已移到图片下方的标题旁）
+            // 悬浮玻璃顶栏：返回 + 标题 + 右侧的「标记 / 收藏夹」动作胶囊
             GlassTopBar(
                 title = work.sourceId ?: work.title,
                 subtitle = work.title.takeIf { work.sourceId != null },
                 onBack = onBack,
-                hazeState = hazeState,
+                backdrop = backdrop,
+                actions = {
+                    DetailTopActions(
+                        status = work.collectionStatus,
+                        // 收藏夹状态：进入页面时未知，由弹窗里的成员检查给出准确状态
+                        collected = pickerState.workInside && pickerState.selectedId.isNotBlank(),
+                        backdrop = backdrop,
+                        onOpenCollection = {
+                            if (authState.isLoggedIn) {
+                                collectionDialogOpen = true
+                            } else {
+                                viewModel.setCollectionStatus(null)
+                            }
+                        },
+                        onToggleFavorite = {
+                            if (authState.isLoggedIn) {
+                                pickerOpen = true
+                                pickerViewModel.open(work)
+                            } else {
+                                toastState.show("请先到「设置 → 账号」登录后再收藏")
+                            }
+                        }
+                    )
+                },
                 modifier = Modifier.onSizeChanged { barHeight = it.height }
             )
 
@@ -495,20 +497,8 @@ private val HeroHorizontalPadding = 20.dp
 /** 头图与下方标题之间的间隔 —— **想拉开/收紧这段留白就改这里** */
 private val HeroTitleGap = 16.dp
 
-/** 标题旁收藏图标的尺寸 —— **想调大/调小改这一个值** */
-private val FavoriteIconSize = 26.dp
-
-/** 收藏图标的触控区（不可见，只为点按手感；比图标大一圈） */
-private val FavoriteIconTouchSize = 44.dp
-
-/**
- * 收藏图标相对标题首行的**下移量**。
- * 标题行高是 24sp，所以这里取 8dp ≈ 一行的 1/3，图标看起来与标题首行更居中。
- */
-/** 收藏图标相对标题首行的**下移量**。
- * 标题行高是 24sp，所以这里取 8dp ≈ 一行的 1/3，图标看起来与标题首行更居中。
- */
-private val FavoriteIconTopOffset = 8.dp
+/** 标题与元信息标签（RJ 号 / 日期）之间的间距 */
+private val TitleMetaGap = 8.dp
 
 // ─────────────────────────── 分区节奏（固定间距） ───────────────────────────
 
@@ -556,17 +546,13 @@ private fun HeroCover(work: Work) {
 /**
  * ② 标题（图片下方那一个）+ 作品号 / 分级 / 字幕角标。
  *
- * - 上方留 [HeroTitleGap]，与头图拉开距离；
- * - **收藏按钮就放在标题右侧**（"标题旁"），与标题首行顶部对齐；
- * - 顶栏只保留返回与标题两个 UI，收藏不再出现在顶栏。
+ * 「标记 / 收藏夹」两个动作**不在这里** —— 它们放在顶部玻璃栏里
+ * （见 [DetailTopActions]），标题块只负责"这部作品是什么"。
  */
 @Composable
 private fun TitleBlock(
     work: Work,
-    collected: Boolean,
-    onToggleFavorite: () -> Unit,
-    onOpenWork: (Int) -> Unit,
-    onOpenCollection: () -> Unit
+    onOpenWork: (Int) -> Unit
 ) {
     Column(
         modifier = Modifier.padding(
@@ -575,57 +561,25 @@ private fun TitleBlock(
             top = HeroTitleGap
         )
     ) {
-        Row(verticalAlignment = Alignment.Top) {
-            Text(
-                text = work.title,
-                // 对齐 KikoFlu 详情页标题：16sp / Bold（样式定义见 ui/theme/Type.kt 的 WorkTitleStyle）
-                style = WorkTitleStyle,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(8.dp))
-            // 收藏：把作品加入收藏夹（**不是**本地书签）。已经在收藏夹里时点亮。
-            Box(
-                modifier = Modifier
-                    .size(FavoriteIconTouchSize)
-                    .clip(CircleShape)
-                    .clickable(onClick = onToggleFavorite),
-                contentAlignment = Alignment.TopCenter
-            ) {
-                Icon(
-                    painter = painterResource(
-                        if (collected) R.drawable.ic_folder_check_fluent
-                        else R.drawable.ic_folder_add_fluent
-                    ),
-                    contentDescription = if (collected) "已在收藏夹" else "收藏到收藏夹",
-                    tint = if (collected) MaterialTheme.colorScheme.tertiary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        // 整体下移一行的 1/3 左右（想再调就改 FavoriteIconTopOffset）
-                        .padding(top = FavoriteIconTopOffset)
-                        .size(FavoriteIconSize)
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
+        Text(
+            text = work.title,
+            // 对齐 KikoFlu 详情页标题：16sp / Bold（样式定义见 ui/theme/Type.kt 的 WorkTitleStyle）
+            style = WorkTitleStyle,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+
+        Spacer(Modifier.height(TitleMetaGap))
 
         // 发布日期标签文本（1 年内只显示月日，更早带上年份）
         val releaseTag = remember(work.release) { releaseTagText(work.release) }
 
-        // ── 第一行：作品号 + 发布日期 + 我的收藏状态（都是标签样式）──
+        // ── 第一行：作品号 + 发布日期（只读元信息）──
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             work.sourceId?.let { SmallTagChip(text = it, tone = TagTone.Neutral) }
             releaseTag?.let { SmallTagChip(text = it, tone = TagTone.Neutral) }
-            // 「我的收藏」状态：未标记时是一个可点入口，标记后显示当前状态。
-            // 注意它与右侧的收藏按钮是**两个不同的功能**：
-            // 这里是"我给这部作品的标记状态"（/api/review），右侧是"把它加入某个收藏夹"。
-            CollectionEntryChip(
-                status = work.collectionStatus,
-                onClick = onOpenCollection
-            )
         }
 
         // ── 第二行：分级 / 字幕 / 多语种 + 语言版本链接 ──
@@ -707,43 +661,75 @@ private fun LanguageEditionText(
 }
 
 /**
- * 「我的收藏」入口标签。
+ * 顶栏右侧的「标记 / 收藏夹」动作组 —— **同一个液态玻璃胶囊内**并排放两个图标按钮。
  *
- *  - 未标记：一个带「+」的空心标签（"想听 / 在听…"的入口）；
- *  - 已标记：显示状态图标 + 状态名（想听 / 在听 / 听过 / 重听 / 搁置）。
+ * 为什么把两个动作都收进顶栏、且共用一个玻璃容器：
+ *  - 详情页的正文是"作品信息"，动作若压在标题下方会打断阅读节奏；
+ *    顶栏是系统层，动作放在这里与页面内容彻底分开；
+ *  - 两个动作共用一个胶囊（而不是两个独立玻璃圆钮）：
+ *    它们属于同一类操作（对这部作品做点什么），一个容器 + 一条细分隔线
+ *    能表达"同一组"，也避免右上方叠两个玻璃块显得碎。
  *
- * 用它而**不是**复用右侧的本地收藏书签，是因为两者语义不同：
- * 书签是"存在这台设备上"，这个标签是"我在服务器上的收听状态"。
+ * 图标含义：
+ *  - 书签 = 我的标记（想听 / 在听 / …）；已标记时用状态自己的图标 + 主色；
+ *  - 文件夹 = 加入收藏夹；已加入时换成"带对勾"的图标 + 主色。
  */
 @Composable
-private fun CollectionEntryChip(
+private fun DetailTopActions(
     status: CollectionStatus?,
-    onClick: () -> Unit
+    collected: Boolean,
+    backdrop: Backdrop?,
+    onOpenCollection: () -> Unit,
+    onToggleFavorite: () -> Unit
 ) {
-    val label = status?.label ?: "加入收藏"
     val cs = MaterialTheme.colorScheme
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                if (status != null) cs.primary.copy(alpha = 0.12f)
-                else cs.surfaceVariant.copy(alpha = 0.5f)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .backdropButton(backdrop = backdrop, shape = LiquidCapsule)
+            .heightIn(min = Liquid.CONTROL_HEIGHT)
+            .padding(horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            painter = painterResource(status?.iconRes ?: R.drawable.ic_bookmark_outline_fluent),
-            contentDescription = null,
+        TopBarMiniAction(
+            iconRes = status?.iconRes ?: R.drawable.ic_bookmark_outline_fluent,
+            contentDescription = status?.label ?: "标记",
             tint = if (status != null) cs.primary else cs.onSurfaceVariant,
-            modifier = Modifier.size(13.dp)
+            onClick = onOpenCollection
         )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (status != null) cs.primary else cs.onSurfaceVariant
+
+        // 不画分隔线：两个图标同属一组，留一点空隙即可（也避免多一道竖线）
+        Spacer(Modifier.width(2.dp))
+
+        TopBarMiniAction(
+            iconRes = if (collected) R.drawable.ic_folder_check_fluent
+            else R.drawable.ic_folder_add_fluent,
+            contentDescription = if (collected) "已在收藏夹" else "加入收藏夹",
+            tint = if (collected) cs.primary else cs.onSurfaceVariant,
+            onClick = onToggleFavorite
+        )
+    }
+}
+
+/** 顶栏玻璃胶囊里的单个图标按钮（40dp，玻璃胶囊内不再叠第二层玻璃） */
+@Composable
+private fun TopBarMiniAction(
+    @DrawableRes iconRes: Int,
+    contentDescription: String,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(20.dp)
         )
     }
 }
@@ -897,11 +883,16 @@ private fun MetaItem(
 }
 
 /**
- * 链接样式的文字：主色 + 下划线 + 最小触摸区域。
+ * 链接样式的文字：主色 + 下划线 + 小幅放大触摸区。
  *
  * 下划线是必须的 —— 只靠颜色的话，在不少主题里与正文差别很小，
- * "这里能点"这件事就传达不出去。点击区域用 [Modifier.heightIn] 保证
- * 单个名字（可能只有两三个字）也够好点。
+ * "这里能点"这件事就传达不出去。
+ *
+ * ⚠️ 这里**不能**用 `heightIn(min = 48.dp)` 撑触控高度：
+ * 文字是顶对齐的，多出来的 28dp 会全部落在文字下方 ——
+ * 而「社团 / 声优」这一行正好是信息区的最后一行，
+ * 于是标签区上方凭空多出一大块空白（截图里那段明显的空隙）。
+ * 现在改为只加 2dp 内边距（触摸高度约 24dp），布局高度回到文字本来的行高。
  */
 @Composable
 private fun LinkText(text: String, onClick: () -> Unit) {
@@ -914,8 +905,8 @@ private fun LinkText(text: String, onClick: () -> Unit) {
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
-            .heightIn(min = TouchTarget.minimum)
             .clickable(onClick = onClick)
+            .padding(horizontal = 2.dp, vertical = 2.dp)
     )
 }
 

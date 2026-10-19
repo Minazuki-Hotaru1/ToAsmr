@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,10 +39,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import com.asmrone.app.ui.component.LiquidSlider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -94,7 +94,6 @@ private val PlayerText = Color.White
 private val PlayerSecondary = Color.White.copy(alpha = 0.62f)
 private val PlayerTertiary = Color.White.copy(alpha = 0.42f)
 private val PlayerChrome = Color.White.copy(alpha = 0.10f)
-private val PlayerTrackInactive = Color.White.copy(alpha = 0.24f)
 
 /**
  * 全屏播放器 —— 参考 Apple Music 的 Now Playing 布局：
@@ -112,7 +111,15 @@ private val PlayerTrackInactive = Color.White.copy(alpha = 0.24f)
 @Composable
 fun PlayerScreen(
     onBack: () -> Unit,
-    immersiveSystemBars: Boolean = true
+    immersiveSystemBars: Boolean = true,
+    /**
+     * 是否允许歌词页去**联网**取歌词。
+     *
+     * 覆盖层是常驻组合的（冷启动就挂上），若一挂上就下载歌词，就成了
+     * "用户什么都没点却发了一个 media 请求"。所以由覆盖层把"是否正在显示"
+     * 传进来：收起状态下只读本地（内存/磁盘），展开后才允许联网。
+     */
+    lyricsActive: Boolean = true
 ) {
     val state by AudioController.state.collectAsState()
     var showQueue by remember { mutableStateOf(false) }
@@ -216,6 +223,16 @@ fun PlayerScreen(
                 )
         )
 
+        // ── 歌词页的整页压暗 ──
+        //
+        // 透明度跟着 pager 的滑动进度连续变化：封面页 0 → 歌词页约 0.55。
+        // 关键是压暗**整屏**（含顶栏与底部控件），而不是让歌词组件在页面中间
+        // 自己铺一块黑色渐变 —— 后者会在页面上形成边界清楚的"分区"，
+        // 这正是歌词页看起来"像贴上去的"的原因。
+        //
+        // 单独做成一个 composable：滑动的每一帧只重组这一层，不牵动整页。
+        LyricsBackdrop(pagerState)
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -271,7 +288,8 @@ fun PlayerScreen(
                         trackPath = state.currentTrack?.path.orEmpty(),
                         trackTitle = state.trackTitle,
                         positionMs = lyricPositionMs,
-                        onSeekTo = { AudioController.seekTo(it.toInt()) }
+                        onSeekTo = { AudioController.seekTo(it.toInt()) },
+                        active = lyricsActive
                     )
                 }
             }
@@ -302,8 +320,8 @@ fun PlayerScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 26.dp)
             ) {
-                Slider(
-                    value = progress,
+                LiquidSlider(
+                    value = { progress },
                     onValueChange = {
                         dragging = true
                         dragValue = it
@@ -312,11 +330,8 @@ fun PlayerScreen(
                         AudioController.seekToFraction(dragValue)
                         dragging = false
                     },
-                    colors = SliderDefaults.colors(
-                        thumbColor = PlayerText,
-                        activeTrackColor = PlayerText,
-                        inactiveTrackColor = PlayerTrackInactive
-                    ),
+                    valueRange = 0f..1f,
+                    visibilityThreshold = 0.001f,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(32.dp)
@@ -547,7 +562,9 @@ fun PlayerSlideOverlay(
             PlayerScreen(
                 onBack = onBack,
                 // 页面真正覆盖状态栏之后才切白色系统栏图标
-                immersiveSystemBars = fullyExpanded
+                immersiveSystemBars = fullyExpanded,
+                // 只有真正展开给用户看时才允许去网络取歌词
+                lyricsActive = visible
             )
         }
     }
@@ -755,4 +772,23 @@ private fun PlayerQueueSheet(
             }
         }
     }
+}
+
+/**
+ * 歌词页的整屏压暗层。
+ *
+ * 透明度由 pager 的滑动进度驱动（0 = 封面页，1 = 歌词页），
+ * 这样翻页过程中背景是**连续**变暗的，不会出现"到了歌词页突然多一块暗区"。
+ *
+ * 单独成 composable 的目的：滑动时只重组这一层，不影响封面页 / 歌词页的内容。
+ */
+@Composable
+private fun LyricsBackdrop(pagerState: PagerState) {
+    val progress = (pagerState.currentPage + pagerState.currentPageOffsetFraction)
+        .coerceIn(0f, 1f)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(PlayerBackground.copy(alpha = 0.55f * progress))
+    )
 }

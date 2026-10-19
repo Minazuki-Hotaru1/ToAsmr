@@ -3,10 +3,13 @@ package com.asmrone.app.ui.component
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -59,8 +62,13 @@ import com.asmrone.app.ui.theme.Sizes
  *
  * @param host API 主机，用于在作品没有封面字段时回退到 `/api/cover/{id}`
  * @param progress 0f..1f 的收听进度；null 表示没听过
+ * @param showAgeBadge 是否显示左上角「全年龄」角标。收藏页数据来自精简缓存、
+ *   没有可靠的年龄分级，那边传 false（否则整个收藏夹都会被标成"全年龄"）。
+ * @param showTags 是否显示信息区底部的标签。收藏页只显示社团与声优，那边传 false。
+ * @param badge 叠在图片上的自定义内容（收藏页放听歌状态 / 待同步 / 我的评分）；
+ *   null 表示不显示。参数带 `BoxScope`，调用方用 `Modifier.align(...)` 自己决定贴哪个角。
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun WorkCard(
     work: Work,
@@ -68,7 +76,10 @@ fun WorkCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     progress: Float? = null,
-    onLongClick: (() -> Unit)? = null
+    onLongClick: (() -> Unit)? = null,
+    showAgeBadge: Boolean = true,
+    showTags: Boolean = true,
+    badge: (@Composable BoxScope.() -> Unit)? = null
 ) {
     var pressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
@@ -92,10 +103,12 @@ fun WorkCard(
                 scaleY = scale
             }
             .clip(shape)
-            .clickable(
+            .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = ripple(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                onClick = onClick
+                onClick = onClick,
+                // 长按是可选的（收藏夹详情用来"从收藏夹移除"）
+                onLongClick = onLongClick
             ),
         shape = shape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -124,8 +137,9 @@ fun WorkCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 只标「全年龄」；成人作品不做年龄标记
-                    if (!work.isAdult) {
+                    // 只标「全年龄」；成人作品不做年龄标记。
+                    // 收藏页的数据没有可靠的分级（精简缓存），那边传 showAgeBadge = false。
+                    if (showAgeBadge && !work.isAdult) {
                         ImageBadge(text = "全年龄")
                     }
                     if (work.hasSubtitle) {
@@ -149,6 +163,12 @@ fun WorkCard(
                                 .background(MaterialTheme.colorScheme.primary)
                         )
                     }
+                }
+
+                // 自定义叠加内容（收藏页用来叠「听歌状态 / 待同步 / 我的评分」）。
+                // 放在进度线之后 → 层级在它之上；内部可点，不会把整卡的点击吞掉。
+                if (badge != null) {
+                    badge()
                 }
             }
 
@@ -189,21 +209,23 @@ fun WorkCard(
                     }
                 }
 
-                val tags = work.tags.take(3)
-                if (tags.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        tags.forEach { tag ->
-                            SmallTagChip(text = tag.displayName, tone = TagTone.Neutral)
-                        }
-                        if (work.tags.size > tags.size) {
-                            SmallTagChip(
-                                text = "+${work.tags.size - tags.size}",
-                                tone = TagTone.Neutral
-                            )
+                if (showTags) {
+                    val tags = work.tags.take(3)
+                    if (tags.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            tags.forEach { tag ->
+                                SmallTagChip(text = tag.displayName, tone = TagTone.Neutral)
+                            }
+                            if (work.tags.size > tags.size) {
+                                SmallTagChip(
+                                    text = "+${work.tags.size - tags.size}",
+                                    tone = TagTone.Neutral
+                                )
+                            }
                         }
                     }
                 }

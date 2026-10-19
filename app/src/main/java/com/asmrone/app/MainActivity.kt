@@ -7,9 +7,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -30,12 +33,15 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -64,8 +70,9 @@ import com.asmrone.app.ui.screen.player.PlayerSlideOverlay
 import com.asmrone.app.ui.screen.search.SearchViewModel
 import com.asmrone.app.ui.screen.startup.StartupScreen
 import com.asmrone.app.ui.theme.AsmrOneTheme
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
+import com.asmrone.app.ui.theme.GlassStylePrefs
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 
 /** 底部导航项（4 项：音声库 / 搜索 / 收藏 / 设置；图标为 Fluent 矢量图资源） */
@@ -104,6 +111,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AppPrefs.init(this)
+        // 液态玻璃的全局参数（模糊 / 折射 / 透明度 / 色散）必须在首帧前读出来，
+        // 否则底栏与顶栏会先用默认值画一帧、再跳到用户保存的样式
+        GlassStylePrefs.init(this)
         LibraryStore.init(this)
         // 账号表必须在 AuthManager 之前初始化（AuthManager 会读它拿"当前激活账号"）
         AccountStore.init(this)
@@ -176,8 +186,8 @@ fun MainApp() {
         return
     }
 
-    // 悬浮玻璃元素的统一模糊源：内容层挂 hazeSource，底栏/迷你播放器挂 hazeEffect
-    val hazeState = rememberHazeState()
+    // 悬浮玻璃元素的统一取样源：内容层挂 layerBackdrop，底栏/迷你播放器挂 drawBackdrop
+    val backdrop = rememberLayerBackdrop()
     val bottomBarState = remember { BottomBarState() }
     val collapseBottomBar by AppPrefs.collapseBottomBar.collectAsState()
     val playerState by AudioController.state.collectAsState()
@@ -283,20 +293,35 @@ fun MainApp() {
      * 这是"点迷你播放器卡顿"的修法：旧实现把"取文件树 → 找歌词 → 下载 → 解析"
      * 全塞在播放器组合期间的 LaunchedEffect 里，冷启动时还要拉最大 6MB 的树。
      *
-     * 这里监听「作品 + 当前曲目」的变化，在后台把结果算好放进 LyricsLoader 的内存缓存；
-     * 播放器的歌词页首帧直接读缓存，组合期间零网络、零解析。
-     *
      * 注意 key 用 `index` 而不是 `trackTitle`：同一作品连续两首同名文件时，
      * 只按标题变化会漏掉预热。`workSourceId` 也进 key，因为它决定能不能命中
      * 按 RJ 号落盘的文件树。
+     *
+     * ## 只在"用户确实在用播放"时才允许联网
+     *
+     * 冷启动会把上次的播放会话恢复出来（暂停态、没人点过任何东西）。
+     * 那时如果照样去下歌词，网络日志里就会出现"关掉首页加载后仍然有一条
+     * media 请求"——用户视角就是"关不掉的后台联网"。
+     *
+     * 所以 [LyricsLoader.prefetch] 带上 `allowNetwork`：
+     *  - 有在播 / 播放器正展开 → 允许联网（正常预热）；
+     *  - 都不是 → **只读内存与本地磁盘**。落过盘的歌词照样能预热，
+     *    没落过盘的就等用户真的去播放或打开播放器时再取。
      */
-    LaunchedEffect(playerState.workId, playerState.index, playerState.workSourceId) {
+    LaunchedEffect(
+        playerState.workId,
+        playerState.index,
+        playerState.workSourceId,
+        playerState.isPlaying,
+        playerOverlayVisible
+    ) {
         val track = playerState.currentTrack ?: return@LaunchedEffect
         LyricsLoader.prefetch(
             workId = playerState.workId,
             sourceId = playerState.workSourceId,
             trackPath = track.path,
-            trackTitle = track.title
+            trackTitle = track.title,
+            allowNetwork = playerState.isPlaying || playerOverlayVisible
         )
     }
 
@@ -316,6 +341,7 @@ fun MainApp() {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+
                         // 用「稳定」的导航栏高度让位：播放器隐藏/恢复系统栏时底栏不再上下移动
                         .then(
                             LocalStableNavigationBarBottom.current?.let { stable ->
@@ -347,43 +373,58 @@ fun MainApp() {
                             onClick = { openPlayerOverlay() },
                             onToggle = { AudioController.togglePlayPause() },
                             onNext = { AudioController.next() },
-                            hazeState = hazeState
+                            backdrop = backdrop
                         )
                     }
-                    if (showMiniPlayer) Spacer(Modifier.height(8.dp))
-
+                    // 迷你播放器与底栏之间的 8dp 间距放进底栏的动画块里：
+                    // 底栏收起时这段间距一起收掉，迷你播放器才是"跟着滑下去"，
+                    // 不会留下一条悬空的缝。
+                    //
                     // ── 悬浮玻璃底部导航栏 ──
                     AnimatedVisibility(
                         visible = showBottomBar && (!collapseBottomBar || !bottomBarState.collapsed),
+                        // ⚠️ 必须带 expandVertically / shrinkVertically：
+                        // 只有 slide + fade 时，底栏在动画期间仍占满 64dp，动画结束才从 Column 里
+                        // 移除 —— 于是迷你播放器**瞬间**下移 64dp（就是那个"闪现换位置"）。
+                        // 加上尺寸过渡后，Column 每帧都在改高度，迷你播放器会平滑跟随。
                         enter = slideInVertically(
                             initialOffsetY = { it },
                             animationSpec = spring(dampingRatio = 0.8f, stiffness = 300f)
-                        ) + fadeIn(),
+                        ) + fadeIn() + expandVertically(
+                            animationSpec = tween(260),
+                            expandFrom = Alignment.Top
+                        ),
                         exit = slideOutVertically(
                             targetOffsetY = { it },
                             animationSpec = spring(dampingRatio = 0.8f, stiffness = 300f)
-                        ) + fadeOut()
-                    ) {
-                        FloatingGlassBottomBar(
-                            tabs = bottomNavItems,
-                            currentRoute = currentRoute,
-                            onSelect = { route ->
-                                navController.navigate(route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            hazeState = hazeState
+                        ) + fadeOut() + shrinkVertically(
+                            animationSpec = tween(260),
+                            shrinkTowards = Alignment.Top
                         )
+                    ) {
+                        Column {
+                            if (showMiniPlayer) Spacer(Modifier.height(8.dp))
+                            FloatingGlassBottomBar(
+                                tabs = bottomNavItems,
+                                currentRoute = currentRoute,
+                                onSelect = { route ->
+                                    navController.navigate(route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                },
+                                backdrop = backdrop
+                            )
+                        }
                     }
                 }
             }
         ) {
-            // 内容层作为 Haze 模糊源，供悬浮底栏/迷你播放器实时取下方内容做毛玻璃
-            Box(modifier = Modifier.fillMaxSize().hazeSource(hazeState)) {
+            // 内容层作为 Backdrop 取样源，供悬浮底栏/迷你播放器实时取下方内容做折射
+            Box(modifier = Modifier.fillMaxSize().layerBackdrop(backdrop)) {
                 CompositionLocalProvider(LocalBottomBarState provides bottomBarState) {
                     AppNavGraph(
                         navController = navController,

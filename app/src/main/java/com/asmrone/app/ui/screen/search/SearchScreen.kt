@@ -1,17 +1,21 @@
 package com.asmrone.app.ui.screen.search
 
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,30 +23,30 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
-import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
-import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,56 +54,52 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.R
-import com.asmrone.app.data.model.Work
-import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.model.SearchSuggestion
 import com.asmrone.app.data.prefs.SearchHistoryEntry
 import com.asmrone.app.data.prefs.SearchHistoryStore
-import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.ui.component.AsmrFilterChip
 import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
 import com.asmrone.app.ui.component.CompactSearchField
-import com.asmrone.app.ui.component.EmptyHint
-import com.asmrone.app.ui.component.ErrorHint
-import com.asmrone.app.ui.component.LocalStableStatusBarTop
-import com.asmrone.app.ui.component.SmallTagChip
-import com.asmrone.app.ui.component.TabTopBar
-import com.asmrone.app.ui.component.TagTone
+import com.asmrone.app.ui.component.FluentIcon
+import com.asmrone.app.ui.component.rememberStatusBarTopDp
+import com.asmrone.app.ui.component.TopBarAction
 import com.asmrone.app.ui.component.TopBarScrim
-import com.asmrone.app.ui.component.WorkCard
-import com.asmrone.app.ui.component.WorkCardShimmer
-import com.asmrone.app.ui.component.animateCardEntrance
-import com.asmrone.app.ui.component.cardEntrance
+import com.asmrone.app.ui.theme.ErrorColor
+import com.asmrone.app.ui.theme.Liquid
 import com.asmrone.app.ui.theme.TouchTarget
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 搜索页 —— **只负责提条件**，结果在独立的 [SearchResultScreen] 里展示。
  *
+ * 布局与 comicApp 的搜索页一一对应：
+ *
  * ```
  * Box {
- *   Box(hazeSource) {
+ *   Box(layerBackdrop) {
  *     Column(imePadding) {
- *       搜索形态 chip（普通 / 高级）
- *       普通：一个输入框   ⇄   高级：多个条件栏 + 候选 + 搜索按钮
- *       搜索历史
+ *       （给悬浮顶栏留白）
+ *       普通：一个输入框   ⇄   高级：多个条件栏 + 候选
+ *       搜索历史（标题 / 逐条删除 / 展开全部 / 清空）
  *     }
  *   }
- *   TabTopBar 透明标题行 + 顶部渐变模糊
+ *   TopBarScrim（滚动渐显）
+ *   Row 悬浮顶栏：标题 + 玻璃「高级 / 关键词」切换
  * }
  * ```
  *
- * ## 为什么结果不在这里
- *
- * 原先输入区与结果区挤在同一页，两个问题：
- *  1. 高级搜索有好几个条件栏，结果一出来输入区就被顶得很窄，改条件很别扭
- *  2. 想在结果里换一组条件只能原地清空重来，没有"退回去改"的自然路径
- *
- * 拆开之后：搜索页提条件、结果页看结果，系统返回键就是"回去改条件"。
+ * 与旧版的差别（这次是照 comicApp 重做，不是在原样式上改）：
+ *  - 顶部的两枚模式 chip 换成**右上角一枚液态玻璃 [TopBarAction]**（label 指向"将进入的模式"）；
+ *  - 两种模式之间用 `Crossfade + animateContentSize` 过渡（高度也一起动，历史区不会硬跳）；
+ *  - 历史区补齐 comicApp 的三件套：**展开全部（N 条）/ 红色描边清空 / 112dp 底部留白**；
+ *  - 空历史不再是富文本空态，而是 comicApp 的居中一行「无搜索记录」；
+ *  - 顶栏高度仍用 `onSizeChanged` 实测，首帧按「稳定状态栏高 + 56dp」估算。
  *
  * @param onOpenResults 搜索已提交后跳转到结果页
  */
@@ -110,112 +110,196 @@ fun SearchScreen(
     onWorkClick: (Int) -> Unit
 ) {
     val state by viewModel.state.collectAsState()
-    // 搜索历史：本地持久化，直接订阅 store（见文件里的说明）
+    // 搜索历史：本地持久化，直接订阅 store（单一数据源）
     val history by SearchHistoryStore.entries.collectAsState()
-    val host = remember { AsmrRepository.host }
-    val progressMap by LibraryStore.progress.collectAsState()
-    val hazeState = dev.chrisbanes.haze.rememberHazeState()
+    val focusManager = LocalFocusManager.current
+    // 顶栏的玻璃按钮从这里取下方内容做折射
+    val topBarBackdrop = rememberLayerBackdrop()
 
     val density = LocalDensity.current
-    val statusTopDp = LocalStableStatusBarTop.current
-        ?: with(density) { WindowInsets.statusBars.asPaddingValues().calculateTopPadding() }
-    val structuralTopPx = with(density) { (statusTopDp + 56.dp).roundToPx() }
-    var barHeight by remember { mutableIntStateOf(structuralTopPx) }
-    val topPadding = remember(barHeight, density) {
-        with(density) { barHeight.toDp() } + 8.dp
+    val statusTopDp = rememberStatusBarTopDp()
+    var topBarHeight by remember(density) {
+        mutableIntStateOf(with(density) { (statusTopDp + Liquid.TOP_BAR_HEIGHT).roundToPx() })
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    var showAll by remember { mutableStateOf(false) }
+    val visibleHistory = if (showAll) history else history.take(10)
+    val historyListState = rememberLazyListState()
+    val scrollFraction = if (historyListState.firstVisibleItemIndex > 0 ||
+        historyListState.firstVisibleItemScrollOffset > 100
+    ) 1f else 0f
+
+    // 向下滚动时收起底部导航栏、向上滚动展开（可在「设置 → 外观」里关闭）
+    CollapsibleBottomBarEffect {
+        historyListState.firstVisibleItemIndex to historyListState.firstVisibleItemScrollOffset
+    }
+
+    val advancedMode = state.mode == SearchMode.ADVANCED
+
+    fun submitSimple() {
+        if (state.query.isBlank()) return
+        focusManager.clearFocus()
+        viewModel.submit()
+        onOpenResults()
+    }
+
+    fun submitAdvanced() {
+        if (!state.hasSearched) return
+        focusManager.clearFocus()
+        viewModel.searchWithConditions()
+        onOpenResults()
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
                 .imePadding()
+                // 内容层作为取样源：右上角的玻璃按钮才能"透"出下面的内容
+                .layerBackdrop(topBarBackdrop)
         ) {
-            Spacer(Modifier.height(topPadding))
+            // 给悬浮顶栏留出空间（含状态栏）；玻璃按钮有背景可取样
+            Spacer(Modifier.height(with(density) { topBarHeight.toDp() }))
+            // 搜索栏与顶栏之间额外留一点呼吸空间，避免贴住标题
+            Spacer(Modifier.height(Liquid.CONTENT_TOP_GAP))
 
-            // ── 搜索形态（普通 / 高级）────────────────────────
-            //
-            // 只有两个选项，所以不需要横向滚动。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                SearchMode.entries.forEach { mode ->
-                    AsmrFilterChip(
-                        text = mode.label,
-                        selected = state.mode == mode,
-                        onClick = { viewModel.setMode(mode) }
+            // ═══════════ 关键词 / 高级搜索 — 淡入淡出 + 高度动画 ═══════════
+            Crossfade(
+                targetState = advancedMode,
+                animationSpec = tween(200),
+                modifier = Modifier.animateContentSize()
+            ) { adv ->
+                if (adv) {
+                    AdvancedSearchInputs(
+                        state = state,
+                        onSlotQueryChange = viewModel::onSlotQueryChange,
+                        onSelect = viewModel::selectSuggestion,
+                        onClearSlot = viewModel::clearSlot,
+                        onRemoveSlot = viewModel::removeSlot,
+                        onToggleExclude = viewModel::setSlotExclude,
+                        onSlotFocused = viewModel::refreshSlotSuggestions,
+                        onAddSlot = { viewModel.addSlot() },
+                        onSearch = ::submitAdvanced,
+                        onReset = { viewModel.resetConditions() }
                     )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateContentSize(animationSpec = tween(180))
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 8.dp)
+                    ) {
+                        CompactSearchField(
+                            value = state.query,
+                            onValueChange = viewModel::onQueryChange,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = "搜索作品、社团或声优",
+                            leadingIconRes = R.drawable.ic_search_outline_fluent,
+                            trailingIcon = {
+                                if (state.query.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = { viewModel.clearQuery() },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        FluentIcon(
+                                            res = R.drawable.ic_close_fluent,
+                                            contentDescription = "清空",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            size = 18.dp
+                                        )
+                                    }
+                                }
+                            },
+                            imeAction = ImeAction.Search,
+                            onImeAction = ::submitSimple
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
-
-            when (state.mode) {
-                // ── 普通搜索：一个输入框，不显示任何标签 ──────────
-                SearchMode.SIMPLE -> SimpleSearchInput(
-                    query = state.query,
-                    onQueryChange = viewModel::onQueryChange,
-                    // 先让 ViewModel 记下检索并开跑，再跳结果页 ——
-                    // 结果页读的就是这个 ViewModel，所以进去即能看到加载中 → 结果
-                    onSubmit = {
-                        viewModel.submit()
-                        onOpenResults()
-                    },
-                    onClear = { viewModel.clearQuery() }
-                )
-
-                // ── 高级搜索：关键词 + 多个条件栏，候选来自三本字典 ──
-                SearchMode.ADVANCED -> AdvancedSearchInputs(
-                    state = state,
-                    onSlotQueryChange = viewModel::onSlotQueryChange,
-                    onSelect = viewModel::selectSuggestion,
-                    onClearSlot = viewModel::clearSlot,
-                    onRemoveSlot = viewModel::removeSlot,
-                    onAddSlot = { viewModel.addSlot() },
-                    onSearch = {
-                        viewModel.searchWithConditions()
-                        onOpenResults()
-                    },
-                    onReset = { viewModel.resetConditions() }
-                )
-            }
-
-            // ── 搜索历史 ────────────────────────────────────
+            // ── 历史记录 ────────────────────────────────────
             //
-            // 历史**本地持久化**（SharedPreferences），所以进程重启后还在。
-            // 界面直接订阅 store 的 StateFlow，而不是从 UiState 里读 ——
-            // 两份历史必然会引出"哪个是真的"。
+            // 历史**本地持久化**（SharedPreferences），界面直接订阅 store 的 StateFlow，
+            // 而不是从 UiState 里读 —— 两份历史必然会引出"哪个是真的"。
             //
-            // 两种形态**都展示历史**（高级搜索时挂在条件栏下面），
-            // 但点它的行为不同（见 viewModel.replay）：
-            //  - 普通搜索：直接照那条记录搜一次，然后进结果页
-            //  - 高级搜索：只把文字与条件填回输入框 / 条件栏，**不立刻搜** ——
-            //    填完还能继续加条件，由用户自己决定何时按搜索
-            if (history.isNotEmpty() && (state.mode == SearchMode.ADVANCED || state.query.isEmpty())) {
-                Spacer(Modifier.height(16.dp))
-                SearchHistory(
-                    history = history,
-                    onPick = { entry ->
-                        // 普通搜索照搜了才跳结果页；高级搜索只是填好，
-                        // 留在本页让用户接着改
-                        if (viewModel.replay(entry)) onOpenResults()
-                    },
-                    onRemove = { SearchHistoryStore.remove(it) },
-                    onClear = { SearchHistoryStore.clear() }
+            // 两种形态**都展示历史**（高级搜索时挂在条件栏下面；普通搜索时输入框下面），
+            // 点它的行为由 ViewModel 决定：
+            //  - 普通搜索：照那条记录搜一次，然后进结果页
+            //  - 高级搜索：只把文字与条件填回，**不立刻搜**，由用户自己按搜索
+            if (history.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("无搜索记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                Text(
+                    text = "搜索历史",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                LazyColumn(
+                    state = historyListState,
+                    modifier = Modifier.weight(1f).padding(horizontal = 16.dp)
+                ) {
+                    items(visibleHistory, key = { it.dedupeKey }) { entry ->
+                        HistoryRow(
+                            entry = entry,
+                            onClick = {
+                                if (viewModel.replay(entry)) onOpenResults()
+                            },
+                            onRemove = { SearchHistoryStore.remove(entry) }
+                        )
+                    }
+
+                    // 展开更多（本地历史最多 15 条，默认只露 10 条）
+                    if (history.size > 10) {
+                        item {
+                            TextButton(
+                                onClick = { showAll = !showAll },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = if (showAll) "收起" else "展开全部 (${history.size} 条)",
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
+                    // 清空全部
+                    item {
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = { SearchHistoryStore.clear() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = ErrorColor
+                            )
+                        ) {
+                            Text("清空搜索记录")
+                        }
+                    }
+
+                    // 底部留白 — 保证清空按钮可滑动到导航栏上方
+                    item { Spacer(Modifier.height(Liquid.CONTENT_BOTTOM_INSET_WITH_PLAYER)) }
+                }
             }
         }
 
-        // 透明标题行 + 顶部渐变模糊（与首页同一套指标）
-        //
-        // 这里**没有"重新搜索"按钮**：结果已经在独立的结果页里了，
-        // 本页只负责提条件 —— 想换条件直接改输入框即可。
-        TabTopBar(
-            hazeState = hazeState,
-            modifier = Modifier.onSizeChanged { barHeight = it.height }
+        // 顶部兜底渐隐（滚动后标题依旧可读）
+        TopBarScrim(scrollFraction = scrollFraction)
+
+        // 悬浮顶栏：先量总高度（含状态栏），内容层据此留白；玻璃按钮从内容层取样
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onSizeChanged { topBarHeight = it.height }
+                .padding(top = rememberStatusBarTopDp())
+                .padding(horizontal = 16.dp, vertical = Liquid.TOP_BAR_VERTICAL_PADDING)
+                .heightIn(min = TouchTarget.minimum),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = "搜索",
@@ -223,157 +307,76 @@ fun SearchScreen(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.weight(1f)
             )
-        }
-
-        // 顶部兜底渐隐（Haze 不可用时也能保证标题可读）
-        TopBarScrim(scrollFraction = 0.35f, modifier = Modifier.align(Alignment.TopCenter))
-    }
-}
-
-@Composable
-private fun SearchHistory(
-    history: List<SearchHistoryEntry>,
-    onPick: (SearchHistoryEntry) -> Unit,
-    onRemove: (SearchHistoryEntry) -> Unit,
-    onClear: () -> Unit
-) {
-    if (history.isEmpty()) {
-        EmptyHint(
-            title = "还没有搜索记录",
-            description = "试试搜索喜欢的声音、声优或社团"
-        )
-        return
-    }
-    Column(modifier = Modifier.fillMaxSize()) {
-        Text(
-            text = "搜索历史",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-        )
-        LazyColumn(
-            modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(bottom = 12.dp)
-        ) {
-            items(history, key = { it.dedupeKey }) { entry ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onPick(entry) }
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // 高级搜索的记录标一个类型，否则"标签「ASMR」 且 社团「Whisp」"
-                    // 这种长文案看起来会像一句关键词
-                    if (entry.hasConditions) {
-                        KindBadge(text = "高级")
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text(
-                        text = entry.summary,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+            // 模式切换：label 指向"点下去会进入哪个模式"（与 comicApp 的「高级 / 关键词」一致）
+            // 这里刻意不给图标：comicApp 的策略是文字按钮，宽度更稳、语义也更直接
+            TopBarAction(
+                onClick = {
+                    viewModel.setMode(
+                        if (advancedMode) SearchMode.SIMPLE else SearchMode.ADVANCED
                     )
-                    IconButton(
-                        onClick = { onRemove(entry) },
-                        modifier = Modifier.size(TouchTarget.minimum)
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_close_fluent),
-                            contentDescription = "删除",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-            }
-            item {
-                Spacer(Modifier.height(12.dp))
-                TextButton(
-                    onClick = onClear,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = TouchTarget.minimum)
-                ) {
-                    Text(
-                        text = "清空搜索记录",
-                        color = com.asmrone.app.ui.theme.ErrorColor
-                    )
-                }
-            }
+                },
+                modifier = Modifier.animateContentSize(animationSpec = tween(180)),
+                backdrop = topBarBackdrop,
+                label = if (advancedMode) "关键词" else "高级"
+            )
         }
     }
 }
 
-
-// ═══════════════════════════ 普通搜索 ═══════════════════════════
-
-/**
- * 普通搜索的输入区：**一个**输入框，下面不显示任何标签。
- *
- * 这是"知道作品名/关键词，只想快点搜"的路径，所以刻意保持极简 ——
- * 一旦在下面铺候选，它就和高级搜索没有区别了，反而拖慢这条常用路径。
- */
+/** 一条搜索历史：高级记录带「高级」标记，右侧是删除按钮 */
 @Composable
-private fun SimpleSearchInput(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onSubmit: () -> Unit,
-    onClear: () -> Unit
+private fun HistoryRow(
+    entry: SearchHistoryEntry,
+    onClick: () -> Unit,
+    onRemove: () -> Unit
 ) {
-    CompactSearchField(
-        value = query,
-        onValueChange = onQueryChange,
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        placeholder = "搜索作品、社团或声优",
-        leadingIconRes = R.drawable.ic_search_outline_fluent,
-        imeAction = ImeAction.Search,
-        onImeAction = onSubmit,
-        trailingIcon = {
-            if (query.isNotEmpty()) {
-                IconButton(onClick = onClear, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_close_fluent),
-                        contentDescription = "清空",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 高级搜索的记录标一个类型，否则"标签「ASMR」 社团「Whisp」"
+        // 这种长文案看起来会像一句普通关键词
+        if (entry.hasConditions) {
+            KindBadge(text = "高级")
+            Spacer(Modifier.width(8.dp))
         }
-    )
-    Spacer(Modifier.height(10.dp))
+        Text(
+            // 排除项（`-声优「xx」`）由分段里的 exclude 标成红色
+            text = entry.summarySegments.toSummaryAnnotatedString(),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        IconButton(
+            onClick = onRemove,
+            modifier = Modifier.size(TouchTarget.minimum)
+        ) {
+            FluentIcon(
+                res = R.drawable.ic_close_fluent,
+                contentDescription = "删除",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                size = 16.dp
+            )
+        }
+    }
 }
-
-// ═══════════════════════════ 高级搜索 ═══════════════════════════
 
 /**
  * 高级搜索的输入区：**一个关键词框 + 多个条件栏** + 搜索/重置。
  *
  * ## 交互流程
  *
- * 每一栏自己就是"输入 → 从候选里点一条 → 这一栏锁定"。选完之后
- * [SearchUiState.canAddSlot] 才为真，右下角出现「添加条件」，
- * 于是可以一栏一栏往上加，最后点「搜索」把关键词与所有条件一起发出去。
+ * 每一栏自己就是"输入 → 从候选里点一条 → 这一栏锁定"。加栏**一直可用**
+ * （只要没到上限），于是可以一栏一栏往上加，最后点「搜索」把关键词与所有条件一起发出去。
  *
- * 为什么是"选完才允许加下一栏"：允许半填的栏会堆出
- * "哪些条件算数"的含糊状态 —— 而现在每个有内容的栏必定带一个已选项，
- * 一眼就能看出最终会搜什么。
- *
- * 只显示**最后一个**未选中栏的候选：同时展开多个下拉会把界面挤乱，
- * 而且用户一次只可能在敲一个框。
- *
- * ## 每个输入栏自己决定"装文字还是装标签"
- *
- * 这里**没有**单独的"关键词框"：一个栏里敲字、从候选里点一条就是标签条件，
- * 只敲字不选就是裸关键词。服务端的检索串本来就支持两者混用
- * （实测 `耳かき $tag:ASMR$` → 3049），所以用户想怎么组合都行。
- *
- * 多一个全局关键词框的坏处是：文字与标签被拆到两个地方，
- * 用户得先想"我这个词该写在哪儿"—— 而现在只需按顺序一栏一栏填。
+ * 候选下拉跟着**当前聚焦的那一栏**走（`focused` 是每行自己的状态）。
+ * 旧实现是"挂在最后一个未选中的栏下面"，于是加了两栏之后在**第一栏**打字
+ * 时下拉永远不出现 —— 那个 bug 就是从这里来的。
  */
 @Composable
 private fun AdvancedSearchInputs(
@@ -382,52 +385,53 @@ private fun AdvancedSearchInputs(
     onSelect: (Int, SearchSuggestion) -> Unit,
     onClearSlot: (Int) -> Unit,
     onRemoveSlot: (Int) -> Unit,
+    onToggleExclude: (Int, Boolean) -> Unit,
+    onSlotFocused: (Int) -> Unit,
     onAddSlot: () -> Unit,
     onSearch: () -> Unit,
     onReset: () -> Unit
 ) {
-    // 只给"最后一个还没选中的栏"显示候选，避免多个下拉同时展开
-    val activeSlotId = state.slots.lastOrNull { it.selected == null }?.id
-
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         state.slots.forEachIndexed { index, slot ->
-            SlotField(
-                index = index,
+            ConditionRow(
                 slot = slot,
                 removable = state.slots.size > 1,
                 onQueryChange = { onSlotQueryChange(slot.id, it) },
+                onToggleExclude = { onToggleExclude(slot.id, !slot.exclude) },
+                onFocused = { onSlotFocused(slot.id) },
                 onClear = { onClearSlot(slot.id) },
                 onRemove = { onRemoveSlot(slot.id) },
-                onSearch = onSearch
+                onSearch = onSearch,
+                onSelectSuggestion = { onSelect(slot.id, it) }
             )
-
-            // 候选只挂在当前活跃栏下面
-            if (slot.id == activeSlotId && slot.suggestions.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                SuggestionList(
-                    suggestions = slot.suggestions,
-                    onPick = { onSelect(slot.id, it) }
-                )
-            }
 
             if (index < state.slots.lastIndex) Spacer(Modifier.height(8.dp))
         }
 
         Spacer(Modifier.height(10.dp))
 
-        // ── 操作行：加条件 / 搜索 / 重置 ────────────────────
+        // ── 操作行：加条件 / 重置 / 搜索（与 comicApp 的排布一致：操作靠左、主按钮靠右）──
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // 加输入栏：**一直可用**（只有到上限才消失）。
-            // 每个栏自己就能装文字或标签，所以没有"必须先把上一栏选完"这种约束。
             if (state.canAddSlot) {
-                TextButton(onClick = onAddSlot) { Text("+ 添加输入栏") }
+                TextButton(onClick = onAddSlot) {
+                    FluentIcon(
+                        res = R.drawable.ic_add_fluent,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        size = 16.dp
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "添加条件",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
             }
-
-            Spacer(Modifier.weight(1f))
 
             // 重置：有任何内容（文字或已选）才需要给这个入口
             if (state.slots.any { it.query.isNotBlank() || it.selected != null }) {
@@ -440,24 +444,26 @@ private fun AdvancedSearchInputs(
                 }
             }
 
+            Spacer(Modifier.weight(1f))
+
             Button(
                 onClick = onSearch,
                 enabled = state.hasSearched,
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                ),
+                shape = RoundedCornerShape(14.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
             ) {
+                FluentIcon(
+                    res = R.drawable.ic_search_fluent,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    size = 16.dp
+                )
+                Spacer(Modifier.width(4.dp))
                 Text("搜索", style = MaterialTheme.typography.labelMedium)
             }
-        }
-
-        // 将要搜什么：多条件的结果容易让人困惑（为什么这么少），
-        // 把文字与条件都摊开能直接回答"到底按什么搜的"。
-        if (state.hasSearched) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "将搜索：" + state.description,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
 
         // 三本字典都空 → 提示去更新，而不是让用户对着空候选发呆
@@ -471,7 +477,7 @@ private fun AdvancedSearchInputs(
                     .padding(12.dp)
             ) {
                 Text(
-                    text = "本地还没有搜索字典。请到「设置 → 服务器 → 数据设置」" +
+                    text = "本地还没有搜索字典。请到「设置 → 服务器」" +
                         "点一下「更新搜索字典」，之后这里就能按标签 / 声优 / 社团选了。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -484,81 +490,177 @@ private fun AdvancedSearchInputs(
 }
 
 /**
- * 一个条件栏。
+ * 一个条件行 —— 与 comicApp 的 `SearchConditionRow` 同构：
  *
- * 已选中的栏显示成一个带类型标记与 × 的"胶囊"，未选中的栏是普通输入框 ——
- * 一眼能看出哪些栏已经定下来了。
+ * ```
+ * [输入框 或 已选胶囊 ............]  [包含/排除]  [删除]
+ * ```
+ *
+ * 搜索栏占满左侧剩余宽度，「包含/排除」与「删除」并排贴在右边 ——
+ * 输入区尽量大，两个操作按钮收成一组。
+ *
+ * - 排除时 chip 变成红色「排除」，已选胶囊也转成错误色（与筛选 chip 的 negativeTone 同一套语言）；
+ * - 胶囊上的 × 只是"清掉这个标签、回到输入框"；右侧垃圾桶才是删掉整行；
+ * - 候选下拉跟着**本行**的聚焦状态出现，所以多栏时在任意一栏打字都有提示词。
  */
 @Composable
-private fun SlotField(
-    index: Int,
+private fun ConditionRow(
     slot: InputSlotState,
     removable: Boolean,
     onQueryChange: (String) -> Unit,
+    onToggleExclude: () -> Unit,
+    onFocused: () -> Unit,
     onClear: () -> Unit,
     onRemove: () -> Unit,
-    onSearch: () -> Unit
+    onSearch: () -> Unit,
+    onSelectSuggestion: (SearchSuggestion) -> Unit
 ) {
+    var focused by remember { mutableStateOf(false) }
     val selected = slot.selected
 
-    if (selected != null) {
-        // 已锁定：显示成胶囊
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(animationSpec = tween(180))
+    ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            KindBadge(text = selected.kindLabel)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                // 同样是 **displayName**（标签用中文译名）：胶囊是用户点出来的，
-                // 显示原始名会让"我点的那个"和"显示的这个"对不上
-                text = selected.displayName,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(onClick = onRemove, modifier = Modifier.size(28.dp)) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_close_fluent),
-                    contentDescription = if (removable) "移除这个条件" else "清空这个条件",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp)
+            // 布局顺序：搜索栏（占满剩余宽度）→ 包含/排除 → 删除
+            // —— 两个操作按钮都贴在右侧，输入框获得尽可能大的可点区域。
+            if (selected != null) {
+                SelectedTagChip(
+                    kindLabel = selected.kindLabel,
+                    label = selected.displayName,
+                    exclude = slot.exclude,
+                    onClear = onClear,
+                    modifier = Modifier.weight(1f)
+                )
+            } else {
+                CompactSearchField(
+                    value = slot.query,
+                    onValueChange = onQueryChange,
+                    modifier = Modifier.weight(1f),
+                    // 与普通搜索共用同一句提示：高级搜索里"第几栏"一类的说明是多余的
+                    placeholder = "搜索关键词",
+                    leadingIconRes = R.drawable.ic_search_outline_fluent,
+                    imeAction = ImeAction.Search,
+                    // 回车直接开搜 —— 这一栏不选候选也行，那就当裸关键词用
+                    onImeAction = onSearch,
+                    onFocusChange = {
+                        focused = it
+                        // 重新聚焦到已有文字的栏：候选原本只在"键入"时算，这里补一次
+                        if (it) onFocused()
+                    },
+                    trailingIcon = {
+                        if (slot.query.isNotEmpty()) {
+                            IconButton(onClick = onClear, modifier = Modifier.size(28.dp)) {
+                                FluentIcon(
+                                    res = R.drawable.ic_close_fluent,
+                                    contentDescription = "清空这一栏",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    size = 16.dp
+                                )
+                            }
+                        }
+                    }
+                )
+            }
+
+            // 包含 / 排除：negativeTone = true 时选中就是红底 + 红字 + 描边。
+            // 放在输入框右侧、删除按钮左边，和删除一起构成"这一行的操作区"。
+            //
+            // ⚠️ FilterChip 默认会把**布局高度**撑到 48dp（Material 最小触控尺寸），
+            //    整行就比普通搜索的 40dp 输入框高出一截 —— 两个页面的输入框看起来不一样高。
+            //    这里把最小触控尺寸设成 40dp：行高与普通搜索一致，
+            //    chip 的胶囊本身仍是 32dp（居中），可点区域 40dp。
+            CompositionLocalProvider(
+                LocalMinimumInteractiveComponentSize provides 40.dp
+            ) {
+                AsmrFilterChip(
+                    text = if (slot.exclude) "排除" else "包含",
+                    selected = slot.exclude,
+                    onClick = onToggleExclude,
+                    negativeTone = true,
+                    shape = RoundedCornerShape(10.dp)
+                )
+            }
+
+            // 删除整行（只剩一行时 = 清空）：comicApp 同款红色垃圾桶
+            IconButton(onClick = onRemove, modifier = Modifier.size(40.dp)) {
+                FluentIcon(
+                    res = R.drawable.ic_delete_fluent,
+                    contentDescription = if (removable) "删除这个条件" else "清空这个条件",
+                    tint = ErrorColor.copy(alpha = 0.85f),
+                    size = 18.dp
                 )
             }
         }
-    } else {
-        CompactSearchField(
-            value = slot.query,
-            onValueChange = onQueryChange,
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = "第 ${index + 1} 栏：输入文字，或从候选里选标签 / 声优 / 社团",
-            leadingIconRes = R.drawable.ic_search_outline_fluent,
-            imeAction = ImeAction.Search,
-            // 回车直接开搜 —— 这一栏不选候选也行，那就当裸关键词用
-            onImeAction = onSearch,
-            trailingIcon = {
-                if (slot.query.isNotEmpty()) {
-                    IconButton(onClick = onClear, modifier = Modifier.size(28.dp)) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_close_fluent),
-                            contentDescription = "清空这一栏",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
+
+        // ── 候选：只在本行聚焦、且是自由文本时出现（与 comicApp 一致）──
+        AnimatedVisibility(
+            visible = selected == null && focused && slot.suggestions.isNotEmpty(),
+            enter = expandVertically(animationSpec = tween(180), clip = false) +
+                fadeIn(animationSpec = tween(180)),
+            exit = shrinkVertically(animationSpec = tween(150), clip = false) +
+                fadeOut(animationSpec = tween(150))
+        ) {
+            // 上下留出空间，让卡片阴影完整显示
+            Box(modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)) {
+                SuggestionDropdown(
+                    suggestions = slot.suggestions,
+                    onSelect = onSelectSuggestion
+                )
             }
-        )
+        }
     }
 }
 
-/** 条件类型的小标记：标签 / 声优 / 社团 */
+/** 已选条件（comicApp 的 `SelectedTagChip`）：40dp 高、r12 胶囊，排除时转错误色 */
+@Composable
+private fun SelectedTagChip(
+    kindLabel: String,
+    label: String,
+    exclude: Boolean,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val cs = MaterialTheme.colorScheme
+    val content = if (exclude) ErrorColor else cs.primary
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = content.copy(alpha = 0.12f)
+    ) {
+        Row(
+            modifier = Modifier.height(40.dp).padding(start = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                // 显示 displayName（标签用中文译名）：胶囊是用户点出来的，
+                // 显示原始名会让"我点的那个"和"显示的这个"对不上
+                text = "$kindLabel：$label",
+                modifier = Modifier.weight(1f),
+                color = content,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            IconButton(onClick = onClear, modifier = Modifier.size(32.dp)) {
+                FluentIcon(
+                    res = R.drawable.ic_close_fluent,
+                    contentDescription = "清除",
+                    tint = content.copy(alpha = 0.7f),
+                    size = 16.dp
+                )
+            }
+        }
+    }
+}
+
+/** 条件类型的小标记：标签 / 声优 / 社团（历史列表的「高级」角标也用它） */
 @Composable
 private fun KindBadge(text: String) {
     Text(
@@ -573,53 +675,73 @@ private fun KindBadge(text: String) {
 }
 
 /**
- * 候选列表。
+ * 候选列表 —— 与 comicApp 的 `SuggestionDropdown` 同款：
+ * 白底卡片 + 4dp 投影 + 最高 280dp 自身滚动；每行**两行文本**（显示名 + `#类型 原始名`）。
  *
- * 数据**全部来自本地字典**，所以输入时零请求、即时出结果。
- * 每条左边带类型标记（标签 / 声优 / 社团）—— 高级搜索把三种资源混在一起给，
- * 没有这个标记就分不清 `Whisp` 到底命中哪个。
+ * 先只露 10 条，点「加载更多」再展开 —— 标签候选动辄几十条，一次全铺会把下面挤出屏幕。
  *
- * 高度限制在 240dp 并自身可滚动：否则候选一多会把下面全挤出屏幕。
+ * 数据全部来自本地字典，所以输入时零请求、即时出结果。
  */
 @Composable
-private fun SuggestionList(
+private fun SuggestionDropdown(
     suggestions: List<SearchSuggestion>,
-    onPick: (SearchSuggestion) -> Unit
+    onSelect: (SearchSuggestion) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(max = 240.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surface)
+    if (suggestions.isEmpty()) return
+    var visibleCount by remember(suggestions) {
+        mutableIntStateOf(minOf(10, suggestions.size))
+    }
+    val shown = suggestions.take(visibleCount)
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
-        items(suggestions, key = { it.namespace + "|" + it.id }) { item ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onPick(item) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                KindBadge(text = item.kindLabel)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    // ⚠️ 显示的是 **displayName**（标签的中文译名），不是 name（原始名）。
-                    // 用 name 会让候选里冒出用户从没见过的日文/英文原名 ——
-                    // 搜「亲热/甜蜜」却看到「纯爱/甜蜜」就是这么来的。
-                    text = item.displayName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = item.count.toString(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        Column(
+            modifier = Modifier
+                .heightIn(max = 280.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            shown.forEach { item ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(item) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            // ⚠️ 显示 **displayName**（标签的中文译名），不是 name（原始名）
+                            text = item.displayName,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "#${item.kindLabel} ${item.name} · ${item.count} 部",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+            if (visibleCount < suggestions.size) {
+                TextButton(
+                    onClick = { visibleCount = minOf(visibleCount + 10, suggestions.size) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "加载更多（${suggestions.size - visibleCount}）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
     }

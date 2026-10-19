@@ -110,35 +110,55 @@ object LyricsLoader {
      * 预热：**开始播放这一首时**就把歌词准备好。
      *
      * 调用方不应等待它 —— 它是纯后台动作，失败也不影响播放。
-     * 命中缓存时零开销（直接返回）。
+     * 命中内存缓存时零开销。
+     *
+     * @param allowNetwork false = 只允许读内存与本地磁盘，**绝不联网**。
+     *   冷启动恢复会话、播放器还没打开时用这个值，避免"什么都没干却发了一个请求"。
      */
     suspend fun prefetch(
         workId: Int,
         sourceId: String?,
         trackPath: String,
-        trackTitle: String
+        trackTitle: String,
+        allowNetwork: Boolean = true
     ) {
         if (workId <= 0 || trackPath.isBlank()) return
         if (cached(workId, trackPath) != null) return
-        load(workId, sourceId, trackPath, trackTitle)
+        load(workId, sourceId, trackPath, trackTitle, allowNetwork = allowNetwork)
     }
 
     /**
      * 取一首曲目的歌词。
      *
-     * @param sourceId RJ 号；有它才能命中按 RJ 落盘的文件树缓存
+     * 来源顺序：**内存缓存 → 本地磁盘 → 文件树 + 下载**。
+     * 中间那一层（[LyricsStore]）是"冷启动零请求"的关键：解析结果落过盘，
+     * 重启后直接读，不必再打一次 `/api/media/stream/...`。
+     *
+     * @param sourceId RJ 号；有它才能命中按 RJ 落盘的文件树/歌词缓存
+     * @param allowNetwork false 时**不会联网**：内存与磁盘都没有就返回 null
+     *   （null 表示"还没去取"，界面会继续显示加载态，等用户真的要用时再取）
      */
     suspend fun load(
         workId: Int,
         sourceId: String?,
         trackPath: String,
-        trackTitle: String
-    ): LyricsLoad {
+        trackTitle: String,
+        allowNetwork: Boolean = true
+    ): LyricsLoad? {
         if (workId <= 0 || trackPath.isBlank()) return LyricsLoad.None
         cached(workId, trackPath)?.let { return it }
 
+        // ② 本地磁盘：冷启动直接命中，零请求
+        LyricsStore.load(sourceId, workId, trackPath)?.let { ready ->
+            remember(workId, trackPath, ready)
+            return ready
+        }
+
+        // ③ 没落过盘，且当前不允许联网 → 先不取
+        if (!allowNetwork) return null
+
         // 详情页播放时文件树已经在内存；冷启动时读 RJ 号落盘的那份；
-        // 都没有才联网（这条路径现在应该很少走到）
+        // 都没有才联网
         val tree = AsmrRepository.peekTracks(workId)?.takeIf { it.isNotEmpty() }
             ?: runCatching { AsmrRepository.getTracks(workId, sourceId) }.getOrElse {
                 if (it is CancellationException) throw it
@@ -169,6 +189,10 @@ object LyricsLoader {
             LyricsLoad.Failed(it.message ?: "歌词下载失败")
         }
         remember(workId, trackPath, result)
+        // 解析成功才落盘：失败是暂时性的（网络/超时），下次要能重试
+        if (result is LyricsLoad.Ready) {
+            LyricsStore.save(sourceId, workId, trackPath, result)
+        }
         return result
     }
 

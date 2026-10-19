@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,11 +33,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInParent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
-import com.asmrone.app.ui.theme.Elevation
-import com.asmrone.app.ui.theme.Glass
-import dev.chrisbanes.haze.HazeState
+import com.kyant.backdrop.Backdrop
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -55,21 +51,17 @@ data class GlassSegment(
 )
 
 /**
- * 悬浮「液态玻璃」分段切换器（首页三个板块用它切换）。
+ * 悬浮「液态玻璃」分段切换器（首页三个板块用它切换）—— 本次随材质整体重写。
  *
  * 与底部导航栏同一套材质与动效语言：
- *  - 外壳用 [glassSurface]（真实背景模糊 + 半透明色纱 + 0.8dp 发丝描边）；
- *  - 选中段下方是一枚**液态胶囊**：位移 [Glass.PILL_MOVE_MS]ms easeOutCubic，
- *    同时按 `sin(πt)` 做体积拉伸（宽度峰值 +[Glass.PILL_STRETCH]）与上下挤压
- *    （各 [Glass.PILL_SQUASH]）—— 切换时像一滴液体被拉过去，而不是硬跳；
- *  - 胶囊是**独立的一层**，画在文字之下；选中/未选中的文字颜色平滑过渡。
+ *  - 外壳走 [backdropButton]（`vibrancy + blur + lens` + 半透明色纱）；
+ *  - 选中段下方是一枚**液态胶囊**：位移 320ms easeOutCubic，同时按 `sin(πt)`
+ *    做体积拉伸（+28%）与上下挤压（各 2.5dp）—— 切换时像一滴液体被拉过去；
+ *  - 胶囊是**独立的一层**，画在文字之下；选中/未选中的内容色平滑过渡。
  *
  * 只做点击（不做拖动）：这是顶栏上的小控件，点击语义已经足够，也不与页面横滑冲突。
  *
- * @param segments 分段定义
- * @param selectedId 当前选中的分段 id
- * @param onSelect 点击回调
- * @param hazeState 背景模糊用的 HazeState；为 null 时退化为半透明实底
+ * @param backdrop 背景取样源；为 null 时退化为半透明实底 + 发丝描边
  */
 @Composable
 fun GlassSegmentedControl(
@@ -77,12 +69,13 @@ fun GlassSegmentedControl(
     selectedId: String?,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
-    hazeState: HazeState? = null
+    backdrop: Backdrop? = null
 ) {
     if (segments.isEmpty()) return
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
     val pillShape = RoundedCornerShape(percent = 50)
+    val isLightTheme = cs.background.luminanceIsDark().not()
 
     // 每一段在内容行坐标系里的实际边界：胶囊定位用
     val itemBounds = remember { mutableStateListOf<Rect>() }
@@ -119,27 +112,25 @@ fun GlassSegmentedControl(
         animTo = animFrom
         progress.snapTo(0f)
         animTo = target
-        progress.animateTo(1f, tween(Glass.PILL_MOVE_MS))
+        progress.animateTo(1f, tween(SegmentPillMoveMs))
     }
 
     Row(
-        modifier = modifier
-            // 与底部导航栏/顶栏共用的玻璃材质
-            .glassSurface(shape = pillShape, hazeState = hazeState, elevation = Elevation.glass)
+        modifier = modifier.backdropButton(backdrop = backdrop, shape = pillShape)
     ) {
         Box(modifier = Modifier.padding(SegmentContainerPadding)) {
             // ── 液态胶囊（画在文字之下）──
             val bounds0 = itemBounds.firstOrNull()
             if (bounds0 != null && pillReady) {
                 val stretch = sin(PI * progress.value).toFloat()
-                val squashPx = with(density) { Glass.PILL_SQUASH.toPx() } * stretch
+                val squashPx = with(density) { SegmentPillSquash.toPx() } * stretch
                 val pillScaleY =
                     if (bounds0.height > 0f) (bounds0.height - squashPx * 2f) / bounds0.height else 1f
                 Box(
                     modifier = Modifier
                         .graphicsLayer {
                             translationX = currentCenter() - bounds0.width / 2f
-                            scaleX = 1f + Glass.PILL_STRETCH * stretch
+                            scaleX = 1f + SegmentPillStretch * stretch
                             scaleY = pillScaleY
                         }
                         .size(
@@ -147,13 +138,10 @@ fun GlassSegmentedControl(
                             height = with(density) { bounds0.height.toDp() }
                         )
                         .clip(pillShape)
-                        // 与底部导航栏同一套中性胶囊：浅色黑 8%、深色白 18%（不抢主色）
+                        // 与底部导航栏同一套中性胶囊：浅色黑 10%、深色白 10%（不抢主色）
                         .background(
-                            if (cs.background.luminanceIsDark()) {
-                                Color.White.copy(alpha = 0.18f)
-                            } else {
-                                Color.Black.copy(alpha = 0.08f)
-                            },
+                            if (isLightTheme) Color.Black.copy(alpha = 0.1f)
+                            else Color.White.copy(alpha = 0.1f),
                             pillShape
                         )
                 )
@@ -192,11 +180,11 @@ fun GlassSegmentedControl(
                         contentAlignment = Alignment.Center
                     ) {
                         if (iconRes != null) {
-                            Icon(
-                                painter = painterResource(iconRes),
+                            FluentIcon(
+                                res = iconRes,
                                 contentDescription = segment.label,
                                 tint = contentColor,
-                                modifier = Modifier.size(20.dp)
+                                size = 20.dp
                             )
                         } else {
                             Text(
@@ -215,3 +203,12 @@ fun GlassSegmentedControl(
 
 /** 玻璃外框与内容行之间的内边距（坐标换算依赖它，所以提成常量） */
 private val SegmentContainerPadding = 4.dp
+
+/** 胶囊位移动画时长 */
+private const val SegmentPillMoveMs = 320
+
+/** 胶囊拉伸峰值（宽度最多放大到 1.28 倍） */
+private const val SegmentPillStretch = 0.28f
+
+/** 胶囊上下挤压量 */
+private val SegmentPillSquash = 2.5.dp

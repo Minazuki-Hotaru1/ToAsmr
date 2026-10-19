@@ -98,8 +98,19 @@ object AudioController {
     private val _state = MutableStateFlow(PlayerState())
     val state: StateFlow<PlayerState> = _state.asStateFlow()
 
-    /** 初始化音频属性（只做一次即可，重复调用无副作用） */
+    /**
+     * 初始化（重复调用无副作用）。
+     *
+     * ⚠️ 幂等判断必须在**最前面**：`Application.onCreate` 与 `MainActivity.onCreate`
+     * 都会调用一次（Activity 重建时还会再调）。早先这里把 `if (player != null) return`
+     * 放在缓存层与代理启动**之后**，于是第二次调用会：
+     *   - 再 `proxy.start()` 一次（重复绑定本地端口）
+     *   - 再打一条「音频缓存代理已启动」日志
+     * 网络日志里那两条一模一样的启动记录就是这么来的。
+     */
     fun init(context: Context) {
+        if (player != null) return
+
         // 音频缓存的存储层与本地代理：一起初始化。
         // 用 applicationContext 的 cacheDir —— 可以再生的数据，系统空间紧张时
         // 允许它被清理（清掉只是下次重新缓存）。
@@ -109,7 +120,6 @@ object AudioController {
             "音频缓存代理已启动：127.0.0.1:${proxy.port}  已缓存 ${cacheStore.snapshot(System.currentTimeMillis()).totalCount} 首"
         )
 
-        if (player != null) return
         player = MediaPlayer().apply {
             setAudioAttributes(
                 AudioAttributes.Builder()

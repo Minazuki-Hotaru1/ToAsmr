@@ -134,13 +134,43 @@ object AuthManager {
      *   │        └─ 凭据被拒 → 清掉该账号的激活标记
      *   └─ 否 → 未登录（匿名可用）
      * ```
+     *
+     * ## 校验的额度：**每个账号每天最多一次**（[force] 可绕过）
+     *
+     * 早先这里是无条件校验：只要本地有令牌，**每次冷启动**都会打一次
+     * `/api/auth/me`。这与整个应用"每天只跟服务器对齐一次"的策略不一致 ——
+     * 用户把「首页加载」关掉、当天也已经同步过之后重启，日志里仍然会出现
+     * 这一条请求，看上去就像"关不掉的后台联网"。
+     *
+     * 现在的规则与 `SyncGate` 的每日额度一致：
+     *  - 当天已经校验过 → 直接用本地令牌与用户信息进入已登录态，**零请求**；
+     *  - 当天第一次 → 校验一次（请求前先记账，失败也算用过，避免反复重试）；
+     *  - 用户主动「重试连接」→ [force] = true，不受额度限制。
+     *
+     * 代价（明确接受）：令牌若在当天中途失效，最多要到第二天才会被自动发现；
+     * 期间任何需要鉴权的操作会拿到 401，由界面提示重新登录 —— 这条路径本来就有。
      */
-    suspend fun restoreSession() {
+    suspend fun restoreSession(force: Boolean = false) {
         val savedToken = sp.getString(KEY_TOKEN, "") ?: ""
         val savedUser = readUser()
 
-        // ① 有令牌就校验
+        // ① 有令牌就校验（每天一次）
         if (savedToken.isNotBlank() && savedUser != null) {
+            val domain = "auth|${currentHost()}|${savedUser.name}"
+            val today = com.asmrone.app.data.cache.SyncGate.dayStamp()
+            if (!force && AppPrefs.autoSyncDay(domain) == today) {
+                // 今天已经校验过 —— 不再打扰服务器，直接用本地状态
+                _state.value = AuthState(
+                    user = savedUser,
+                    token = savedToken,
+                    host = currentHost(),
+                    restoring = false
+                )
+                return
+            }
+            // 先记账再请求：失败同样算用过，否则每次冷启动都会重来一次
+            AppPrefs.setAutoSyncDay(domain, today)
+
             try {
                 val fresh = api.getCurrentUser(savedToken, hostOverride = currentHost())
                 val merged = AuthUser.fromJson(fresh).copy(
@@ -186,7 +216,8 @@ object AuthManager {
     /** 手动重试连接（离线模式下的「重试连接」按钮） */
     suspend fun retryConnection() {
         _state.value = _state.value.copy(loading = true, error = null)
-        restoreSession()
+        // 用户主动要求重连 → 绕过"每天一次"的校验额度
+        restoreSession(force = true)
         _state.value = _state.value.copy(loading = false)
     }
 

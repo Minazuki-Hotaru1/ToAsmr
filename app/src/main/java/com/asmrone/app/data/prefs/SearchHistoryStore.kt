@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.asmrone.app.data.model.SearchCondition
 import com.asmrone.app.data.model.SearchNamespaces
+import com.asmrone.app.data.model.SearchQueryBuilder
+import com.asmrone.app.data.model.SearchSummarySegment
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,19 +46,71 @@ data class SearchHistoryEntry(
     val conditions: List<SearchCondition>,
     val at: Long
 ) {
-    /** 界面上的展示文本 */
-    val summary: String
+    /**
+     * 重放 / 展示用的**自由文字**（不含已选条件的那部分）。
+     *
+     * ## 它修的是什么
+     *
+     * 高级搜索里，选中一个标签后输入栏会回显该标签的译名 ——
+     * 旧版本把"栏里的文字"原样当成关键词存进了 [query]，于是同一件事被存了两份：
+     *
+     * ```
+     * 条件：标签「ASMR」        query：ASMR        ← 重复
+     * ```
+     *
+     * 历史列表因此显示成「标签「ASMR」 关键词「ASMR」」，点开还会多带一个关键词条件。
+     * 这里把与某个条件同名（译名或原始名）的片段去掉，只留用户**真正敲过**的词。
+     *
+     * 新记录已经不会再存重复片段（见 `SearchViewModel.searchInputs`），
+     * 这个方法主要清理旧数据；顺带剥掉老记录里的 `$tag:X$` 检索语法。
+     */
+    val replayText: String
         get() {
-            val kw = query.trim()
-            val conditionText = conditions.joinToString(" 且 ") {
-                "${it.kindLabel}「${it.displayName}」"
+            var rest = SearchQueryBuilder.stripConditionSyntax(query).trim()
+            if (rest.isEmpty() || conditions.isEmpty()) return rest
+
+            // 长的先删，避免「ASMR」先删掉「ASMR 2」的一部分
+            val names = conditions
+                .flatMap { listOf(it.displayName, it.name) }
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .sortedByDescending { it.length }
+
+            for (name in names) {
+                when {
+                    rest == name -> rest = ""
+                    rest.startsWith("$name ") -> rest = rest.removePrefix("$name ").trim()
+                    rest.endsWith(" $name") -> rest = rest.removeSuffix(" $name").trim()
+                }
             }
+            return rest
+        }
+
+    /**
+     * 界面上的展示分段 —— 历史列表据此把排除项画成红色。
+     *
+     * 格式与结果页标题保持一致（见 [SearchSummarySegment]）：
+     * 包含项 `标签「ASMR」`、排除项 `-标签「ASMR」`、纯关键词记录直接显示关键词本身。
+     * 片段之间一个空格，**没有**「且」「排除」这类连接词。
+     */
+    val summarySegments: List<SearchSummarySegment>
+        get() {
+            // 用 replayText 而不是原始 query：顺手清掉旧记录里的重复片段与检索语法
+            val kw = replayText
+            val conds = conditions.map { SearchSummarySegment.ofCondition(it) }
             return when {
-                conditions.isEmpty() -> kw
-                kw.isEmpty() -> conditionText
-                else -> "$conditionText + 关键词「$kw」"
+                conds.isEmpty() && kw.isEmpty() -> emptyList()
+                // 纯关键词记录：直接显示关键词本身（不加「关键词「…」」的壳）
+                conds.isEmpty() -> listOf(SearchSummarySegment(kw))
+                kw.isEmpty() -> conds
+                else -> conds + listOfNotNull(SearchSummarySegment.ofKeyword(kw))
             }
         }
+
+    /** 纯文本形态（空格连接），给日志与测试用 */
+    val summary: String
+        get() = SearchSummarySegment.join(summarySegments)
 
     /** 有没有条件（决定点历史时要不要填条件栏） */
     val hasConditions: Boolean get() = conditions.isNotEmpty()

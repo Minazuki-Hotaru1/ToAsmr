@@ -18,7 +18,7 @@ import androidx.compose.ui.unit.dp
 
 /**
  * 顶部毛玻璃遮罩 —— 覆盖在状态栏 + 标题栏区域
- * （提炼自 comicApp 的 FrostedBar.kt，作为「不支持 Haze 实时模糊」时的廉价兜底方案）
+ * （提炼自 comicApp 的 FrostedBar.kt：设置类页面滚动时的顶部渐显用它，不参与玻璃折射）
  *
  * @param scrollFraction 归一化滚动进度 0f(顶部)..1f(已滚动)
  */
@@ -47,7 +47,7 @@ fun TopBarScrim(
                 )
             )
     ) {
-        // 底部边缘的渐变过渡线（8dp）
+        // 底部边缘的渐变过渡线提8dp）
         Box(
             modifier = Modifier
                 .fillMaxWidth()

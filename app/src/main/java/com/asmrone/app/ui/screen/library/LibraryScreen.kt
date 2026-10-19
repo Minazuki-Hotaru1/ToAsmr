@@ -1,7 +1,19 @@
 package com.asmrone.app.ui.screen.library
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,23 +22,21 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -49,6 +59,8 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -61,23 +73,31 @@ import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.model.CollectionStatus
 import com.asmrone.app.data.model.Playlist
 import com.asmrone.app.data.model.Work
+import com.asmrone.app.data.prefs.AppPrefs
+import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.ui.component.AsmrFilterChip
+import com.asmrone.app.ui.component.ListHint
 import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
 import com.asmrone.app.ui.component.CoverImage
 import com.asmrone.app.ui.component.EmptyHint
-import com.asmrone.app.ui.component.LocalStableStatusBarTop
+import com.asmrone.app.ui.component.FluentIcon
+import com.asmrone.app.ui.component.rememberStatusBarTopDp
 import com.asmrone.app.ui.component.SmallTagChip
 import com.asmrone.app.ui.component.TabTopBar
 import com.asmrone.app.ui.component.TagTone
 import com.asmrone.app.ui.component.ToastHost
+import com.asmrone.app.ui.component.WorkCard
+import com.asmrone.app.ui.component.TopBarAction
 import com.asmrone.app.ui.component.animateCardEntrance
 import com.asmrone.app.ui.component.cardEntrance
 import com.asmrone.app.ui.component.rememberToastState
 import com.asmrone.app.ui.theme.ErrorColor
+import com.asmrone.app.ui.theme.Liquid
+import com.asmrone.app.ui.theme.RatingStar
 import com.asmrone.app.ui.theme.Sizes
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 收藏页（原「收藏」，已按需求改名为「收藏」）—— 两个页签，对应收藏的**两个入口**：
@@ -106,8 +126,25 @@ fun LibraryScreen(
     val playlistsViewModel: PlaylistsViewModel = viewModel()
     val playlists by playlistsViewModel.state.collectAsState()
 
-    var tab by remember { mutableIntStateOf(TAB_MARKED) }
+    // 收听进度（与首页/搜索结果同一份数据源）：卡片底部那条 3dp 进度线
+    val progressMap by LibraryStore.progress.collectAsState()
+
+    // 页签选择**持久化**：切到「列表」后，离开页面 / 杀进程重开都停在「列表」，
+    // 直到用户主动切回「标记」。
+    val tab by AppPrefs.libraryTab.collectAsState()
     var pendingDelete by remember { mutableStateOf<Playlist?>(null) }
+
+    /**
+     * 「标记」页签的状态筛选条是否展开（顶栏右侧的玻璃胶囊控制）。
+     *
+     * ⚠️ 与 comicApp 的「偏好选择」有一处刻意不同：
+     * 那边是 `activeIds.isNotEmpty() || expanded` —— **选中过之后就收不起来了**。
+     * 这里折叠与否只看用户点没点，选了状态照样能收起；
+     * 收起后按钮上会显示当前状态名（全部 / 想听 / 在听…），所以不会"不知道现在筛了什么"。
+     *
+     * 默认**收起**：收藏页的第一屏留给作品本身。
+     */
+    var filtersExpanded by remember { mutableStateOf(false) }
 
     // ① 进入收藏页 → 两份数据都"报个到"。
     //
@@ -146,15 +183,16 @@ fun LibraryScreen(
         }
     }
 
-    val hazeState = rememberHazeState()
+    val backdrop = rememberLayerBackdrop()
     val density = LocalDensity.current
-    val statusTopDp = LocalStableStatusBarTop.current
-        ?: with(density) { WindowInsets.statusBars.asPaddingValues().calculateTopPadding() }
+    val statusTopDp = rememberStatusBarTopDp()
     var barHeight by remember {
-        mutableIntStateOf(with(density) { (statusTopDp + 56.dp).roundToPx() })
+        mutableIntStateOf(with(density) { (statusTopDp + Liquid.TOP_BAR_HEIGHT).roundToPx() })
     }
-    val contentPadding = remember(barHeight, density) {
-        PaddingValues(top = with(density) { barHeight.toDp() } + 12.dp, bottom = 100.dp)
+    // 底部留白来自宿主实测的悬浮栏高度（导航栏 + 迷你播放器），需在 remember 外读取
+    val bottomInset = Liquid.CONTENT_BOTTOM_INSET_WITH_PLAYER
+    val contentPadding = remember(barHeight, density, bottomInset) {
+        PaddingValues(top = with(density) { barHeight.toDp() } + Liquid.CONTENT_TOP_GAP, bottom = bottomInset)
     }
 
     // 轻量提示：**只在用户主动刷新失败时**用。
@@ -180,7 +218,7 @@ fun LibraryScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .hazeSource(hazeState)
+                .layerBackdrop(backdrop)
         ) {
             if (!authState.isLoggedIn) {
                 EmptyHint(
@@ -189,33 +227,57 @@ fun LibraryScreen(
                         "请到「设置 → 账号」登录后再回来。"
                 )
             } else {
-                when (tab) {
-                    TAB_MARKED -> CollectionTab(
-                        state = collection,
-                        contentPadding = contentPadding,
-                        onWorkClick = onWorkClick,
-                        onSelectFilter = { collectionViewModel.selectFilter(it) },
-                        onRefresh = { collectionViewModel.refresh() },
-                        onPullRefresh = { collectionViewModel.pullRefresh() },
-                        onLoadMore = { collectionViewModel.loadMore() },
-                        onChanged = { work, status -> collectionViewModel.setStatus(work, status) },
-                        onRetryPending = { collectionViewModel.retryPending(it) }
-                    )
+                // 「标记 ⇄ 列表」切换：参考 comicApp 收藏页的「目录 ⇄ 默认」。
+                //
+                // 那边不是整屏推拉，而是**只横移 1/5 屏**（280ms）+ 淡入淡出 ——
+                // 观感上像"整页轻轻错开一下"，比整屏滑动安静，也不会让两张卡
+                // 同时甩过屏幕。方向：去「列表」（右）新页从右侧偏入，回「标记」相反。
+                AnimatedContent(
+                    targetState = tab,
+                    transitionSpec = {
+                        val direction = if (targetState == TAB_PLAYLISTS) 1 else -1
+                        (
+                            slideInHorizontally(animationSpec = tween(280)) { width ->
+                                width / 5 * direction
+                            } + fadeIn(animationSpec = tween(220))
+                            ) togetherWith (
+                            slideOutHorizontally(animationSpec = tween(280)) { width ->
+                                -width / 5 * direction
+                            } + fadeOut(animationSpec = tween(160))
+                            )
+                    },
+                    label = "libraryTab"
+                ) { current ->
+                    when (current) {
+                        TAB_MARKED -> CollectionTab(
+                            state = collection,
+                            contentPadding = contentPadding,
+                            filtersExpanded = filtersExpanded,
+                            // 与首页卡片一致：底部那条 3dp 收听进度线
+                            progressMap = progressMap,
+                            onWorkClick = onWorkClick,
+                            onSelectFilter = { collectionViewModel.selectFilter(it) },
+                            onRefresh = { collectionViewModel.refresh() },
+                            onPullRefresh = { collectionViewModel.pullRefresh() },
+                            onLoadMore = { collectionViewModel.loadMore() },
+                            onChanged = { work, status -> collectionViewModel.setStatus(work, status) },
+                            onRetryPending = { collectionViewModel.retryPending(it) }
+                        )
 
-                    else -> PlaylistsTab(
-                        state = playlists,
-                        contentPadding = contentPadding,
-                        onOpenPlaylist = onOpenPlaylist,
-                        onRefresh = { playlistsViewModel.load() },
-                        onPullRefresh = { playlistsViewModel.pullRefresh() },
-                        onDelete = { pendingDelete = it }
-                    )
+                        else -> PlaylistsTab(
+                            state = playlists,
+                            contentPadding = contentPadding,
+                            onOpenPlaylist = onOpenPlaylist,
+                            onRefresh = { playlistsViewModel.load() },
+                            onPullRefresh = { playlistsViewModel.pullRefresh() },
+                            onDelete = { pendingDelete = it }
+                        )
+                    }
                 }
             }
         }
 
         TabTopBar(
-            hazeState = hazeState,
             modifier = Modifier.onSizeChanged { barHeight = it.height }
         ) {
             Text(
@@ -224,20 +286,36 @@ fun LibraryScreen(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.weight(1f)
             )
-            AsmrFilterChip(
-                text = if (collection.totalCount > 0) "标记 ${collection.totalCount}" else "标记",
-                selected = tab == TAB_MARKED,
-                onClick = { tab = TAB_MARKED }
-            )
-            Spacer(Modifier.width(6.dp))
-            AsmrFilterChip(
-                text = if (playlists.playlists.isNotEmpty()) {
-                    "列表 ${playlists.playlists.size}"
-                } else {
-                    "列表"
-                },
-                selected = tab == TAB_PLAYLISTS,
-                onClick = { tab = TAB_PLAYLISTS }
+            // 「标记 / 列表」页签切换（40dp 液态玻璃胶囊）。
+            //
+            // 左侧还有一枚**状态筛选**胶囊（只在「标记」页签出现）：
+            // 点击展开/收起下面的状态 chip 条，箭头 90° 旋转；
+            // 胶囊上的文字始终显示当前筛选状态，收起后也知道筛的是什么。
+            if (tab == TAB_MARKED && authState.isLoggedIn) {
+                val arrowRotation by animateFloatAsState(
+                    targetValue = if (filtersExpanded) 90f else 0f,
+                    animationSpec = tween(200),
+                    label = "filterArrow"
+                )
+                TopBarAction(
+                    onClick = { filtersExpanded = !filtersExpanded },
+                    backdrop = backdrop,
+                    iconRes = R.drawable.ic_chevron_right_fluent,
+                    label = collection.filter?.label ?: "全部",
+                    iconRotation = arrowRotation
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+
+            // 顶栏切换用 comicApp 的 TopBarAction（40dp 液态玻璃胶囊），
+            // 而不是两枚 chip：主页面右上角只允许「玻璃」这一类可点元素。
+            TopBarAction(
+                onClick = { AppPrefs.setLibraryTab(if (tab == TAB_MARKED) TAB_PLAYLISTS else TAB_MARKED) },
+                backdrop = backdrop,
+                iconRes = if (tab == TAB_MARKED) R.drawable.ic_bookmark_fluent
+                else R.drawable.ic_library_fluent,
+                // 两个标签都是两字：切换时按钮宽度不变，标题不会被挤得跳一下
+                label = if (tab == TAB_MARKED) "标记" else "列表"
             )
         }
 
@@ -267,6 +345,9 @@ fun LibraryScreen(
 private fun CollectionTab(
     state: CollectionUiState,
     contentPadding: PaddingValues,
+    /** 状态筛选条是否展开（由顶栏玻璃胶囊控制） */
+    filtersExpanded: Boolean,
+    progressMap: Map<Int, Float>,
     onWorkClick: (Int) -> Unit,
     onSelectFilter: (CollectionStatus?) -> Unit,
     onRefresh: () -> Unit,
@@ -277,6 +358,30 @@ private fun CollectionTab(
     onRetryPending: (Int) -> Unit
 ) {
     var editing by remember { mutableStateOf<Work?>(null) }
+    val listState = rememberLazyStaggeredGridState()
+
+    // 滚动时收起底部栏（与首页同一套交互）
+    CollapsibleBottomBarEffect {
+        listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+    }
+
+    // 入场动画只播一次：滚动回来不重播（与首页 / 搜索结果的 animatedKeys 同一套做法）
+    val animatedKeys = remember { mutableSetOf<Int>() }
+
+    // 切换「全部 / 想听 / …」时的渐变。
+    //
+    // 筛选是本地即时算出来的：数据在点击的那一帧就换掉了，
+    // 不做过渡会"啪"地一下换一屏。这里让**卡片**从 0 淡入 240ms，
+    // 筛选条与"上次对齐时间"保持不动 —— 被点的那枚 chip 不该跟着闪。
+    //
+    // ⚠️ 必须用 `remember(state.filter)` 把初值直接定为 0：
+    // 若写成 `remember { Animatable(1f) }` 再在 LaunchedEffect 里 `snapTo(0f)`，
+    // 新内容会**先以 alpha=1 画出一帧**，下一帧才被 snapTo 盖成透明 ——
+    // 表现就是"内容闪一下 → 被渐变盖住 → 再浮现"。
+    val filterFade = remember(state.filter) { Animatable(0f) }
+    LaunchedEffect(state.filter) {
+        filterFade.animateTo(1f, tween(240))
+    }
 
     // 下拉刷新：指示器由 state.refreshing 驱动，内容照常展示
     PullToRefreshBox(
@@ -284,104 +389,174 @@ private fun CollectionTab(
         onRefresh = onPullRefresh,
         modifier = Modifier.fillMaxSize()
     ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = contentPadding
+        LazyVerticalStaggeredGrid(
+            state = listState,
+            columns = StaggeredGridCells.Adaptive(minSize = Sizes.GRID_MIN_CELL),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            contentPadding = contentPadding,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalItemSpacing = 10.dp
         ) {
-        // ── 状态过滤条（全部 + 五种状态）────────────────
-        item(key = "filters") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                AsmrFilterChip(
-                    text = "全部",
-                    selected = state.filter == null,
-                    onClick = { onSelectFilter(null) }
-                )
-                CollectionStatus.entries.forEach { status ->
-                    AsmrFilterChip(
-                        text = status.label,
-                        selected = state.filter == status,
-                        onClick = { onSelectFilter(status) }
-                    )
+            // ── 顶部信息区：状态过滤条 + 上次对齐时间 ────────────
+            //
+            // 这两块**合并成同一个 item**，而不是两个 item。
+            //
+            // 原因：LazyGrid 的 `verticalItemSpacing` 是"item 与 item 之间"的距离，
+            // 哪怕过滤器收起后高度变成 0，那个 item 依然存在 —— 于是它下面会
+            // 白白多出 10dp，收藏页的内容起始位置就比其它页面低一截。
+            // 合并之后：收起时它的高度就是"上次对齐时间"这一行，起始位置与其它页面一致。
+            //
+            // 展开/收起沿用 comicApp「偏好选择」的 `expandVertically + fadeIn` /
+            // `shrinkVertically + fadeOut`（200ms）；区别只有一处：
+            // **选过状态依然可以收起**（那边会强制保持展开）。
+            item(key = "header", span = StaggeredGridItemSpan.FullLine) {
+                Column {
+                    AnimatedVisibility(
+                        visible = filtersExpanded,
+                        enter = expandVertically(animationSpec = tween(200)) +
+                            fadeIn(animationSpec = tween(200)),
+                        exit = shrinkVertically(animationSpec = tween(200)) +
+                            fadeOut(animationSpec = tween(200))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                // 六个 chip 在窄屏放不下：与 comicApp 一样横向滚动，而不是挤成一排
+                                .horizontalScroll(rememberScrollState())
+                                .padding(bottom = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            AsmrFilterChip(
+                                text = "全部",
+                                selected = state.filter == null,
+                                onClick = { onSelectFilter(null) }
+                            )
+                            CollectionStatus.entries.forEach { status ->
+                                AsmrFilterChip(
+                                    text = status.label,
+                                    selected = state.filter == status,
+                                    onClick = { onSelectFilter(status) }
+                                )
+                            }
+                        }
+                    }
+
+                    // 上次对齐时间（弱化小字，无操作含义）
+                    SyncStateLine(syncedAt = state.syncedAt)
                 }
             }
-        }
 
-        // ── 上次对齐时间（弱化小字，无操作含义）──────────
-        item(key = "sync_state") {
-            SyncStateLine(syncedAt = state.syncedAt)
-        }
+            // 说明：这里刻意**没有**"待同步汇总条"和"同步失败"提示。
+            // 本地是主数据源，所以"没对齐上"不需要惊动用户；
+            // 而"改动没送到云端"已经由每张卡片上的「待同步」角标就地表达了 ——
+            // 精确到作品、可以点它重试，比一条汇总文案更有用。
 
-        // 说明：这里刻意**没有**"待同步汇总条"和"同步失败"提示。
-        // 本地是主数据源，所以"没对齐上"不需要惊动用户；
-        // 而"改动没送到云端"已经由每张卡片上的「待同步」标识就地表达了 ——
-        // 精确到作品、可以点它重试，比一条汇总文案更有用。
+            state.error?.let { error ->
+                item(key = "error", span = StaggeredGridItemSpan.FullLine) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = error,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ErrorColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onRefresh) { Text("重试") }
+                    }
+                }
+            }
 
-        state.error?.let { error ->
-            item(key = "error") {
-                Row(
+            if (state.loading) {
+                item(key = "loading", span = StaggeredGridItemSpan.FullLine) {
+                    LoadingRow("正在获取标记…")
+                }
+            }
+
+            if (!state.loading && state.loaded && state.works.isEmpty() && state.error == null) {
+                item(key = "empty", span = StaggeredGridItemSpan.FullLine) {
+                    // 空态也跟着淡入：切到"没有作品"的状态时不会突然蹦出一段文字
+                    Box(modifier = Modifier.graphicsLayer { this.alpha = filterFade.value }) {
+                        InlineEmpty(
+                            iconRes = R.drawable.ic_bookmark_outline_fluent,
+                            title = if (state.filter == null) {
+                                "还没有标记任何作品"
+                            } else {
+                                "没有「${state.filter.label}」状态的作品"
+                            },
+                            description = "在作品详情页可以给作品打标记（想听 / 在听 / 听过 / 重听 / 搁置）"
+                        )
+                    }
+                }
+            }
+
+            // ── 作品卡片（与首页同一套 WorkCard + 瀑布流）──────────
+            //
+            // 收藏特有的信息以**图片角标**的形式叠在封面上：
+            //  - 右上角：听歌状态（想听 / 在听 / …，点它打开状态选择）＋「待同步」（点它重试）；
+            //  - 右下角：我的评分（星标 + 数字，未评分不显示）。
+            itemsIndexed(state.works, key = { _: Int, work: Work -> work.id }) { index, work ->
+                val alpha = remember(work.id) {
+                    Animatable(if (work.id in animatedKeys) 1f else 0f)
+                }
+                LaunchedEffect(work.id) {
+                    if (work.id !in animatedKeys) {
+                        animatedKeys.add(work.id)
+                        alpha.animateCardEntrance(index)
+                    }
+                }
+                // 两个 alpha 相乘：入场（cardEntrance）与筛选淡入（filterFade）互不覆盖
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .cardEntrance(alpha)
+                        .graphicsLayer { this.alpha = filterFade.value }
                 ) {
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ErrorColor,
-                        modifier = Modifier.weight(1f)
+                    WorkCard(
+                        work = work,
+                        host = AsmrRepository.host,
+                        onClick = { onWorkClick(work.id) },
+                        progress = progressMap[work.id],
+                        // 收藏页显示「社团 / 声优 / 年龄分级 / 星级」；
+                        // 标签在网页端也没有展示价值，这里关掉。
+                        showTags = false,
+                        badge = {
+                            CollectionStatusBadge(
+                                status = work.collectionStatus,
+                                busy = state.mutatingId == work.id,
+                                pending = work.id in state.pendingIds,
+                                retrying = state.retryingId == work.id,
+                                onChangeStatus = { editing = work },
+                                onRetrySync = { onRetryPending(work.id) },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(6.dp)
+                            )
+                            work.userRating?.let { rating ->
+                                RatingPill(
+                                    rating = rating,
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(6.dp)
+                                )
+                            }
+                        }
                     )
-                    TextButton(onClick = onRefresh) { Text("重试") }
                 }
             }
-        }
 
-        if (state.loading) {
-            item(key = "loading") { LoadingRow("正在获取标记…") }
-        }
-
-        if (!state.loading && state.loaded && state.works.isEmpty() && state.error == null) {
-            item(key = "empty") {
-                InlineEmpty(
-                    iconRes = R.drawable.ic_bookmark_outline_fluent,
-                    title = if (state.filter == null) {
-                        "还没有标记任何作品"
-                    } else {
-                        "没有「${state.filter.label}」状态的作品"
-                    },
-                    description = "在作品详情页可以给作品打标记（想听 / 在听 / 听过 / 重听 / 搁置）"
-                )
+            if (state.hasMore && state.works.isNotEmpty()) {
+                item(key = "load_more", span = StaggeredGridItemSpan.FullLine) {
+                    LoadMoreRow(loading = state.loadingMore, onLoadMore = onLoadMore)
+                }
             }
-        }
 
-        items(state.works, key = { it.id }) { work ->
-            // 新插入的条目会因为 key 是新的而首次组合，
-            // AnimatedCollectionRow 自己会播入场动画 —— 不需要额外的触发机制
-            AnimatedCollectionRow(
-                work = work,
-                index = state.works.indexOf(work),
-                busy = state.mutatingId == work.id,
-                pending = work.id in state.pendingIds,
-                retrying = state.retryingId == work.id,
-                onClick = { onWorkClick(work.id) },
-                onChangeStatus = { editing = work },
-                onRetrySync = { onRetryPending(work.id) }
-            )
-        }
-
-        if (state.hasMore && state.works.isNotEmpty()) {
-            item(key = "load_more") {
-                LoadMoreRow(loading = state.loadingMore, onLoadMore = onLoadMore)
+            item(key = "bottom_space", span = StaggeredGridItemSpan.FullLine) {
+                Spacer(Modifier.height(12.dp))
             }
-        }
-
-        item(key = "bottom_space") { Spacer(Modifier.height(12.dp)) }
         }
     }
 
@@ -399,137 +574,130 @@ private fun CollectionTab(
     }
 }
 
+/**
+ * 收藏卡片**右上角**的状态角标（听歌状态 + 待同步）。
+ *
+ * 两条信息各自可点、互不干扰：
+ *  - 状态（想听 / 在听 / …）→ 打开状态选择弹窗；
+ *  - 「待同步」→ 立刻重试这一个作品的云端写入。
+ *
+ * 没有状态时**什么都不画**（旧的「未标记」标识已按需求删除）。
+ * 底色用近乎不透明的 surface：叠在花哨封面上时文字仍然读得清。
+ */
 @Composable
-private fun AnimatedCollectionRow(
-    work: Work,
-    index: Int,
+private fun CollectionStatusBadge(
+    status: CollectionStatus?,
     busy: Boolean,
     pending: Boolean,
     retrying: Boolean,
-    onClick: () -> Unit,
     onChangeStatus: () -> Unit,
-    onRetrySync: () -> Unit
+    onRetrySync: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val animatedIds = remember { mutableSetOf<Int>() }
-    val alpha = remember { Animatable(if (work.id in animatedIds) 1f else 0f) }
-    LaunchedEffect(work.id) {
-        if (work.id !in animatedIds) {
-            animatedIds.add(work.id)
-            alpha.animateCardEntrance(index)
-        }
-    }
-    Box(modifier = Modifier.cardEntrance(alpha)) {
-        CollectionRow(
-            work = work,
-            busy = busy,
-            pending = pending,
-            retrying = retrying,
-            onClick = onClick,
-            onChangeStatus = onChangeStatus,
-            onRetrySync = onRetrySync
-        )
-    }
-}
-
-/** 标记列表里的一行：缩略图 + 标题 + 社团 + 状态角标（点右侧角标改状态） */
-@Composable
-private fun CollectionRow(
-    work: Work,
-    busy: Boolean,
-    pending: Boolean,
-    retrying: Boolean,
-    onClick: () -> Unit,
-    onChangeStatus: () -> Unit,
-    onRetrySync: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
-            .padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        CoverImage(
-            url = work.coverUrl(AsmrRepository.host),
-            contentDescription = work.title,
-            modifier = Modifier
-                .width(Sizes.ROW_THUMB_WIDTH)
-                .height(Sizes.ROW_THUMB_HEIGHT),
-            shape = RoundedCornerShape(8.dp),
-            contentScale = ContentScale.Crop,
-            showBackdrop = false
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = work.title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onBackground,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = listOfNotNull(
-                    work.circleName,
-                    work.durationText.takeIf { it != "--:--" },
-                    work.userRating?.let { "我评 $it 星" }
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(enabled = !busy, onClick = onChangeStatus)
-                .padding(4.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            if (busy) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            } else {
-                val status = work.collectionStatus
-                if (status != null) {
-                    CollectionStatusChip(status)
+        // 有状态才显示；正在写云端时显示进度圈
+        if (status != null || busy) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(enabled = !busy, onClick = onChangeStatus)
+            ) {
+                if (busy) {
+                    BusyDot()
                 } else {
-                    SmallTagChip(text = "未标记", tone = TagTone.Neutral)
+                    OverlayPill(
+                        text = status!!.label,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
         }
-        // 待同步标记：这次改动只落在本地，云端还没收到。
-        // **点它就会重试这一个作品**（不必等下一次每日对齐）。
+
         if (pending && !busy) {
-            Spacer(Modifier.width(4.dp))
-            if (retrying) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            } else {
-                AsmrFilterChip(
-                    text = "待同步",
-                    selected = true,
-                    // 用 chip 的"排除态"配色（红底描边）表示"需要注意、还没送达云端"
-                    negativeTone = true,
-                    onClick = onRetrySync
-                )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(enabled = !retrying, onClick = onRetrySync)
+            ) {
+                if (retrying) BusyDot() else OverlayPill(text = "待同步", color = ErrorColor)
             }
         }
     }
 }
 
+/**
+ * 我的评分（右下角）：`★ 4`。
+ *
+ * 用星标 + 数字而不是「我评 4 星」：卡片的信息区已经留给社团 / 声优，
+ * 评分做成封面角落的小药丸，既不打断卡片节奏，也能一眼扫到。
+ */
+@Composable
+private fun RatingPill(rating: Int, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(6.dp)
+    val color = RatingStar
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), shape)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FluentIcon(
+            res = R.drawable.ic_star_fluent,
+            contentDescription = null,
+            tint = color,
+            size = 11.dp
+        )
+        Spacer(Modifier.width(2.dp))
+        Text(
+            text = rating.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            maxLines = 1
+        )
+    }
+}
+
+/** 叠在封面上的小药丸：近不透明底 + 细字，任何封面上都读得清 */
+@Composable
+internal fun OverlayPill(text: String, color: Color) {
+    val shape = RoundedCornerShape(6.dp)
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), shape)
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            maxLines = 1
+        )
+    }
+}
+
+/** 角标位置的加载指示：小圆底 + 进度圈，尺寸与药丸相当 */
+@Composable
+internal fun BusyDot() {
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(12.dp),
+            strokeWidth = 2.dp,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
 // ─────────────────────────── 「列表」页签（收藏夹）───────────────────────────
 
 @Composable
@@ -729,26 +897,13 @@ internal fun SyncStateLine(syncedAt: Long) {
         }
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .padding(bottom = 8.dp, top = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            painter = painterResource(R.drawable.ic_sync_fluent),
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-            modifier = Modifier.size(12.dp)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = "${lastSyncedText(syncedAt, now)}同步",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
-        )
-    }
+    ListHint(
+        text = "${lastSyncedText(syncedAt, now)}同步",
+        // 左边距交给列表自身的 12dp 网格内边距（原来这里再加 16dp + 图标，
+        // 文字比首页的小字提示整整右移了一截）；
+        // 也不再额外加 top 4dp —— 否则比首页那条低 4dp。
+        modifier = Modifier.padding(bottom = 4.dp)
+    )
 }
 
 /**

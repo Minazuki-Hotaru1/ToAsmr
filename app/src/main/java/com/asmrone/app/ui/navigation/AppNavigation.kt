@@ -27,14 +27,14 @@ import com.asmrone.app.ui.screen.home.HomeScreen
 import com.asmrone.app.ui.screen.home.HomeViewModel
 import com.asmrone.app.ui.screen.library.LibraryScreen
 import com.asmrone.app.ui.screen.library.PlaylistDetailScreen
-import com.asmrone.app.ui.screen.lyrics.LyricsPreviewScreen
 import com.asmrone.app.ui.screen.player.PlayerScreen
 import com.asmrone.app.ui.screen.search.SearchResultScreen
 import com.asmrone.app.ui.screen.search.SearchScreen
 import com.asmrone.app.ui.screen.search.SearchViewModel
 import com.asmrone.app.ui.screen.settings.AboutSettingsScreen
 import com.asmrone.app.ui.screen.settings.AppearanceSettingsScreen
-import com.asmrone.app.ui.screen.settings.PlaybackSettingsScreen
+import com.asmrone.app.ui.screen.settings.DataSettingsScreen
+import com.asmrone.app.ui.screen.settings.GlassSettingsScreen
 import com.asmrone.app.ui.screen.settings.ServerSettingsScreen
 import com.asmrone.app.ui.screen.settings.SettingsScreen
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -76,11 +76,12 @@ object Routes {
     fun playlist(playlistId: String) = "playlist/$playlistId"
 
     /** 歌词效果预览（独立演示页，与真实音频无关） */
-    const val LYRICS_PREVIEW = "lyrics/preview"
 
     const val SETTINGS_SERVER = "settings/server"
     const val SETTINGS_APPEARANCE = "settings/appearance"
-    const val SETTINGS_PLAYBACK = "settings/playback"
+    /** 液态玻璃参数页（模糊 / 折射 / 透明度 / 色散） */
+    const val SETTINGS_GLASS = "settings/glass"
+    const val SETTINGS_DATA = "settings/data"
     const val SETTINGS_ABOUT = "settings/about"
 
     /** 账号管理（设置 → 账号） */
@@ -141,16 +142,16 @@ fun AppNavGraph(
                 slideInHorizontally(
                     initialOffsetX = { it },
                     animationSpec = spring(dampingRatio = 0.85f, stiffness = 320f)
-                ) + fadeIn(tween(240))
+                ) + fadeIn(tween(250))
             },
             exitTransition = {
                 slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(300)) +
-                    fadeOut(tween(220))
+                    fadeOut(tween(250))
             },
-            popEnterTransition = { fadeIn(tween(240)) },
+            popEnterTransition = { fadeIn(tween(300)) },
             popExitTransition = {
                 slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(320)) +
-                    fadeOut(tween(240))
+                    fadeOut(tween(300))
             }
         ) {
             SearchResultScreen(
@@ -173,16 +174,16 @@ fun AppNavGraph(
                 slideInHorizontally(
                     initialOffsetX = { it },
                     animationSpec = spring(dampingRatio = 0.85f, stiffness = 320f)
-                ) + fadeIn(tween(240))
+                ) + fadeIn(tween(250))
             },
             exitTransition = {
                 slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(300)) +
-                    fadeOut(tween(220))
+                    fadeOut(tween(250))
             },
-            popEnterTransition = { fadeIn(tween(240)) },
+            popEnterTransition = { fadeIn(tween(300)) },
             popExitTransition = {
                 slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(320)) +
-                    fadeOut(tween(240))
+                    fadeOut(tween(300))
             }
         ) { entry ->
             val kind = entry.arguments?.getString("kind").orEmpty()
@@ -214,10 +215,9 @@ fun AppNavGraph(
             SettingsScreen(
                 onOpenServer = { navController.navigate(Routes.SETTINGS_SERVER) },
                 onOpenAppearance = { navController.navigate(Routes.SETTINGS_APPEARANCE) },
-                onOpenPlayback = { navController.navigate(Routes.SETTINGS_PLAYBACK) },
+                onOpenData = { navController.navigate(Routes.SETTINGS_DATA) },
                 onOpenAccount = { navController.navigate(Routes.SETTINGS_ACCOUNT) },
-                onOpenAbout = { navController.navigate(Routes.SETTINGS_ABOUT) },
-                onOpenLyricsPreview = { navController.navigate(Routes.LYRICS_PREVIEW) }
+                onOpenAbout = { navController.navigate(Routes.SETTINGS_ABOUT) }
             )
         }
 
@@ -253,17 +253,19 @@ fun AppNavGraph(
             ServerSettingsScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.SETTINGS_APPEARANCE) {
-            AppearanceSettingsScreen(onBack = { navController.popBackStack() })
+            AppearanceSettingsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenGlass = { navController.navigate(Routes.SETTINGS_GLASS) }
+            )
         }
-        composable(Routes.SETTINGS_PLAYBACK) {
-            PlaybackSettingsScreen(onBack = { navController.popBackStack() })
+        composable(Routes.SETTINGS_GLASS) {
+            GlassSettingsScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.SETTINGS_DATA) {
+            DataSettingsScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.SETTINGS_ABOUT) {
             AboutSettingsScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(Routes.LYRICS_PREVIEW) {
-            LyricsPreviewScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

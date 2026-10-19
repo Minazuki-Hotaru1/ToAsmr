@@ -1,6 +1,7 @@
 package com.asmrone.app.data.cache
 
 import android.content.Context
+import com.asmrone.app.data.model.NamedItem
 import com.asmrone.app.data.model.Playlist
 import com.asmrone.app.data.model.Work
 import org.json.JSONArray
@@ -12,6 +13,11 @@ import org.json.JSONObject
  * 只保留收藏/标记列表要显示的字段。接口返回的完整 `Work` 带
  * `i18n` 标签翻译表（每部约 4.8KB），而这里每部约 250 字节 —— **小 20 倍**，
  * 这才是能放心把上千条收藏写进本地的原因。
+ *
+ * 站点的「我的收藏」（`/api/review`）实际能拿到的展示信息就是：
+ * 社团名、声优名、我的评分、收藏状态，以及年龄分级（`nsfw` / `age_category_string`）。
+ * 标签虽然也在返回里，但收藏页按需求**不显示**，所以不进缓存 ——
+ * 每条最多 6 个声优名，仍然是小体积。
  *
  * 注意：这不是"另一个数据源"，只是**同一份云端数据的本地副本**，
  * 所以缺字段时一律留空由界面兜底，绝不去猜。
@@ -27,13 +33,25 @@ data class CachedWork(
     /** 收藏状态（`marked` / `listening` / …），未标记为 null */
     val progress: String? = null,
     /** 我的评分 1~5，未评为 null */
-    val userRating: Int? = null
+    val userRating: Int? = null,
+    /**
+     * 18 禁标记（接口字段 `nsfw`）。
+     *
+     * ⚠️ 必须和 [ageCategory] 一起存：卡片左上角的「全年龄」角标由
+     * `Work.isAdult = nsfw || ageCategory == "adult"` 决定。
+     * 不存的话还原出来永远是 `false` —— 整个收藏夹都会被误标成「全年龄」。
+     */
+    val nsfw: Boolean = false,
+    /** 年龄分级原文（`general` / `adult`） */
+    val ageCategory: String? = null,
+    /** 声优名（只存显示用的名字，上限 [MAX_CREDITS] 条） */
+    val vas: List<String> = emptyList()
 ) {
     /**
      * 还原成 [Work] 以便直接喂给现有的卡片组件。
      *
-     * 只有列表需要的那几个字段是有值的，其余用默认值 ——
-     * 界面在收藏列表里也只读这些字段（标题/封面/社团/时长/状态/评分）。
+     * 卡片真正读的是：标题 / 封面 / 社团 / 声优 / 年龄分级 / 收听进度 / 我的评分 ——
+     * 这些都还原出来；标签留空，收藏页本来也不显示。
      */
     fun toWork(): Work = Work(
         id = id,
@@ -44,7 +62,10 @@ data class CachedWork(
         mainCoverUrl = coverUrl,
         hasSubtitle = hasSubtitle,
         progress = progress,
-        userRating = userRating
+        userRating = userRating,
+        nsfw = nsfw,
+        ageCategory = ageCategory,
+        vas = vas.map { NamedItem(id = "", name = it) }
     )
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -57,9 +78,15 @@ data class CachedWork(
         put("subtitle", hasSubtitle)
         put("progress", progress ?: "")
         put("rating", userRating ?: 0)
+        put("nsfw", nsfw)
+        put("age", ageCategory ?: "")
+        if (vas.isNotEmpty()) put("vas", JSONArray().apply { vas.forEach { put(it) } })
     }
 
     companion object {
+        /** 每部最多缓存多少声优名 */
+        const val MAX_CREDITS = 6
+
         fun fromWork(work: Work): CachedWork = CachedWork(
             id = work.id,
             title = work.title,
@@ -69,7 +96,10 @@ data class CachedWork(
             coverUrl = work.mainCoverUrl,
             hasSubtitle = work.hasSubtitle,
             progress = work.progress,
-            userRating = work.userRating
+            userRating = work.userRating,
+            nsfw = work.nsfw,
+            ageCategory = work.ageCategory,
+            vas = work.vas.take(MAX_CREDITS).map { it.name }
         )
 
         fun fromJson(o: JSONObject): CachedWork? {
@@ -85,8 +115,20 @@ data class CachedWork(
                 coverUrl = o.optString("cover", "").takeIf { it.isNotBlank() },
                 hasSubtitle = o.optBoolean("subtitle", false),
                 progress = o.optString("progress", "").takeIf { it.isNotBlank() },
-                userRating = o.optInt("rating", 0).takeIf { it > 0 }
+                userRating = o.optInt("rating", 0).takeIf { it > 0 },
+                nsfw = o.optBoolean("nsfw", false),
+                ageCategory = o.optString("age", "").takeIf { it.isNotBlank() },
+                vas = stringList(o.optJSONArray("vas"))
             )
+        }
+
+        private fun stringList(array: JSONArray?): List<String> {
+            if (array == null) return emptyList()
+            return buildList {
+                for (i in 0 until array.length()) {
+                    array.optString(i, "").takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
         }
 
         fun listToJson(items: List<CachedWork>): JSONArray =

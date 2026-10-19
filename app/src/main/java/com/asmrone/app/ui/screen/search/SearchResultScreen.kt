@@ -4,13 +4,10 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
@@ -31,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.prefs.LibraryStore
@@ -39,13 +37,14 @@ import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
 import com.asmrone.app.ui.component.EmptyHint
 import com.asmrone.app.ui.component.ErrorHint
 import com.asmrone.app.ui.component.GlassTopBar
-import com.asmrone.app.ui.component.LocalStableStatusBarTop
+import com.asmrone.app.ui.theme.Liquid
+import com.asmrone.app.ui.component.rememberStatusBarTopDp
 import com.asmrone.app.ui.component.WorkCard
 import com.asmrone.app.ui.component.WorkResultGrid
 import com.asmrone.app.ui.component.animateCardEntrance
 import com.asmrone.app.ui.component.cardEntrance
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 搜索结果页 —— 搜索**之后**的独立展示界面。
@@ -74,20 +73,16 @@ fun SearchResultScreen(
     val state by viewModel.state.collectAsState()
     val host = remember { AsmrRepository.host }
     val progressMap by LibraryStore.progress.collectAsState()
-    val hazeState = rememberHazeState()
+    val backdrop = rememberLayerBackdrop()
 
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val statusTopDp = LocalStableStatusBarTop.current
-        ?: with(density) {
-            androidx.compose.foundation.layout.WindowInsets.statusBars
-                .asPaddingValues().calculateTopPadding()
-        }
+    val statusTopDp = rememberStatusBarTopDp()
     var barHeight by remember {
-        mutableIntStateOf(with(density) { (statusTopDp + 56.dp).roundToPx() })
+        mutableIntStateOf(with(density) { (statusTopDp + Liquid.TOP_BAR_HEIGHT).roundToPx() })
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Box(modifier = Modifier.fillMaxSize().hazeSource(hazeState)) {
+        Box(modifier = Modifier.fillMaxSize().layerBackdrop(backdrop)) {
             when {
                 // 首次加载：整页转圈（还没有任何结果可展示）
                 state.loading && state.results.isEmpty() -> Box(
@@ -120,13 +115,13 @@ fun SearchResultScreen(
                     // 顶部让开玻璃栏的高度（与收藏夹详情页同一套算法），
                     // 否则第一行卡片会被顶栏压住
                     contentPadding = PaddingValues(
-                        top = with(density) { barHeight.toDp() } + 12.dp,
-                        bottom = 100.dp
+                        top = with(density) { barHeight.toDp() } + Liquid.CONTENT_TOP_GAP,
+                        bottom = Liquid.CONTENT_BOTTOM_INSET
                     ),
                     onWorkClick = onWorkClick,
                     onLoadMore = { viewModel.loadMore() },
-                    totalCount = state.totalCount,
-                    description = state.description,
+                    // 数量不做顶栏副标题，而是列表的第一行（随内容一起滚动）
+                    headerText = if (state.totalCount > 0) "${state.totalCount} 个结果" else null,
                     hasMore = state.hasMore,
                     loadingMore = state.loadingMore
                 )
@@ -135,15 +130,19 @@ fun SearchResultScreen(
 
         // 玻璃药丸栏（与收藏夹详情页同一套）。
         //
-        // 标题显示**总条数**（服务端 `pagination.totalCount`），与原版网站一致 ——
-        // 而不是"已加载的条数"。后者首屏永远是 20，用户看了会以为结果只有 20 条。
-        // 副标题是这次按什么搜的：多条件的结果往往少得让人困惑，
-        // 把条件摊开能直接回答"凭什么只有这几条"。
+        // 标题 = **这次搜了什么**（标签 / 声优 / 社团，排除项是红色的 `-声优「xx」`）；
+        // 数量移到列表第一行（见上面的 headerText），顶栏保持只有一行内容。
         GlassTopBar(
-            title = if (state.totalCount > 0) "${state.totalCount} 个结果" else "搜索结果",
-            subtitle = state.description.ifBlank { null },
+            title = if (state.appliedSummary.isNotEmpty()) {
+                // 大标题 = 这次搜了什么；排除项是红色的 `-声优「xx」`
+                state.appliedSummary.toSummaryAnnotatedString()
+            } else if (state.descriptionSegments.isNotEmpty()) {
+                state.descriptionSegments.toSummaryAnnotatedString()
+            } else {
+                AnnotatedString("搜索结果")
+            },
             onBack = onBack,
-            hazeState = hazeState,
+            backdrop = backdrop,
             modifier = Modifier.onSizeChanged { barHeight = it.height }
         )
     }

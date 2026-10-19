@@ -7,6 +7,7 @@ import com.asmrone.app.data.model.SearchCondition
 import com.asmrone.app.data.model.SearchNamespaces
 import com.asmrone.app.data.model.SearchQueryBuilder
 import com.asmrone.app.data.model.SearchSuggestion
+import com.asmrone.app.data.model.SearchSummarySegment
 import com.asmrone.app.data.model.SuggestionMerger
 import com.asmrone.app.data.model.Tag
 import com.asmrone.app.data.model.VoiceActor
@@ -50,7 +51,14 @@ data class InputSlotState(
     val id: Int = 0,
     val query: String = "",
     val selected: SearchCondition? = null,
-    val suggestions: List<SearchSuggestion> = emptyList()
+    val suggestions: List<SearchSuggestion> = emptyList(),
+    /**
+     * 这一栏是不是"排除"。
+     *
+     * 排除对**条件和裸文字都生效**（实测：`$-tag:X$` 与 `-词` 都有效），
+     * 所以它挂在栏上、而不是只挂在 [selected] 上 —— 用户可以先切"排除"再打字。
+     */
+    val exclude: Boolean = false
 )
 
 data class SearchUiState(
@@ -71,6 +79,13 @@ data class SearchUiState(
     val slots: List<InputSlotState> = listOf(InputSlotState(id = 0)),
     /** 三本字典都为空 —— 用来提示"去设置里更新搜索字典" */
     val dictionaryEmpty: Boolean = false,
+    /**
+     * 上一次**真正发出去**的那次检索的摘要 —— 结果页大标题用它。
+     *
+     * 不能直接用 [descriptionSegments]：结果页在返回栈里活着，用户退回去改输入栏时
+     * slots 已经变了，而标题必须仍然是"这批结果按什么搜的"。
+     */
+    val appliedSummary: List<SearchSummarySegment> = emptyList(),
     val results: List<Work> = emptyList(),
     /**
      * 这次检索的**总条数**（服务端 `pagination.totalCount`）。
@@ -106,30 +121,44 @@ data class SearchUiState(
         }
 
     /**
-     * 结果页与搜索历史共用的"这次按什么搜"的摘要。
+     * 结果页标题用的"这次按什么搜"的摘要（**分段**，界面据此把排除项画红）。
      *
      * 多条件的结果数字往往小得让人困惑（取交集），把**文字与条件都**摊开才能
      * 直接回答"凭什么只有这几条"。
      *
      * 条件里显示的是 [SearchCondition.displayName]（标签用中文译名），
      * 而不是发给服务端的原始名 —— 用户没见过的名字出现在这里会很突兀。
+     *
+     * 排除项写成 `-标签「X」` / `-词`，不再用「排除」二字；
+     * 分段之间是一个空格，不再用「且」连接（条件一多那句话就读不完了）。
      */
-    val description: String
+    val descriptionSegments: List<SearchSummarySegment>
         get() {
             if (mode == SearchMode.SIMPLE) {
-                val kw = query.trim()
-                return if (kw.isEmpty()) "" else "关键词「$kw」"
+                return listOfNotNull(SearchSummarySegment.ofKeyword(query))
             }
             // 按栏顺序，文字与条件各按各的写法；空栏跳过
             return slots.mapNotNull { slot ->
                 val selected = slot.selected
                 when {
-                    selected != null -> "${selected.kindLabel}「${selected.displayName}」"
-                    slot.query.isNotBlank() -> "关键词「${slot.query.trim()}」"
+                    selected != null -> SearchSummarySegment.ofCondition(
+                        // 以栏上的 exclude 为准：它和 chip 的显示永远一致
+                        selected.copy(exclude = slot.exclude)
+                    )
+
+                    slot.query.isNotBlank() -> SearchSummarySegment.ofKeyword(
+                        slot.query,
+                        slot.exclude
+                    )
+
                     else -> null
                 }
-            }.joinToString(" 且 ")
+            }
         }
+
+    /** 同上，纯文本形态（日志、测试与不需要上色的地方用） */
+    val description: String
+        get() = SearchSummarySegment.join(descriptionSegments)
 
     /** 还能不能再加一栏（到上限就不给加了） */
     val canAddSlot: Boolean get() = slots.size < MAX_SLOTS
@@ -218,6 +247,7 @@ class SearchViewModel : ViewModel() {
             // 清掉结果与错误：换了形态还挂着上一次的结果，
             // 看起来就像"输入框和结果对不上"
             results = emptyList(),
+            appliedSummary = emptyList(),
             error = null,
             loading = false,
             loadingMore = false,
@@ -273,13 +303,42 @@ class SearchViewModel : ViewModel() {
             // 选中后清空候选（这一栏"锁定"，收起下拉）。
             // 栏里回显 **displayName**（中文译名）而不是原始名 ——
             // 否则用户刚点的那条候选与栏里留下的文字对不上。
+            // 条件继承这一栏的"排除"状态：切了排除再选标签，就该生成 `$-tag:X$`。
             it.copy(
                 query = item.displayName,
-                selected = item.toCondition(),
+                selected = item.toCondition().copy(exclude = it.exclude),
                 suggestions = emptyList()
             )
         }
         _state.value = _state.value.copy(error = null)
+    }
+
+    /**
+     * 切换某一栏的「包含 / 排除」。
+     *
+     * 已经把标签选好的栏要**同步改条件本身**（`$tag:X$` ⇄ `$-tag:X$`），
+     * 否则会出现"chip 显示排除、检索串仍是包含"的错位。
+     */
+    fun setSlotExclude(slotId: Int, exclude: Boolean) {
+        updateSlot(slotId) {
+            it.copy(
+                exclude = exclude,
+                selected = it.selected?.copy(exclude = exclude)
+            )
+        }
+    }
+
+    /**
+     * 重新算某一栏的候选。
+     *
+     * 用在"重新聚焦到已有文字的栏"时：候选原本只在**键入**时算，
+     * 光把光标点回那一栏不会触发 —— 下拉就一直是空的。
+     */
+    fun refreshSlotSuggestions(slotId: Int) {
+        val slot = _state.value.slots.firstOrNull { it.id == slotId } ?: return
+        if (slot.selected != null || slot.query.isBlank()) return
+        val suggestions = queryPicker(slot.query)
+        updateSlot(slotId) { it.copy(suggestions = suggestions) }
     }
 
     /** 清掉某一栏的选择与输入，回到空白栏 */
@@ -329,6 +388,7 @@ class SearchViewModel : ViewModel() {
         _state.value = _state.value.copy(
             slots = listOf(InputSlotState(id = 0)),
             results = emptyList(),
+            appliedSummary = emptyList(),
             error = null,
             loading = false,
             loadingMore = false,
@@ -357,8 +417,14 @@ class SearchViewModel : ViewModel() {
      * （实测 `$circle:Whisp$` 605 与端点 604 有出入，会带上同名的其他资源）。
      */
     private fun runSearch() {
-        val (conditions, keyword) = searchInputs()
-        startSearch(conditions, keyword)
+        val (conditions, keyword, historyText) = searchInputs()
+        startSearch(
+            conditions = conditions,
+            keyword = keyword,
+            historyText = historyText,
+            // 标题反映的是"这次要搜什么"，所以在提交这一刻取快照
+            summary = _state.value.descriptionSegments
+        )
     }
 
     /**
@@ -370,23 +436,30 @@ class SearchViewModel : ViewModel() {
      *
      * @param record 是否记进搜索历史。点历史重放时不记 ——
      *   那条本来就来自历史，再记一次只会把它重复提到最前
+     * @param historyText 存进历史的**裸文字**（不含 `$tag:X$` 这类检索语法）。
+     *   条件已经结构化地存在 `conditions` 里了，再往 query 里塞一遍语法，
+     *   历史列表就会显示成「标签「ASMR」 关键词「$tag:ASMR$ 耳かき」」。
      */
     private fun startSearch(
         conditions: List<SearchCondition>,
         keyword: String,
-        record: Boolean = true
+        record: Boolean = true,
+        historyText: String = keyword,
+        summary: List<SearchSummarySegment> = emptyList()
     ) {
         if (conditions.isEmpty() && keyword.isBlank()) return
 
         if (record) {
             // 记进本地历史：文字与条件分开存，这样点历史才能各归各位地填回界面
-            SearchHistoryStore.push(query = keyword, conditions = conditions)
+            SearchHistoryStore.push(query = historyText, conditions = conditions)
         }
 
         val endpointFilter = SearchQueryBuilder.singleConditionEndpoint(conditions, keyword)
         val requestKeyword = if (endpointFilter != null) null else keyword
 
         _state.value = _state.value.copy(
+            // 结果页大标题用的快照：之后用户改输入栏，这行字也不会跟着变
+            appliedSummary = summary,
             loading = true,
             error = null,
             results = emptyList(),
@@ -410,25 +483,51 @@ class SearchViewModel : ViewModel() {
     }
 
     /**
-     * 把当前形态的输入归纳成"条件列表 + 检索串"。
+     * 把当前形态的输入归纳成"条件列表 + 检索串 + 历史里的裸文字"。
      *
      * 两种形态的差别只在这一处：
      *  - **普通搜索**：条件恒为空，检索串就是那个关键词（所以单条件端点用不上）
      *  - **高级搜索**：逐栏取贡献，按栏的先后拼（见 [SearchQueryBuilder.buildFromSlots]）
      *
-     * 归纳成 (条件, 串) 这一对而不是直接拼字符串，是为了让
-     * "单条件走专用端点"这个优化在两处（首屏与翻页）用同一份判断。
+     * 归纳成三元组而不是直接拼字符串，是为了让
+     * "单条件走专用端点"这个优化在两处（首屏与翻页）用同一份判断；
+     * 第三个元素专供**历史**：它只要用户真敲过的裸文字（排除词保留 `-词`），
+     * 不要 `$tag:X$` 这类给机器看的语法。
      */
-    private fun searchInputs(): Pair<List<SearchCondition>, String> {
+    private fun searchInputs(): Triple<List<SearchCondition>, String, String> {
         val s = _state.value
         if (s.mode == SearchMode.SIMPLE) {
-            return emptyList<SearchCondition>() to s.query.trim()
+            val q = s.query.trim()
+            return Triple(emptyList(), q, q)
         }
         val parts = s.slots.map { slot ->
-            SearchQueryBuilder.SlotPart(condition = slot.selected, text = slot.query)
+            SearchQueryBuilder.SlotPart(
+                condition = slot.selected,
+                text = slot.query,
+                exclude = slot.exclude
+            )
         }
-        return s.conditions to SearchQueryBuilder.buildFromSlots(parts)
+        // 历史文本：只取**没选中条件**的栏（那些才是用户真敲过的词）。
+        // 已选中的栏里回显的是标签译名，再存一份就会让历史变成
+        // 「标签「ASMR」 关键词「ASMR」」—— 同一件事显示两遍，重放时还会多带一个条件。
+        val historyText = SearchQueryBuilder.buildFromSlots(
+            s.slots
+                .filter { it.selected == null }
+                .map {
+                    SearchQueryBuilder.SlotPart(
+                        condition = null,
+                        text = it.query,
+                        exclude = it.exclude
+                    )
+                }
+        )
+        return Triple(
+            s.conditions,
+            SearchQueryBuilder.buildFromSlots(parts),
+            historyText
+        )
     }
+
     /**
      * 点一条搜索历史。
      *
@@ -459,7 +558,8 @@ class SearchViewModel : ViewModel() {
         //
         // 所以先把语法从 `query` 里剥出来：能还原成条件的还原，剩下的才算关键词。
         val restored = SearchQueryBuilder.parseConditions(entry.query) { kindLabelOf(it) }
-        val cleanQuery = SearchQueryBuilder.stripConditionSyntax(entry.query)
+        // replayText 还会去掉旧版本存进去的"标签译名重复片段"（见 SearchHistoryEntry）
+        val cleanQuery = entry.replayText
         // 条件以结构化字段为准；老历史没有这个字段时才用还原出来的
         val conditions = entry.conditions.ifEmpty { restored }
 
@@ -475,7 +575,23 @@ class SearchViewModel : ViewModel() {
             // 顺带把高级搜索那边的栏位也重置，免得下次切过去看到上一条的残留
             _state.value = _state.value.copy(slots = listOf(InputSlotState(id = 0)))
             nextSlotId = 1
-            startSearch(conditions, cleanQuery, record = false)
+            // ★ 条件必须**拼回检索串**：只把裸文字当关键词发出去的话，
+            //   一条"多个标签、没有关键词"的记录会变成"没有任何条件" → 返回全库。
+            //   这里与检索页提交走同一个 SearchQueryBuilder.build，口径只有一处。
+            val builtQuery = SearchQueryBuilder.build(conditions, cleanQuery)
+            // 单条件 + 没有文字时仍然让它走"按 id 查"的专用端点（更精确）：
+            // 此时把 keyword 留空，startSearch 里就会选端点。
+            val useEndpoint =
+                SearchQueryBuilder.singleConditionEndpoint(conditions, cleanQuery) != null
+            // 标题按这条历史记录的内容重建（排除项来自 conditions，排除词保留 `-词`）
+            val summary = conditions.map { SearchSummarySegment.ofCondition(it) } +
+                listOfNotNull(SearchSummarySegment.ofSearchText(cleanQuery))
+            startSearch(
+                conditions = conditions,
+                keyword = if (useEndpoint) "" else builtQuery,
+                record = false,
+                summary = summary
+            )
             return true
         }
 
@@ -485,7 +601,14 @@ class SearchViewModel : ViewModel() {
         // 否则一点历史就跳走，想再叠加一个条件还得先返回来。
         val filled = buildList {
             conditions.forEach { condition ->
-                add(InputSlotState(query = condition.displayName, selected = condition))
+                add(
+                    InputSlotState(
+                        query = condition.displayName,
+                        selected = condition,
+                        // 重放时把"排除"也带回来，否则历史里的 `-tag:X` 会变成包含
+                        exclude = condition.exclude
+                    )
+                )
             }
             cleanQuery.takeIf { it.isNotEmpty() }?.let { text ->
                 add(InputSlotState(query = text))
@@ -529,7 +652,7 @@ class SearchViewModel : ViewModel() {
         if (!s.hasMore || s.loadingMore) return
 
         // 与 [runSearch] 用**同一套归纳**，否则第二页会漏掉文字或条件
-        val (conditions, keyword) = searchInputs()
+        val (conditions, keyword, _) = searchInputs()
         if (conditions.isEmpty() && keyword.isBlank()) return
 
         val endpointFilter = SearchQueryBuilder.singleConditionEndpoint(conditions, keyword)
@@ -568,6 +691,7 @@ class SearchViewModel : ViewModel() {
             SearchMode.SIMPLE -> _state.value = _state.value.copy(
                 query = "",
                 results = emptyList(),
+                appliedSummary = emptyList(),
                 error = null,
                 loading = false,
                 hasMore = false
@@ -578,6 +702,7 @@ class SearchViewModel : ViewModel() {
                 _state.value = _state.value.copy(
                     slots = listOf(InputSlotState(id = 0)),
                     results = emptyList(),
+                    appliedSummary = emptyList(),
                     error = null,
                     loading = false,
                     hasMore = false

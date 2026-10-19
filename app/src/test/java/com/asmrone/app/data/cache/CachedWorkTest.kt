@@ -3,9 +3,11 @@ package com.asmrone.app.data.cache
 import com.asmrone.app.data.model.Work
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * 收藏缓存的正反序列化测试。
@@ -74,6 +76,45 @@ class CachedWorkTest {
         assertNull(CachedWork.fromJson(bad))
     }
 
+    // ───────────── 收藏卡片要显示的展示字段（社团 / 声优 / 评分）─────────────
+
+    @Test
+    fun `★ 声优名往返后仍能拼出 vaText`() {
+        val work = Work(
+            id = 5,
+            title = "带声优的作品",
+            circleName = "社团",
+            vas = listOf(
+                com.asmrone.app.data.model.NamedItem("a", "涼花みなせ"),
+                com.asmrone.app.data.model.NamedItem("b", "御子柴")
+            )
+        )
+        val restored = CachedWork.fromJson(CachedWork.fromWork(work).toJson())!!.toWork()
+        assertEquals("涼花みなせ / 御子柴", restored.vaText)
+        assertEquals("社团", restored.circleName)
+    }
+
+    @Test
+    fun `声优数量有上限，避免缓存被撑大`() {
+        val work = Work(
+            id = 6,
+            title = "很多声优",
+            vas = (1..20).map { com.asmrone.app.data.model.NamedItem("$it", "声优$it") }
+        )
+        val cached = CachedWork.fromWork(work)
+        assertEquals(CachedWork.MAX_CREDITS, cached.vas.size)
+    }
+
+    @Test
+    fun `老缓存没有 vas 字段时为空列表`() {
+        val o = JSONObject().apply {
+            put("id", 8)
+            put("title", "老记录")
+        }
+        val cached = CachedWork.fromJson(o)!!
+        assertTrue(cached.vas.isEmpty())
+    }
+
     @Test
     fun `作品页往返保留分页信息`() {
         val page = CachedWorkPage(
@@ -85,6 +126,49 @@ class CachedWorkTest {
         assertEquals(1, restored.items.size)
         assertEquals(37, restored.totalCount)
         assertEquals(2, restored.loadedPages)
+    }
+
+    // ───────────── 年龄分级（「全年龄」角标的依据）─────────────
+
+    @Test
+    fun `★ 成人作品往返后仍是成人`() {
+        val adult = Work(id = 9, title = "R18 作品", nsfw = true)
+        val restored = CachedWork.fromJson(CachedWork.fromWork(adult).toJson())!!.toWork()
+        assertTrue("nsfw 丢了 → 会被误标成「全年龄」", restored.isAdult)
+    }
+
+    @Test
+    fun `★ 靠 age_category 判定的成人作品也往返正确`() {
+        val adult = Work(id = 10, title = "按年龄分级判定", ageCategory = "adult")
+        val restored = CachedWork.fromJson(CachedWork.fromWork(adult).toJson())!!.toWork()
+        assertTrue(restored.isAdult)
+    }
+
+    @Test
+    fun `★ 全年龄作品往返后仍不是成人`() {
+        val general = Work(id = 11, title = "全年龄作品", ageCategory = "general")
+        val restored = CachedWork.fromJson(CachedWork.fromWork(general).toJson())!!.toWork()
+        assertFalse(restored.isAdult)
+    }
+
+    // ───────────── 缓存结构版本（否则新字段永远落不了地）─────────────
+
+    @Test
+    fun `★ 缓存结构版本足够新，旧缓存会被丢弃并重拉`() {
+        // 声优名 `vas` 是 v2、年龄分级 `nsfw`/`age` 是 v3 才加的字段。
+        // 版本没 +1 的话：旧 JSON 缺字段，而条件请求又会一直命中 304，
+        // 缓存永远不重写 —— 收藏卡片就会缺声优、且全被标成「全年龄」。
+        assertTrue(
+            "至少要是 3（v3 起才有 CachedWork.nsfw/age）",
+            CacheFiles.SCHEMA_VERSION >= 3
+        )
+        val store = File(
+            "src/main/java/com/asmrone/app/data/cache/SyncCacheStore.kt"
+        ).readText()
+        assertTrue(
+            "版本不一致时必须当成没有缓存，下一次同步才会无条件重拉",
+            store.contains("o.optInt(\"v\", 0) != CacheFiles.SCHEMA_VERSION")
+        )
     }
 
     @Test

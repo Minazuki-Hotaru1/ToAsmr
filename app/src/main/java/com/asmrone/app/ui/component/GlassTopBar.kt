@@ -7,10 +7,9 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,11 +19,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.R
-import com.asmrone.app.ui.theme.Sizes
-import dev.chrisbanes.haze.HazeState
+import com.asmrone.app.ui.theme.Liquid
+import com.kyant.backdrop.Backdrop
 
 /**
- * 二级页面顶部栏 —— 形态移植自 Telegram 频道页（提炼自 comicApp 的 GlassTopBar）：
+ * 二级页面顶部栏 —— 液态玻璃版本。
  *
  * ```
  * ┌───┐                      ┌──────┐
@@ -32,18 +31,15 @@ import dev.chrisbanes.haze.HazeState
  * └───┘                      └──────┘
  * ```
  *
- *  - 最左：圆形玻璃药丸（返回）
- *  - 中间：一条玻璃药丸，显示标题（可选副标题，例如声优 / 社团）
- *  - 最右：其他重要操作按钮（若干圆形玻璃药丸，可选）
+ *  - 最左：圆形液态玻璃（返回）
+ *  - 中间：连续曲率胶囊，显示标题（可选副标题）
+ *  - 最右：其他操作按钮（若干圆形玻璃，可选）
  *
- * 玻璃材质与底部导航栏完全一致（共用 [glassSurface] + Haze 真实背景模糊）。
- * 药丸是悬浮的，所以页面内容可以滚动到它们下方透出；内容会自动从状态栏下方开始排布。
+ * 所有玻璃都从页面内容层的 `layerBackdrop` 取样，带轻微模糊、边缘折射和高光。
+ * 玻璃药丸之下的顶部区域用一层柔和的背景色渐隐保证滚动内容可读。
  *
- * 另外，在**药丸之下的整条顶部区域**还有一层**向上渐强的渐变模糊**：
- * 内容滚到顶部时越靠上越模糊、向下渐隐。
- *
- * @param hazeState 背景模糊用的 HazeState；页面里被取样的内容需挂 `Modifier.hazeSource(state)`
- * @param actions 右侧操作区（一般放 [GlassCircleButton]）
+ * @param backdrop 页面内容层的液态玻璃取样源
+ * @param actions 右侧操作区（一般放 [GlassCircleButton] / [TopBarAction]）
  */
 @Composable
 fun GlassTopBar(
@@ -51,35 +47,29 @@ fun GlassTopBar(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
-    hazeState: HazeState? = null,
+    backdrop: Backdrop? = null,
     actions: (@Composable RowScope.() -> Unit)? = null
 ) {
     val cs = MaterialTheme.colorScheme
     Box(modifier = modifier.fillMaxWidth()) {
-        // 顶部渐变模糊底衬：位于内容之上、药丸之下（与主页面顶栏共用同一套参数）
-        if (hazeState != null) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .topGradientBlur(hazeState)
-            )
-        }
+        // 顶部底色渐隐：位于内容之上、药丸之下（二级页用较低的不透明度，保留封面）
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .topBarFade(maxAlpha = Liquid.TOP_FADE_ALPHA_SECONDARY)
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                // 顶部让出状态栏：优先用宿主提供的**稳定**高度（见 LocalStableStatusBarTop），
-                // 这样播放器沉浸隐藏/恢复状态栏时，返回本页不会带着内容一起上下移动。
-                .then(
-                    LocalStableStatusBarTop.current?.let { stable ->
-                        Modifier.padding(top = stable)
-                    } ?: Modifier.statusBarsPadding()
-                )
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                // 顶部让出状态栏：所有顶栏统一走 rememberStatusBarTopDp()
+                // （优先宿主给的稳定值，避免播放器隐藏/恢复系统栏时页面上下移动）
+                .padding(top = rememberStatusBarTopDp())
+                .padding(horizontal = 8.dp, vertical = Liquid.TOP_BAR_VERTICAL_PADDING),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // 最左：返回
             GlassCircleButton(
-                hazeState = hazeState,
+                backdrop = backdrop,
                 iconRes = R.drawable.ic_arrow_left_fluent,
                 contentDescription = "返回",
                 onClick = onBack
@@ -87,19 +77,16 @@ fun GlassTopBar(
 
             Spacer(Modifier.width(8.dp))
 
-            // 中间：标题信息
-            //  - fill = false → 药丸按内容宽度收缩，右侧操作按钮因此能**紧贴标题**（标题旁）
-            //  - height 与返回/操作圆形药丸一致 → 整条顶栏控件上下对齐（标题不再比返回按钮高）
+            // 中间：标题信息（胶囊与圆钮等高：heightIn(min) + 相同的纵向内边距）
             Box(
                 modifier = Modifier
-                    .weight(1f, fill = false)
-                    .height(Sizes.TOP_BAR_CONTROL)
-                    .glassSurface(
-                        shape = RoundedCornerShape(percent = 50),
-                        hazeState = hazeState,
-                        elevation = 8.dp
+                    .weight(1f)
+                    .backdropButton(
+                        backdrop = backdrop,
+                        shape = LiquidCapsule
                     )
-                    .padding(horizontal = 16.dp),
+                    .heightIn(min = Liquid.CONTROL_HEIGHT)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 Column {
@@ -128,8 +115,7 @@ fun GlassTopBar(
                 actions()
             }
         }
-        // 让渐变模糊底衬再向下延伸一截（本身不可见，只撑高外层 Box）：
-        // 这样药丸下方也有一段可见的「越往上越模糊」过渡，而不是全被药丸盖住。
+        // 让底色渐隐再向下延伸一截（本身不可见，只撑高外层 Box）
         Spacer(Modifier.fillMaxWidth().height(22.dp))
     }
 }
@@ -141,7 +127,7 @@ fun GlassTopBar(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
-    hazeState: HazeState? = null,
+    backdrop: Backdrop? = null,
     actions: (@Composable RowScope.() -> Unit)? = null
 ) {
     GlassTopBar(
@@ -149,7 +135,7 @@ fun GlassTopBar(
         onBack = onBack,
         modifier = modifier,
         subtitle = subtitle,
-        hazeState = hazeState,
+        backdrop = backdrop,
         actions = actions
     )
 }

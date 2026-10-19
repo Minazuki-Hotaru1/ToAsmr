@@ -156,13 +156,22 @@ class SearchHistoryStoreTest {
     @Test
     fun `纯条件记录的摘要是各条件的组合`() {
         SearchHistoryStore.push("", listOf(tag("ASMR"), circle("Whisp")))
-        assertEquals("标签「ASMR」 且 社团「Whisp」", visible.single().summary)
+        // 不用「且」连接：一个空格就是分隔符
+        assertEquals("标签「ASMR」 社团「Whisp」", visible.single().summary)
     }
 
     @Test
     fun `文字加条件的摘要把两者都写上`() {
         SearchHistoryStore.push("耳かき", listOf(tag("ASMR")))
-        assertEquals("标签「ASMR」 + 关键词「耳かき」", visible.single().summary)
+        assertEquals("标签「ASMR」 关键词「耳かき」", visible.single().summary)
+    }
+
+    @Test
+    fun `★ 排除条件在摘要里写成 -标签 并标记为排除`() {
+        SearchHistoryStore.push("", listOf(tag("Vtuber", id = "2").copy(exclude = true)))
+        val entry = visible.single()
+        assertEquals("-标签「Vtuber」", entry.summary)
+        assertTrue("界面要据此把这一项画成红色", entry.summarySegments.single().exclude)
     }
 
     @Test
@@ -170,6 +179,44 @@ class SearchHistoryStoreTest {
         SearchHistoryStore.push("", listOf(tag("环绕音", id = "496", display = "双声道立体声/人头麦")))
         assertTrue(visible.single().summary.contains("双声道立体声/人头麦"))
         assertFalse(visible.single().summary.contains("环绕音"))
+    }
+
+    // ═════════════════ 旧记录的重复标签名（bug 清理）════════════════
+
+    @Test
+    fun `★ 选中标签后，历史不再重复显示一遍标签名`() {
+        // 旧版本会把"选完标签后栏里回显的译名"也当成关键词存进 query，
+        // 于是历史显示成「标签「ASMR」 关键词「ASMR」」，点开还会多带一个关键词。
+        SearchHistoryStore.push("ASMR", listOf(tag("ASMR")))
+        val entry = visible.single()
+        assertEquals("", entry.replayText)
+        assertEquals("标签「ASMR」", entry.summary)
+    }
+
+    @Test
+    fun `重复片段清理只去掉标签名，真正的关键词还在`() {
+        SearchHistoryStore.push("ASMR 耳かき", listOf(tag("ASMR")))
+        assertEquals("耳かき", visible.single().replayText)
+        assertEquals("标签「ASMR」 关键词「耳かき」", visible.single().summary)
+    }
+
+    @Test
+    fun `多个标签的重复片段也能清掉`() {
+        SearchHistoryStore.push("ASMR Vtuber", listOf(tag("ASMR"), tag("Vtuber", id = "2")))
+        assertEquals("", visible.single().replayText)
+        assertEquals("标签「ASMR」 标签「Vtuber」", visible.single().summary)
+    }
+
+    @Test
+    fun `老记录里的检索语法会被剥掉，只留关键词`() {
+        SearchHistoryStore.push("\$tag:ASMR\$ 耳かき", listOf(tag("ASMR")))
+        assertEquals("耳かき", visible.single().replayText)
+    }
+
+    @Test
+    fun `没有条件的纯关键词记录原样保留`() {
+        SearchHistoryStore.push("耳かき", emptyList())
+        assertEquals("耳かき", visible.single().replayText)
     }
 
     @Test

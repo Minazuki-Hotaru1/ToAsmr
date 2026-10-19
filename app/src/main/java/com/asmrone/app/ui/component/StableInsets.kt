@@ -1,6 +1,11 @@
 package com.asmrone.app.ui.component
 
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 
 /**
@@ -16,6 +21,23 @@ import androidx.compose.ui.unit.Dp
  * 默认 null：未提供时各组件退回使用实时的 `statusBarsPadding()`。
  */
 val LocalStableStatusBarTop = compositionLocalOf<Dp?> { null }
+
+/**
+ * 当前页面应该使用的**状态栏高度**。
+ *
+ * 所有页面统一通过它取状态栏高度，而不是各自写一遍
+ * `LocalStableStatusBarTop.current ?: WindowInsets.statusBars…`：
+ * 各页面的顶部留白因此永远基于同一个数，不会因为某个页面漏了兜底
+ * 而整体上移 / 下移。
+ */
+@Composable
+fun rememberStatusBarTopDp(): Dp {
+    LocalStableStatusBarTop.current?.let { return it }
+    val density = LocalDensity.current
+    return with(density) {
+        WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    }
+}
 
 /**
  * 「稳定」的底部系统导航栏高度 —— 与 [LocalStableStatusBarTop] 同理。

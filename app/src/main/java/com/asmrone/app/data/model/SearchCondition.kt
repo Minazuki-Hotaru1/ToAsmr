@@ -25,10 +25,30 @@ data class SearchCondition(
     /** 界面上显示的文本（标签会用中文译名） */
     val displayName: String,
     /** 用于界面上标注"这是标签还是声优" */
-    val kindLabel: String
+    val kindLabel: String,
+    /**
+     * 是否为**排除**条件。
+     *
+     * 实测（2026-10-18，api.asmr.one `/api/search/{keyword}`）：
+     * 排除写法是把 `-` 加在命名空间前面 —— `$-tag:Vtuber$`、`$-va:X$`、`$-circle:Y$`。
+     * 例如 `$tag:ASMR$` 18350 条，加上 `$-tag:Vtuber$` 后 17619 条。
+     *
+     * 只有 [SearchNamespaces.TAG] / [SearchNamespaces.TAG_FUZZY] /
+     * [SearchNamespaces.VOICE_ACTOR] / [SearchNamespaces.CIRCLE] 支持排除
+     * （见 [canExclude]）；裸关键词的排除写法是 `-词`，由
+     * [SearchQueryBuilder.SlotPart] 处理，不经过这里。
+     */
+    val exclude: Boolean = false
 ) {
-    /** 去重用的身份：同一个资源的同一个条件只应加一次 */
-    val dedupeKey: String get() = "$namespace|$id"
+    /** 去重用的身份：带排除符号 —— `tag:X` 与 `-tag:X` 是两条不同的条件 */
+    val dedupeKey: String get() = (if (exclude) "-" else "") + "$namespace|$id"
+
+    /** 这个命名空间是否支持排除（`age` 之类不参与） */
+    val canExclude: Boolean
+        get() = namespace == SearchNamespaces.TAG ||
+            namespace == SearchNamespaces.TAG_FUZZY ||
+            namespace == SearchNamespaces.VOICE_ACTOR ||
+            namespace == SearchNamespaces.CIRCLE
 
     /**
      * 存进搜索历史用。
@@ -43,6 +63,8 @@ data class SearchCondition(
         put("name", name)
         put("display", displayName)
         put("kind", kindLabel)
+        // 只在排除时写：老历史的 JSON 里没有这个键，读回时默认就是"包含"
+        if (exclude) put("ex", true)
     }
 
     companion object {
@@ -57,7 +79,8 @@ data class SearchCondition(
                 name = name,
                 displayName = o.optString("display", "").takeIf { it.isNotBlank() } ?: name,
                 kindLabel = o.optString("kind", "").takeIf { it.isNotBlank() }
-                    ?: labelFor(namespace)
+                    ?: labelFor(namespace),
+                exclude = o.optBoolean("ex", false)
             )
         }
 
@@ -95,7 +118,24 @@ data class SearchCondition(
  * 耳かき $tag:ASMR$                → 3049    ← 裸文本与条件可混用
  * ```
  *
- * ## ⚠️ 三个坑（都实测过）
+ * ## 排除语法（2026-10-18 复测，api.asmr.one：`GET /api/search/{keyword}`）
+ *
+ * `-` 加在**命名空间前**（不是值前）：
+ *
+ * ```
+ * $tag:ASMR$                  → 18350
+ * $tag:ASMR$ $-tag:Vtuber$    → 17619   ← 排除标签
+ * $-tag:Vtuber$               → 61797   ← 全库 62912 − Vtuber
+ * $va:涼花みなせ$              → 1565
+ * $-va:涼花みなせ$             → 61347   ← 排除声优
+ * $-circle:Whisp$             → 62306   ← 排除社团
+ * $-tagw:ASMR$                → 44443   ← 模糊标签也能排除
+ * $-tag:__不存在的标签__$        → 62912   ← 排除不存在的标签不会清零（安全）
+ * 耳かき / -耳かき              → 4815 / 58097   ← **裸关键词用 `-词`，`- 词`（带空格）会返回 0**
+ * -耳かき 睡眠                 → 306     ← 多词时只排除第一个词
+ * ```
+ *
+ * ## ⚠️ 四个坑（都实测过）
  *
  * 1. **条件之间必须有空格**：`$tag:ASMR$$tag:Vtuber$` → **0**，
  *    而 `$tag:ASMR$ $tag:Vtuber$` → 730。
@@ -103,6 +143,8 @@ data class SearchCondition(
  * 3. **名称含空格时不要加引号**：`$circle:ajaib suara$` → 345（精确），
  *    但 `$circle:"ajaib suara"$` → **0**。
  *    网站前端会给含空格的值加引号，那套做法在这里是错的 —— 别照抄。
+ * 4. **排除的 `-` 紧贴命名空间 / 词**：`$-tag:X$` 对，`$ -tag:X$` 错；
+ *    `-耳かき` 对，`- 耳かき` → **0**。
  */
 object SearchNamespaces {
     const val TAG = "tag"
@@ -126,12 +168,20 @@ object SearchNamespaces {
  */
 object SearchQueryBuilder {
 
-    /** 单个条件 → `$namespace:name$`；名称非法时返回 null（跳过这个条件） */
+    /** 空白分词：裸关键词排除时按词逐个加 `-` */
+    private val WHITESPACE = Regex("\\s+")
+
+    /**
+     * 单个条件 → `$namespace:name$`；排除时是 `$-namespace:name$`。
+     * 名称非法时返回 null（跳过这个条件）。
+     */
     fun token(condition: SearchCondition): String? {
         val name = condition.name.trim()
         if (name.isEmpty()) return null
         if (condition.namespace.isBlank()) return null
-        return "\$${condition.namespace}:$name\$"
+        // 排除符号紧贴命名空间：`$-tag:X$`（实测有效；写成 `$ -tag:X$` 会失效）
+        val sign = if (condition.exclude) "-" else ""
+        return "\$$sign${condition.namespace}:$name\$"
     }
 
     /**
@@ -150,19 +200,43 @@ object SearchQueryBuilder {
     /**
      * 高级搜索里一个输入栏对检索串的贡献。
      *
-     * 一个栏有三种情况，正好对应"用户可以自由选择输入什么"：
-     *  - **选了**字典里的条目 → `$tag:ASMR$` 这样的条件
+     * 一个栏有四种情况，正好对应"用户可以自由选择输入什么"：
+     *  - **选了**字典里的条目 → `$tag:ASMR$` 这样的条件（[exclude] 时是 `$-tag:ASMR$`）
      *  - 只敲了文字、没选 → 该文字**原样**作为关键词
      *    （服务端本来就支持裸文字与条件混用：实测 `耳かき $tag:ASMR$` → 3049）
+     *  - 只敲了文字、且这一栏是**排除** → `-词`（多词时每个词各加一个 `-`）
      *  - 什么都没填 → 不贡献任何东西
      */
-    data class SlotPart(val condition: SearchCondition?, val text: String) {
+    data class SlotPart(
+        val condition: SearchCondition?,
+        val text: String,
+        /** 这一栏是否处于"排除"模式（条件与裸文字都适用） */
+        val exclude: Boolean = false
+    ) {
         fun toToken(): String? = when {
             condition != null -> SearchQueryBuilder.token(condition)
+            text.isNotBlank() && exclude -> SearchQueryBuilder.negateText(text)
             text.isNotBlank() -> text.trim()
             else -> null
         }
     }
+
+    /**
+     * 裸关键词的排除写法：`-词`。
+     *
+     * 实测（2026-10-18）：
+     *  - `耳かき` 4815 → `-耳かき` 58097（全库 62912），**排除生效**；
+     *  - `- 耳かき`（`-` 后带空格）→ **0**，所以绝不能插入空格；
+     *  - `-耳かき 睡眠` → 306，**只排除第一个词**，因此多词时要给每个词各加一个 `-`，
+     *    语义才是"这些词都不要"。
+     *
+     * 用户自己已经写了 `-` 的话不重复加（`-x` 仍产出 `-x`，不是 `--x`）。
+     */
+    fun negateText(text: String): String =
+        text.trim().split(WHITESPACE)
+            .map { it.trimStart('-') }
+            .filter { it.isNotEmpty() }
+            .joinToString(" ") { "-$it" }
 
     /**
      * 把各输入栏拼成检索串，**保持用户排列的顺序**。
@@ -188,6 +262,8 @@ object SearchQueryBuilder {
     fun singleConditionEndpoint(conditions: List<SearchCondition>, keyword: String): WorkFilter? {
         if (keyword.isNotBlank()) return null
         val only = conditions.singleOrNull() ?: return null
+        // 排除条件不能用"按 id 查"的端点表达：端点只有"包含"这一种语义
+        if (only.exclude) return null
         return when (only.namespace) {
             SearchNamespaces.TAG ->
                 only.id.toIntOrNull()?.let { WorkFilter(tagId = it) }
@@ -250,6 +326,7 @@ object SearchQueryBuilder {
      */
     fun parseConditions(text: String, kindLabel: (String) -> String): List<SearchCondition> =
         CONDITION_TOKEN.findAll(text).mapNotNull { m ->
+            val exclude = m.groupValues[1] == "-"
             val namespace = m.groupValues[2]
             val name = m.groupValues[3].trim()
             if (namespace.isBlank() || name.isEmpty()) return@mapNotNull null
@@ -259,7 +336,8 @@ object SearchQueryBuilder {
                 name = name,
                 // 没有字典，只能拿原始名当显示名 —— 至少不会显示成语法
                 displayName = name,
-                kindLabel = kindLabel(namespace)
+                kindLabel = kindLabel(namespace),
+                exclude = exclude
             )
         }.toList()
 }

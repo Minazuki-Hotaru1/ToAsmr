@@ -1,85 +1,98 @@
 package com.asmrone.app.ui.component
 
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.boundsInParent
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import com.asmrone.app.ui.theme.Elevation
-import com.asmrone.app.ui.theme.Glass
-import dev.chrisbanes.haze.HazeState
+import androidx.compose.ui.util.fastCoerceIn
+import androidx.compose.ui.util.fastRoundToInt
+import androidx.compose.ui.util.lerp
+import com.asmrone.app.ui.theme.Liquid
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
+import com.kyant.shapes.Capsule
+import kotlin.math.abs
+import kotlin.math.sign
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
-import kotlin.math.PI
-import kotlin.math.sin
 
-/** 悬浮玻璃导航栏的一个标签项（图标为 Fluent 矢量图资源） */
+/** 悬浮玻璃导航栏的一个标签项 */
 data class GlassTabItem(
     val route: String,
     val label: String,
-    // 显式用 @param: 目标，避免 Kotlin 对「构造参数 vs 属性」注解归属的告警
-    @param:DrawableRes val selectedIconRes: Int,
-    @param:DrawableRes val unselectedIconRes: Int
+    @param:DrawableRes val selectedIcon: Int,
+    @param:DrawableRes val unselectedIcon: Int
 )
 
+internal val LocalLiquidBottomTabScale =
+    staticCompositionLocalOf { { 1f } }
+
 /**
- * 悬浮「液态玻璃」底部导航栏。
+ * 按 Backdrop 示例 `LiquidBottomTabs` 移植的底部导航栏（与 comicApp 同一份实现）。
  *
- * 玻璃材质与二级页面顶部栏共用 [glassSurface]（真实背景模糊 + 半透明色纱 + 发丝描边）；
- * 选中态则按「液态玻璃」参考实现的配方做了**液态胶囊**：
+ * 结构和参数尽量与示例保持一致：
+ *  - 底栏 64dp 高，4dp 内边距，`vibrancy + blur(8dp) + lens(24dp, 24dp)`；
+ *  - 选中胶囊 56dp 高，使用 `rememberCombinedBackdrop(页面, 底栏)` 做嵌套玻璃；
+ *  - 拖动时 `DampedDragAnimation` 的 `pressedScale = 78/56`，胶囊会放大；
+ *  - 拖动速度驱动横向拉伸 / 纵向压缩；
+ *  - 松手后按目标索引吸附，并通知导航切页。
  *
- *  - 胶囊是**独立的一层**，位于图标/文字之下，随选中项移动；
- *  - 位移 [Glass.PILL_MOVE_MS]ms easeOutCubic，同时按 `sin(πt)` 做**体积拉伸**
- *    （宽度峰值 +[Glass.PILL_STRETCH]）与上下挤压（各 [Glass.PILL_SQUASH]），
- *    于是切换时像一滴液体被"拉"过去，而不是硬跳；
- *  - 选中图标额外做 [Glass.ICON_SCALE_MS]ms easeOutBack 的 [Glass.ICON_SELECTED_SCALE] 倍放大；
- *  - **拖动**：手指按住横向滑动时胶囊零延迟跟手（宽度不变）、经过哪一项就预览高亮哪一项；
- *    **松手才真正换页**并按等分吸附回去（无 fling、无橡皮筋）。
+ * 与示例的差异只有内容与配色适配：图标/文字换成 AsmrOne 的四个标签，
+ * 容器色使用主题 surface（40%）。
  *
- * @param tabs 标签项
- * @param currentRoute 当前选中的路由
- * @param onSelect 点击 / 拖动松手后的切换回调
- * @param hazeState 背景模糊用的 HazeState；为 null 时退化为普通半透明底（不模糊）
+ * 调用方需要在内容层挂 `Modifier.layerBackdrop(backdrop)`。
  */
 @Composable
 fun FloatingGlassBottomBar(
@@ -87,241 +100,205 @@ fun FloatingGlassBottomBar(
     currentRoute: String?,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
-    hazeState: HazeState? = null
+    backdrop: Backdrop? = null
 ) {
-    val cs = MaterialTheme.colorScheme
-    val pillShape = RoundedCornerShape(percent = 50)
-    val density = LocalDensity.current
-    val scope = rememberCoroutineScope()
+    if (tabs.isEmpty()) return
 
-    // 每项在内容行坐标系里的实际边界：拖动命中判定与胶囊定位都用它
-    val itemBounds = remember { mutableStateListOf<Rect>() }
-    // 拖动回调里必须读到最新值
-    val latestTabs by rememberUpdatedState(tabs)
-    val latestOnSelect by rememberUpdatedState(onSelect)
+    val cs = MaterialTheme.colorScheme
+    val isLightTheme = cs.background.luminanceIsDark().not()
+    val accentColor = cs.primary
+    val contentColor = if (isLightTheme) Color.Black else Color.White
+    val containerColor = cs.surface.copy(alpha = 0.4f)
 
     val selectedIndex = remember(currentRoute, tabs) {
         tabs.indexOfFirst { it.route == currentRoute }.coerceAtLeast(0)
     }
+    var currentIndex by remember { mutableIntStateOf(selectedIndex) }
+    LaunchedEffect(selectedIndex) { currentIndex = selectedIndex }
 
-    /**
-     * 胶囊**当前应处**的项 —— 与「当前页面」分开计数。
-     *
-     * 为什么不直接绑 [selectedIndex]：换页是异步生效的（导航要一两帧才回到
-     * `currentRoute`）。松手瞬间若用旧的 selectedIndex 驱动动画，胶囊会先闪回原项、
-     * 等路由更新后再跳过去。所以：
-     *  - 平常（含点击、页面切换完成后）它与页面保持一致；
-     *  - 拖动松手时由拖动结果**立即**决定，动画只绑它，页面随后跟上；
-     *  - 页面切换真正完成后再由下面的 effect 拉回一致（这时两者本来就相等，是空操作）。
-     */
-    var pillIndex by remember { mutableIntStateOf(selectedIndex) }
+    // DampedDragAnimation 会被 remember 缓存；回调里不能直接捕获 selectedIndex，
+    // 否则会一直拿首次进入页面时的旧值，拖回首次页面时误判为"没换页"。
+    val latestSelectedIndex by rememberUpdatedState(selectedIndex)
+    val latestOnSelect by rememberUpdatedState(onSelect)
 
-    // ── 胶囊：位移进度（线性 0..1，位置再自己套 easeOutCubic，拉伸直接用 sin(πt)）──
-    val progress = remember { Animatable(1f) }
-    var animFrom by remember { mutableFloatStateOf(0f) }
-    var animTo by remember { mutableFloatStateOf(0f) }
-    var pillReady by remember { mutableStateOf(false) }
-    // 松手瞬间的位置：让它成为下一次位移动画的起点，胶囊才不会先跳回旧位置
-    var pendingFrom by remember { mutableStateOf<Float?>(null) }
+    val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
 
-    // 拖动状态：非空表示正在拖动，值为手指在内容行里的横坐标
-    var dragX by remember { mutableStateOf<Float?>(null) }
-    /**
-     * 拖动中"手指所覆盖的项"。**只在真正与某项重叠时更新**：
-     * 各项之间有 4dp 间隙，手指落在间隙（或边界抖动）时若回退到 pillIndex，
-     * 原选中项的图标就会跟着亮一下 —— 这就是"每经过一项，第一页图标闪一下"的原因。
-     * 所以间隙里保持上一次命中的项。
-     */
-    var dragPreview by remember { mutableStateOf<Int?>(null) }
-
-    // 页面切换完成 / 非拖动情况下切页：让胶囊与页面保持一致
-    LaunchedEffect(selectedIndex) {
-        if (dragX == null) pillIndex = selectedIndex
+    val tabsBackdrop = rememberLayerBackdrop()
+    val pillBackdrop = if (backdrop != null) {
+        rememberCombinedBackdrop(backdrop, tabsBackdrop)
+    } else {
+        null
     }
 
-    fun targetCenter(index: Int): Float? =
-        itemBounds.getOrNull(index)?.let { it.left + it.width / 2f }
-
-    /** 当前胶囊中心（拖动时跟手，否则按进度插值） */
-    fun currentCenter(): Float {
-        val from = animFrom
-        val to = animTo
-        val t = progress.value
-        val eased = 1f - (1f - t) * (1f - t) * (1f - t)   // easeOutCubic
-        return from + (to - from) * eased
-    }
-
-    suspend fun animatePillTo(target: Float) {
-        animFrom = pendingFrom ?: currentCenter()
-        pendingFrom = null
-        // 先把终点设为起点，snapTo(0) 的那一帧才不会闪到目标位置
-        animTo = animFrom
-        progress.snapTo(0f)
-        animTo = target
-        progress.animateTo(1f, tween(Glass.PILL_MOVE_MS))
-    }
-
-    // 首次测量 / 胶囊目标项变化：驱动位移（**只绑 pillIndex**，不绑页面）
-    LaunchedEffect(pillIndex, itemBounds.size) {
-        val target = targetCenter(pillIndex) ?: return@LaunchedEffect
-        if (!pillReady) {
-            animFrom = target
-            animTo = target
-            progress.snapTo(1f)
-            pillReady = true
-            return@LaunchedEffect
-        }
-        if (dragX != null) return@LaunchedEffect      // 拖动期间由手势直接驱动
-        if (animTo == target && pendingFrom == null) return@LaunchedEffect
-        animatePillTo(target)
-    }
-
-    // 内容行相对玻璃外框的内边距。拖动回调拿到的是**外框**坐标，而各子项边界
-    // （boundsInParent）与胶囊都是以内容行为原点的，所以要统一减掉它。
-    val innerPadPx = with(density) { BarInnerPadding.toPx() }
-
-    Row(
-        modifier = modifier
-            // 与二级页面顶部栏共用的玻璃材质
-            .glassSurface(shape = pillShape, hazeState = hazeState, elevation = Elevation.glass)
+    BoxWithConstraints(
+        modifier = modifier,
+        contentAlignment = Alignment.CenterStart
     ) {
-        // 内层内容行：pointerInput 与各子项同坐标系，boundsInParent() 可直接与手指坐标比较
-        Box(
-            modifier = Modifier
-                .padding(horizontal = BarInnerPadding, vertical = BarInnerPadding)
-                .pointerInput(Unit) {
-                    // 手指横坐标落在哪一项上（含边界）；落在间隙返回 -1
-                    fun hitIndex(x: Float): Int =
-                        itemBounds.indexOfFirst { x >= it.left && x <= it.right }
+        val density = LocalDensity.current
+        val animationScope = rememberCoroutineScope()
+        val tabWidth = with(density) {
+            (constraints.maxWidth.toFloat() - 8f.dp.toPx()) / tabs.size
+        }
+        val offsetAnimation = remember { Animatable(0f) }
+        val panelOffset by remember(density) {
+            derivedStateOf {
+                val fraction = (offsetAnimation.value / constraints.maxWidth).fastCoerceIn(-1f, 1f)
+                with(density) {
+                    4f.dp.toPx() * fraction.sign * EaseOut.transform(abs(fraction))
+                }
+            }
+        }
 
-                    detectHorizontalDragGestures(
-                        onDragStart = { offset ->
-                            val x = offset.x - innerPadPx
-                            dragX = x
-                            hitIndex(x).takeIf { it >= 0 }?.let { dragPreview = it }
-                        },
-                        onHorizontalDrag = { change, _ ->
-                            val x = change.position.x - innerPadPx
-                            dragX = x
-                            // 只有真正压在某一项上才更新预览；间隙里保持上一次，避免闪烁
-                            hitIndex(x).takeIf { it >= 0 }?.let { dragPreview = it }
-                        },
-                        onDragEnd = {
-                            val x = dragX
-                            // 与高亮用同一套判定，保证"胶囊落点"和"高亮项"永远一致
-                            val index = dragPreview ?: -1
-                            dragX = null
-                            dragPreview = null
-                            // 松手位置作为动画起点，胶囊不会先跳回旧项
-                            pendingFrom = x
-                            if (index >= 0 && index != pillIndex) {
-                                // 先**同步**决定胶囊去哪（动画只绑它），再换页。
-                                // 导航是异步生效的，这样就不会出现"先闪回原项再跳过去"。
-                                pillIndex = index
-                                latestOnSelect(latestTabs[index].route)
-                            } else {
-                                // 没换项（松在同一项上，或落在间隙/按钮外）：
-                                // 胶囊从松手位置弹回当前项
-                                val target = targetCenter(pillIndex)
-                                if (target != null) scope.launch { animatePillTo(target) }
-                            }
-                        },
-                        onDragCancel = {
-                            dragX = null
-                            dragPreview = null
-                            pendingFrom = null
-                        }
+        val dampedDragAnimation = remember(animationScope, tabs.size) {
+            DampedDragAnimation(
+                animationScope = animationScope,
+                initialValue = selectedIndex.toFloat(),
+                valueRange = 0f..(tabs.size - 1).toFloat(),
+                visibilityThreshold = 0.001f,
+                initialScale = 1f,
+                pressedScale = Liquid.BOTTOM_PILL_PRESSED_SCALE,
+                onDragStarted = {},
+                onDragStopped = {
+                    val targetIndex = targetValue.fastRoundToInt().fastCoerceIn(0, tabs.lastIndex)
+                    currentIndex = targetIndex
+                    // 用最新路由值判断，避免 remember 缓存了首次页面索引
+                    if (targetIndex != latestSelectedIndex) {
+                        latestOnSelect(tabs[targetIndex].route)
+                    }
+                    animateToValue(targetIndex.toFloat())
+                    animationScope.launch {
+                        offsetAnimation.animateTo(0f, spring(1f, 300f, 0.5f))
+                    }
+                },
+                onDrag = { _, dragAmount ->
+                    updateValue(
+                        (targetValue + dragAmount.x / tabWidth * if (isLtr) 1f else -1f)
+                            .fastCoerceIn(0f, (tabs.size - 1).toFloat())
+                    )
+                    animationScope.launch {
+                        offsetAnimation.snapTo(offsetAnimation.value + dragAmount.x)
+                    }
+                }
+            )
+        }
+
+        LaunchedEffect(dampedDragAnimation) {
+            snapshotFlow { currentIndex }
+                .drop(1)
+                .collectLatest { index ->
+                    // 只负责胶囊动画；真正切页在点击/拖动松手处触发，避免外部路由变化时重复导航
+                    dampedDragAnimation.animateToValue(index.toFloat())
+                }
+        }
+
+        // 基础栏：所有标签的常驻图标/文字
+        Row(
+            Modifier
+                .graphicsLayer { translationX = panelOffset }
+                .then(
+                    if (backdrop != null) {
+                        Modifier.drawBackdrop(
+                            backdrop = backdrop,
+                            shape = { Capsule() },
+                            effects = {
+                                vibrancy()
+                                blur(8f.dp.toPx())
+                                lens(24f.dp.toPx(), 24f.dp.toPx())
+                            },
+                            layerBlock = {
+                                val progress = dampedDragAnimation.pressProgress
+                                val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
+                                scaleX = scale
+                                scaleY = scale
+                            },
+                            onDrawSurface = { drawRect(containerColor) }
+                        )
+                    } else {
+                        Modifier.background(containerColor, Capsule())
+                    }
+                )
+                .height(Liquid.BOTTOM_BAR_HEIGHT)
+                .fillMaxWidth()
+                .padding(Liquid.BOTTOM_BAR_INSET),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            tabs.forEachIndexed { index, tab ->
+                GlassBottomTab(
+                    onClick = {
+                        currentIndex = index
+                        if (index != selectedIndex) onSelect(tab.route)
+                    }
+                ) {
+                    FluentIcon(
+                        res = if (index == currentIndex) tab.selectedIcon
+                        else tab.unselectedIcon,
+                        contentDescription = tab.label,
+                        tint = contentColor,
+                        size = 24.dp
+                    )
+                    Text(
+                        text = tab.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = contentColor,
+                        maxLines = 1
                     )
                 }
-        ) {
-            // ── 液态胶囊（画在图标文字之下）──
-            val bounds0 = itemBounds.firstOrNull()
-            if (bounds0 != null && pillReady) {
-                val pillWidth = bounds0.width
-                val pillHeight = bounds0.height
-                // 位置优先级：手指（拖动中）→ 松手点（松手后、动画尚未启动的那一两帧）→ 动画插值。
-                // 中间那一项必不可少：位移动画是在 LaunchedEffect 里启动的（组合之后才跑），
-                // 若这里直接回退到 currentCenter()，松手后会先按**上一轮的旧位置**画一帧，
-                // 表现就是"胶囊先闪回原项，再跳过去"。
-                val center = dragX ?: pendingFrom ?: currentCenter()
-                val stretch = if (dragX != null) 0f else sin(PI * progress.value).toFloat()
-                val squashPx = with(density) { Glass.PILL_SQUASH.toPx() } * stretch
-                val pillScaleY =
-                    if (pillHeight > 0f) (pillHeight - squashPx * 2f) / pillHeight else 1f
-                Box(
-                    modifier = Modifier
-                        .graphicsLayer {
-                            translationX = center - pillWidth / 2f
-                            scaleX = 1f + Glass.PILL_STRETCH * stretch
-                            scaleY = pillScaleY
-                        }
-                        .size(
-                            width = with(density) { pillWidth.toDp() },
-                            height = with(density) { pillHeight.toDp() }
-                        )
-                        .clip(pillShape)
-                        // 参考实现：浅色用黑 8%、深色用白 18% 的中性胶囊（不抢主色）
-                        .background(
-                            if (cs.background.luminanceIsDark()) {
-                                Color.White.copy(alpha = 0.18f)
-                            } else {
-                                Color.Black.copy(alpha = 0.08f)
-                            },
-                            pillShape
-                        )
-                )
             }
+        }
 
+        // 隐藏层：把标签内容录进 tabsBackdrop，供选中胶囊做"放大镜"取样
+        CompositionLocalProvider(
+            LocalLiquidBottomTabScale provides {
+                lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
+            }
+        ) {
             Row(
-                modifier = Modifier,
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                Modifier
+                    .clearAndSetSemantics { }
+                    .alpha(0f)
+                    .layerBackdrop(tabsBackdrop)
+                    .graphicsLayer { translationX = panelOffset }
+                    .then(
+                        if (backdrop != null) {
+                            Modifier.drawBackdrop(
+                                backdrop = backdrop,
+                                shape = { Capsule() },
+                                effects = {
+                                    val progress = dampedDragAnimation.pressProgress
+                                    vibrancy()
+                                    blur(8f.dp.toPx())
+                                    lens(
+                                        24f.dp.toPx() * progress,
+                                        24f.dp.toPx() * progress
+                                    )
+                                },
+                                highlight = {
+                                    val progress = dampedDragAnimation.pressProgress
+                                    Highlight.Default.copy(alpha = progress)
+                                },
+                                onDrawSurface = { drawRect(containerColor) }
+                            )
+                        } else {
+                            Modifier.background(containerColor, Capsule())
+                        }
+                    )
+                    .height(Liquid.BOTTOM_PILL_HEIGHT)
+                    .fillMaxWidth()
+                    .padding(horizontal = Liquid.BOTTOM_BAR_INSET)
+                    .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 tabs.forEachIndexed { index, tab ->
-                    // 拖动时"预览"手指所在的项（间隙里保持上一次，避免闪烁）；
-                    // 松手后立即跟随胶囊（页面稍后跟上）
-                    val highlighted = index == (dragPreview ?: pillIndex)
-                    val contentColor by animateColorAsState(
-                        targetValue = if (highlighted) cs.primary else cs.onSurfaceVariant,
-                        animationSpec = spring(dampingRatio = 0.8f, stiffness = 500f),
-                        label = "glassTabColor"
-                    )
-                    // 选中图标轻微放大（easeOutBack 近似）
-                    val iconScale by animateFloatAsState(
-                        targetValue = if (highlighted) Glass.ICON_SELECTED_SCALE else 1f,
-                        animationSpec = tween(Glass.ICON_SCALE_MS, easing = EaseOutBack),
-                        label = "glassTabIcon"
-                    )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .onGloballyPositioned { coords ->
-                                val b = coords.boundsInParent()
-                                if (index < itemBounds.size) itemBounds[index] = b
-                                else itemBounds.add(b)
-                            }
-                            .clip(pillShape)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = {
-                                    // 点击也先同步移动胶囊：页面随后跟上，观感更跟手
-                                    pillIndex = index
-                                    onSelect(tab.route)
-                                }
-                            )
-                            .padding(vertical = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            painter = painterResource(if (highlighted) tab.selectedIconRes else tab.unselectedIconRes),
-                            contentDescription = tab.label,
+                    // 隐藏层只负责给选中胶囊提供取样内容，不能带 clickable，
+                    // 否则它会盖在真实标签上方吞掉所有点击。
+                    GlassBottomTabVisual {
+                        FluentIcon(
+                            res = if (index == currentIndex) tab.selectedIcon
+                            else tab.unselectedIcon,
+                            contentDescription = null,
                             tint = contentColor,
-                            modifier = Modifier
-                                .size(24.dp)
-                                .graphicsLayer { scaleX = iconScale; scaleY = iconScale }
+                            size = 24.dp
                         )
-                        Spacer(Modifier.height(2.dp))
                         Text(
                             text = tab.label,
                             style = MaterialTheme.typography.labelSmall,
@@ -332,11 +309,117 @@ fun FloatingGlassBottomBar(
                 }
             }
         }
+
+        // 选中胶囊：用户拖动/按压时按 pressedScale = 78/56 放大
+        Box(
+            Modifier
+                .padding(horizontal = Liquid.BOTTOM_BAR_INSET)
+                .graphicsLayer {
+                    translationX =
+                        if (isLtr) dampedDragAnimation.value * tabWidth + panelOffset
+                        else size.width - (dampedDragAnimation.value + 1f) * tabWidth + panelOffset
+                }
+                .then(dampedDragAnimation.modifier)
+                .then(
+                    if (pillBackdrop != null) {
+                        Modifier.drawBackdrop(
+                            backdrop = pillBackdrop,
+                            shape = { Capsule() },
+                            effects = {
+                                val progress = dampedDragAnimation.pressProgress
+                                lens(
+                                    10f.dp.toPx() * progress,
+                                    14f.dp.toPx() * progress,
+                                    chromaticAberration = true
+                                )
+                            },
+                            highlight = {
+                                Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
+                            },
+                            shadow = {
+                                Shadow(alpha = dampedDragAnimation.pressProgress)
+                            },
+                            innerShadow = {
+                                val progress = dampedDragAnimation.pressProgress
+                                InnerShadow(radius = 8f.dp * progress, alpha = progress)
+                            },
+                            layerBlock = {
+                                scaleX = dampedDragAnimation.scaleX
+                                scaleY = dampedDragAnimation.scaleY
+                                val velocity = dampedDragAnimation.velocity / 10f
+                                scaleX /= 1f - (velocity * 0.75f).fastCoerceIn(-0.2f, 0.2f)
+                                scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
+                            },
+                            onDrawSurface = {
+                                val progress = dampedDragAnimation.pressProgress
+                                drawRect(
+                                    if (isLightTheme) Color.Black.copy(0.1f)
+                                    else Color.White.copy(0.1f),
+                                    alpha = 1f - progress
+                                )
+                                drawRect(Color.Black.copy(alpha = 0.03f * progress))
+                            }
+                        )
+                    } else {
+                        Modifier.background(
+                            if (isLightTheme) Color.Black.copy(0.1f)
+                            else Color.White.copy(0.1f),
+                            Capsule()
+                        )
+                    }
+                )
+                .height(Liquid.BOTTOM_PILL_HEIGHT)
+                .fillMaxWidth(1f / tabs.size)
+        )
     }
 }
 
-/** 玻璃外框与内容行之间的内边距（拖动坐标换算也依赖它，所以提成常量） */
-private val BarInnerPadding = 6.dp
+@Composable
+private fun RowScope.GlassBottomTab(
+    onClick: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val scale = LocalLiquidBottomTabScale.current
+    Column(
+        modifier = Modifier
+            .clip(Capsule())
+            .clickable(
+                interactionSource = null,
+                indication = null,
+                role = Role.Tab,
+                onClick = onClick
+            )
+            .fillMaxHeight()
+            .weight(1f)
+            .graphicsLayer {
+                scaleX = scale()
+                scaleY = scale()
+            },
+        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        content = content
+    )
+}
 
-/** easeOutBack 的近似曲线（图标放大时带一点点回弹） */
-private val EaseOutBack = CubicBezierEasing(0.34f, 1.56f, 0.64f, 1f)
+/**
+ * 隐藏取样层专用的标签内容：与 [GlassBottomTab] 同样的布局和缩放，
+ * 但**没有 clickable / pointerInput**，不会拦截真实标签的点击。
+ */
+@Composable
+private fun RowScope.GlassBottomTabVisual(
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val scale = LocalLiquidBottomTabScale.current
+    Column(
+        modifier = Modifier
+            .fillMaxHeight()
+            .weight(1f)
+            .graphicsLayer {
+                scaleX = scale()
+                scaleY = scale()
+            },
+        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        content = content
+    )
+}

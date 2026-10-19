@@ -8,14 +8,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
@@ -45,29 +42,31 @@ import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
+import com.asmrone.app.ui.component.ListHint
 import com.asmrone.app.ui.component.EmptyHint
 import com.asmrone.app.ui.component.ErrorHint
 import com.asmrone.app.ui.component.GlassSegment
 import com.asmrone.app.ui.component.GlassSegmentedControl
-import com.asmrone.app.ui.component.LocalStableStatusBarTop
+import com.asmrone.app.ui.component.rememberStatusBarTopDp
 import com.asmrone.app.ui.component.TabTopBar
 import com.asmrone.app.ui.component.WorkCard
 import com.asmrone.app.ui.component.WorkCardShimmer
 import com.asmrone.app.ui.component.animateCardEntrance
 import com.asmrone.app.ui.component.cardEntrance
+import com.asmrone.app.ui.theme.Liquid
 import com.asmrone.app.ui.theme.Sizes
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 首页 —— 三个板块（所有内容 / 热门作品 / 推荐作品）用右上角的液态玻璃分段控件切换。
  *
  * ```
  * Box(背景) {
- *     Box(hazeSource) {                    ← 被取样的内容层
+ *     Box(layerBackdrop) {                 ← 被取样的内容层
  *         当前板块的瀑布流（无限滚动 + 错峰入场）
  *     }
- *     TabTopBar(透明 + 顶部渐变模糊) {
+ *     TabTopBar(透明 + 顶部渐隐) {
  *         标题                        GlassSegmentedControl   ← 右上角
  *     }
  * }
@@ -96,14 +95,15 @@ fun HomeScreen(
     // 切换板块后回到列表顶部
     LaunchedEffect(board) { listState.scrollToItem(0) }
 
-    val hazeState = rememberHazeState()
+    val backdrop = rememberLayerBackdrop()
     val density = LocalDensity.current
-    val statusTopDp = LocalStableStatusBarTop.current
-        ?: with(density) { WindowInsets.statusBars.asPaddingValues().calculateTopPadding() }
-    val structuralTopPx = with(density) { (statusTopDp + 56.dp).roundToPx() }
+    val statusTopDp = rememberStatusBarTopDp()
+    val structuralTopPx = with(density) { (statusTopDp + Liquid.TOP_BAR_HEIGHT).roundToPx() }
     var barHeight by remember { mutableIntStateOf(structuralTopPx) }
-    val contentPadding = remember(barHeight, density) {
-        PaddingValues(top = with(density) { barHeight.toDp() } + 12.dp, bottom = 100.dp)
+    // 底部留白来自宿主实测的悬浮栏高度（导航栏 + 迷你播放器），需在 remember 外读取
+    val bottomInset = Liquid.CONTENT_BOTTOM_INSET_WITH_PLAYER
+    val contentPadding = remember(barHeight, density, bottomInset) {
+        PaddingValues(top = with(density) { barHeight.toDp() } + Liquid.CONTENT_TOP_GAP, bottom = bottomInset)
     }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -111,7 +111,7 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .hazeSource(hazeState)
+                .layerBackdrop(backdrop)
         ) {
             when {
                 state.disabled -> EmptyHint(
@@ -149,7 +149,6 @@ fun HomeScreen(
 
         // 顶部：左侧标题 + 右上角液态玻璃板块切换器（已按需求去掉刷新按钮）
         TabTopBar(
-            hazeState = hazeState,
             modifier = Modifier.onSizeChanged { barHeight = it.height }
         ) {
             Text(
@@ -165,7 +164,7 @@ fun HomeScreen(
                 },
                 selectedId = board.id,
                 onSelect = { viewModel.selectBoard(HomeBoard.fromId(it)) },
-                hazeState = hazeState
+                backdrop = backdrop
             )
         }
     }
@@ -218,22 +217,19 @@ private fun BoardGrid(
         verticalItemSpacing = 10.dp
     ) {
         // 板块说明 + 总数（替代上一版那条横滑榜单的标题）
+        //
+        // 「共 N 部」不再单独占第二行，而是跟在板块说明后面、用括号括起来：
+        // 一行读完，首张卡片的起始位置也不会被这段说明压低。
+        // 小字提示统一用 [ListHint]（与搜索结果 / 收藏页同一套样式）。
         item(key = "board_info", span = StaggeredGridItemSpan.FullLine) {
-            Column(modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)) {
-                Text(
-                    text = board.description,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (boardState.totalCount > 0) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = "共 ${boardState.totalCount} 部",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-                    )
-                }
-            }
+            ListHint(
+                text = if (boardState.totalCount > 0) {
+                    "${board.description}（共 ${boardState.totalCount} 部）"
+                } else {
+                    board.description
+                },
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
         }
 
         itemsIndexed(boardState.items, key = { _: Int, work: Work -> work.id }) { index, work ->

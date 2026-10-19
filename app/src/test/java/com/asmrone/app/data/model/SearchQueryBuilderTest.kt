@@ -329,4 +329,140 @@ class SearchQueryBuilderTest {
         )
         assertEquals("耳かき 添い寝", q)
     }
+
+    // ═══════════════════════ 排除（2026-10-18 实测） ═══════════════════════
+    //
+    // 命名空间前加 `-`：`$-tag:X$`；裸关键词用 `-词`。
+    // 实测对照（api.asmr.one /api/search）：
+    //   $tag:ASMR$ 18350 → 加 $-tag:Vtuber$ 17619
+    //   耳かき 4815 → -耳かき 58097
+    //   -耳かき 睡眠 306（只排除第一个词）→ 所以多词要逐词加 `-`
+
+    private fun excluded(condition: SearchCondition) = condition.copy(exclude = true)
+
+    @Test
+    fun `★ 排除标签的条件写成 $-tag`() {
+        assertEquals("$D-tag:Vtuber$D", SearchQueryBuilder.token(excluded(tag("Vtuber", id = "2"))))
+    }
+
+    @Test
+    fun `★ 排除声优与社团同样在命名空间前加横杠`() {
+        assertEquals("$D-va:N/A$D", SearchQueryBuilder.token(excluded(va("N/A"))))
+        assertEquals("$D-circle:Whisp$D", SearchQueryBuilder.token(excluded(circle("Whisp"))))
+    }
+
+    @Test
+    fun `横杠紧贴命名空间，中间不能有空格`() {
+        val q = SearchQueryBuilder.token(excluded(tag("Vtuber", id = "2"))).orEmpty()
+        assertTrue("实测 `$ -tag:X$` 会失效", q.startsWith("$D-tag:"))
+        assertFalse("绝不能是 `$D -tag`", q.startsWith("$D "))
+    }
+
+    @Test
+    fun `包含与排除条件可以混排，空格分隔`() {
+        val q = SearchQueryBuilder.build(
+            listOf(tag("ASMR"), excluded(tag("Vtuber", id = "2")))
+        )
+        assertEquals("${D}tag:ASMR$D ${D}-tag:Vtuber$D", q)
+    }
+
+    @Test
+    fun `包含与排除的去重键不同`() {
+        val a = tag("Vtuber", id = "2")
+        assertTrue(a.dedupeKey != excluded(a).dedupeKey)
+    }
+
+    @Test
+    fun `单个排除条件不能走专用端点（端点只有包含语义）`() {
+        assertNull(
+            SearchQueryBuilder.singleConditionEndpoint(
+                listOf(excluded(tag("ASMR", id = "497"))),
+                ""
+            )
+        )
+        assertNull(
+            SearchQueryBuilder.singleConditionEndpoint(listOf(excluded(circle("Whisp"))), "")
+        )
+    }
+
+    @Test
+    fun `排除的裸关键词写成 -词`() {
+        val q = SearchQueryBuilder.buildFromSlots(
+            listOf(SearchQueryBuilder.SlotPart(condition = null, text = "耳かき", exclude = true))
+        )
+        assertEquals("-耳かき", q)
+    }
+
+    @Test
+    fun `★ 排除多个词时逐词加横杠`() {
+        // `-耳かき 睡眠` 只排除第一个词（实测 306），所以多词必须 `-耳かき -睡眠`
+        val q = SearchQueryBuilder.buildFromSlots(
+            listOf(
+                SearchQueryBuilder.SlotPart(
+                    condition = null,
+                    text = "耳かき  睡眠",
+                    exclude = true
+                )
+            )
+        )
+        assertEquals("-耳かき -睡眠", q)
+    }
+
+    @Test
+    fun `已经写了横杠的词不会被加成双横杠`() {
+        val q = SearchQueryBuilder.negateText("-耳かき")
+        assertEquals("-耳かき", q)
+    }
+
+    @Test
+    fun `排除词与排除条件可以同时出现`() {
+        val q = SearchQueryBuilder.buildFromSlots(
+            listOf(
+                SearchQueryBuilder.SlotPart(
+                    condition = excluded(tag("Vtuber", id = "2")),
+                    text = "Vtuber",
+                    exclude = true
+                ),
+                SearchQueryBuilder.SlotPart(condition = null, text = "睡眠", exclude = true)
+            )
+        )
+        assertEquals("$D-tag:Vtuber$D -睡眠", q)
+    }
+
+    @Test
+    fun `排除栏为空时不贡献任何东西`() {
+        val q = SearchQueryBuilder.buildFromSlots(
+            listOf(SearchQueryBuilder.SlotPart(condition = null, text = "   ", exclude = true))
+        )
+        assertEquals("", q)
+    }
+
+    @Test
+    fun `从老检索串还原条件时能认出排除`() {
+        val parsed = SearchQueryBuilder.parseConditions(
+            "$D-tag:ASMR$D ${D}tag:Vtuber$D"
+        ) { "标签" }
+        assertEquals(2, parsed.size)
+        assertTrue(parsed[0].exclude)
+        assertFalse(parsed[1].exclude)
+    }
+
+    @Test
+    fun `排除条件能存进历史并原样读回`() {
+        val original = excluded(tag("Vtuber", id = "2"))
+        val restored = SearchCondition.fromJson(original.toJson())
+        assertEquals(original, restored)
+    }
+
+    @Test
+    fun `老历史没有 ex 字段时默认是包含`() {
+        val legacy = org.json.JSONObject()
+            .put("ns", SearchNamespaces.TAG)
+            .put("id", "2")
+            .put("name", "Vtuber")
+            .put("display", "Vtuber")
+            .put("kind", "标签")
+        val restored = SearchCondition.fromJson(legacy)
+        assertEquals(false, restored?.exclude)
+    }
 }

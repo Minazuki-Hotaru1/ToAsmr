@@ -72,6 +72,23 @@ class SearchReplayGuardTest {
     }
 
     @Test
+    fun `★ 普通搜索重放必须把条件拼回检索串`() {
+        // 这个 bug 的表现：在普通搜索页点一条"多个标签"的历史，结果是全库。
+        // 根因是只把裸文字当关键词发出去，conditions 根本没进检索串。
+        val simpleBranch = replay
+            .substringAfter("if (_state.value.mode == SearchMode.SIMPLE) {")
+            .substringBefore("// ── 高级搜索")
+        assertTrue(
+            "要用 SearchQueryBuilder.build(conditions, cleanQuery) 拼出完整检索串",
+            simpleBranch.contains("SearchQueryBuilder.build(conditions, cleanQuery)")
+        )
+        assertTrue(
+            "发出去的关键词必须是拼好的那一份（单条件可留空走 id 端点）",
+            simpleBranch.contains("keyword = if (useEndpoint) \"\" else builtQuery")
+        )
+    }
+
+    @Test
     fun `★ 重放历史不再记一次历史`() {
         assertTrue(
             "record = false：那条本来就来自历史，再记一次只会把它重复提到最前",
@@ -104,13 +121,32 @@ class SearchReplayGuardTest {
 
     @Test
     fun `★ 重放前要剥掉老历史里的检索串语法`() {
+        // 语法剥离与"重复片段"清理都收进了 SearchHistoryEntry.replayText，
+        // 重放只读这一处 —— 否则展示与重放会各剥各的、口径不一。
         assertTrue(
-            "否则 query 里的条件语法会被当成裸关键词，多显示一栏",
-            replay.contains("SearchQueryBuilder.stripConditionSyntax(entry.query)")
+            "重放要用清理过的自由文字",
+            replay.contains("val cleanQuery = entry.replayText")
+        )
+        val entrySource = File("src/main/java/com/asmrone/app/data/prefs/SearchHistoryStore.kt")
+            .readText()
+        assertTrue(
+            "replayText 要剥掉检索语法",
+            entrySource.contains("SearchQueryBuilder.stripConditionSyntax(query)")
         )
         assertTrue(
-            "能还原成条件的还要还原出来",
+            "能还原成条件的还要还原出来（老历史）",
             replay.contains("SearchQueryBuilder.parseConditions(entry.query)")
+        )
+    }
+
+    @Test
+    fun `★ 历史的自由文字里不能混进已选标签的名字`() {
+        // 这个 bug 的表现：高级搜索后，历史显示「标签「ASMR」 关键词「ASMR」」。
+        // 根因是选中标签后栏里回显的译名被当成关键词又存了一份。
+        val inputs = functionBody(viewModel, "private fun searchInputs(")
+        assertTrue(
+            "存历史时只取**没选中条件**的栏",
+            inputs.contains(".filter { it.selected == null }")
         )
     }
 

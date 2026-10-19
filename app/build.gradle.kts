@@ -134,8 +134,10 @@ dependencies {
 
     // 封面加载
     implementation(libs.coil.compose)
-    // 液态玻璃：底部导航 / 顶栏药丸 / 迷你播放器的真实背景模糊
-    implementation(libs.haze)
+    // 液态玻璃（Backdrop）：底部导航 / 顶栏药丸 / 迷你播放器的真实折射与色散
+    // 与 comicApp 完全同一套实现与版本；Haze 已整体移除（它只能模糊，做不出折射）
+    implementation(libs.backdrop)
+    implementation(libs.kyant.shapes)
 
     // 详情页里播放「视频」类型的轨道（文件树中的 .mp4）
     //

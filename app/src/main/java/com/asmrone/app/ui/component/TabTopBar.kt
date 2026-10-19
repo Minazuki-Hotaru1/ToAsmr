@@ -8,53 +8,51 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.asmrone.app.ui.component.rememberStatusBarTopDp
+import com.asmrone.app.ui.theme.Liquid
 import com.asmrone.app.ui.theme.TouchTarget
-import dev.chrisbanes.haze.HazeState
 
 /**
- * 主页面（底部标签页）的顶部栏 —— **透明底色 + 顶部渐变模糊**
- * （提炼自 comicApp 的 TabTopBar）。
+ * 主页面（底部标签页）的顶部栏 —— **透明底色 + 柔和顶部渐隐**。
  *
- * 与二级页面的 [GlassTopBar] 是同一套材质思路，区别只在于：
+ * 与二级页面的 [GlassTopBar] 是同一套排版，区别只在于：
  *  - 主页面没有返回按钮，中间也不需要药丸，所以标题与操作直接透明排布；
- *  - 底衬只做「渐变模糊」这一层，不画任何背景色 —— 于是状态栏与菜单栏区域整体透明，
- *    内容滚动时从下方透出并被逐渐模糊。
+ *  - 底衬只做一层背景色渐隐，不画任何实体背景 —— 状态栏与菜单栏区域整体通透，
+ *    内容滚动时从下方透出并被柔化。
  *
- * 用法：整页套成 `Box { 内容(hazeSource) ; TabTopBar(...) }`，
+ * 用法：整页套成 `Box { 内容(layerBackdrop) ; TabTopBar(...) }`，
  * 内容的顶部留白用 `onSizeChanged` 量出来的高度（加上 [fadeExtension]）。
  *
- * @param hazeState 背景模糊的取样源；页面内容层需挂 `Modifier.hazeSource(state)`
- * @param fadeExtension 渐变模糊向下延伸的高度：让标题下方也有一段可见的过渡
- * @param content 标题与右侧操作（行内布局：横向 16dp、纵向 2dp、48dp 触控高度）
+ * @param fadeExtension 顶部渐隐向下延伸的高度：让标题下方也有一段过渡
+ * @param content 标题与右侧操作（行内布局：横向 16dp、纵向 6dp、48dp 触控高度）
  */
 @Composable
 fun TabTopBar(
-    hazeState: HazeState?,
     modifier: Modifier = Modifier,
     fadeExtension: Dp = 22.dp,
     content: @Composable RowScope.() -> Unit
 ) {
     Box(modifier = modifier.fillMaxWidth()) {
-        // 渐变模糊底衬：位于内容之上、标题之下；顶部最强，向下渐隐到无
-        if (hazeState != null) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .topGradientBlur(hazeState)
-            )
-        }
+        // 顶部底色渐隐：位于内容之上、标题之下；顶部最强，向下渐隐到无
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .topBarFade()
+        )
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 2.dp)
+                .padding(top = rememberStatusBarTopDp())
+                // 与 [GlassTopBar] **逐像素对齐**：横向 16dp、纵向 6dp、行高 48dp。
+                // 两者的高度都是"状态栏 + 60dp"，所以主页与二级页的内容起始位置完全相同，
+                // 切页签时内容不会上下跳 8dp（以前这里是 2dp，比玻璃栏少 8dp）。
+                .padding(horizontal = 16.dp, vertical = Liquid.TOP_BAR_VERTICAL_PADDING)
                 .heightIn(min = TouchTarget.minimum),
             verticalAlignment = Alignment.CenterVertically,
             content = content

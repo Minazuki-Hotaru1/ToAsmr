@@ -120,6 +120,17 @@ internal fun PendingWrite.toJson(): JSONObject = JSONObject().apply {
  */
 object PendingWriteStore {
 
+    /**
+     * 待补写文件自己的格式版本。
+     *
+     * ⚠️ **不要**再借用 `CacheFiles` 的缓存版本号：那个版本是给"云端镜像"用的，
+     * 升级它会把缓存整体作废；而这里装的是**用户已表达、还没送达云端**的意图，
+     * 不能因为缓存结构变了就被一起丢掉。两者的结构也没有耦合。
+     *
+     * 旧文件写的是 1（当时借用缓存版本号），所以这里保持 1 以便读回。
+     */
+    private const val FORMAT_VERSION = 1
+
     private lateinit var appContext: Context
 
     fun init(context: Context) {
@@ -137,7 +148,7 @@ object PendingWriteStore {
         val raw = CacheFiles.read(appContext, keyFor(host, user)) ?: return emptyList()
         return runCatching {
             val o = JSONObject(raw)
-            if (o.optInt("v", 0) != CacheFiles.SCHEMA_VERSION) return emptyList()
+            if (o.optInt("v", 0) != FORMAT_VERSION) return emptyList()
             val array = o.optJSONArray("items") ?: JSONArray()
             buildList {
                 for (i in 0 until array.length()) {
@@ -153,7 +164,7 @@ object PendingWriteStore {
         if (!::appContext.isInitialized) return false
         if (host.isBlank() || user.isBlank()) return false
         val json = JSONObject().apply {
-            put("v", CacheFiles.SCHEMA_VERSION)
+            put("v", FORMAT_VERSION)
             put("items", JSONArray().apply { items.forEach { put(it.toJson()) } })
         }
         return CacheFiles.write(appContext, keyFor(host, user), json.toString())

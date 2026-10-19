@@ -45,11 +45,11 @@ import com.asmrone.app.data.model.Work
  *
  * ## 它管什么、不管什么
  *
- * 管：列表布局、翻页触发、卡片入场动画、加载/空态
+ * 管：列表布局、翻页触发、卡片入场动画、加载/空态、可选的列表首行说明
  * 不管：顶栏（各页标题不同）、数据怎么取（各 ViewModel 自己负责）
  *
- * @param totalCount 服务端给的总条数；0 表示未知（则不显示"已加载 N"那截）
- * @param description 这批结果的来源说明（如「标签「ASMR」」）；空则不显示
+ * @param headerText 列表**首行**的说明文字（搜索页把「N 个结果」放这里）；
+ *   null / 空白则不显示。它是列表内容的一部分，会随滚动一起走。
  */
 @Composable
 fun WorkResultGrid(
@@ -60,8 +60,7 @@ fun WorkResultGrid(
     onWorkClick: (Int) -> Unit,
     onLoadMore: () -> Unit,
     modifier: Modifier = Modifier,
-    totalCount: Int = 0,
-    description: String = "",
+    headerText: String? = null,
     hasMore: Boolean = false,
     loadingMore: Boolean = false
 ) {
@@ -91,27 +90,13 @@ fun WorkResultGrid(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalItemSpacing = 10.dp
     ) {
-        // 首项占满整行做一个"结果说明"。
-        //
-        // 同时给**总条数**与"已加载多少"：滚到下面时顶栏标题会被滚走，
-        // 而翻页时"已加载 / 总数"本身就是有用的进度
-        // （20 / 18320 与 18320 个结果说的是两件事）。
-        item(span = StaggeredGridItemSpan.FullLine) {
-            val summary = buildString {
-                if (totalCount > 0) {
-                    append("共 ").append(totalCount).append(" 个结果")
-                    if (works.size < totalCount) {
-                        append("（已加载 ").append(works.size).append("）")
-                    }
-                    if (description.isNotBlank()) append(" · ")
-                }
-                append(description)
-            }
-            if (summary.isNotBlank()) {
-                Text(
-                    text = summary,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // 列表首行的说明（搜索页的「N 个结果」放这里：它是内容的一部分，
+        // 跟着列表一起滚动，而不是压在顶栏的副标题上）。
+        // 样式统一走 [ListHint]，与首页 / 字典结果 / 同步提示保持一致。
+        if (!headerText.isNullOrBlank()) {
+            item(span = StaggeredGridItemSpan.FullLine) {
+                ListHint(
+                    text = headerText,
                     modifier = Modifier.padding(bottom = 4.dp)
                 )
             }

@@ -81,13 +81,68 @@ internal object CacheFiles {
         dir(context).listFiles()?.sumOf { it.length() } ?: 0L
     }.getOrDefault(0L)
 
+    // ───────────────────────── 结构版本与迁移 ─────────────────────────
+
+    private const val PREFS = "asmrone_sync_cache_meta"
+    private const val KEY_SCHEMA = "schema_version"
+
+    /**
+     * 判断是否需要执行缓存迁移。**纯函数**，便于单测。
+     *
+     * @param stored 上次记录的版本；0 表示"从未记录过"（全新安装或旧版本升上来）
+     * @param current 当前代码的版本
+     * @param hasCacheFiles 缓存目录里是否已有文件
+     */
+    internal fun shouldMigrate(stored: Int, current: Int, hasCacheFiles: Boolean): Boolean {
+        if (stored == current) return false
+        // 从未记录版本 + 目录为空 = 全新安装：没什么可清的
+        if (stored == 0 && !hasCacheFiles) return false
+        return true
+    }
+
+    /**
+     * 启动时校准缓存结构版本；不一致就**作废旧缓存并重置同步记账**。
+     *
+     * 为什么必须显式做这件事：旧 JSON 会被 [SyncCacheStore] 按版本号忽略，
+     * 但"今天已自动对齐"的记账还在 —— 当天自动同步会被闸门挡下，
+     * 收藏页就会空白到第二天。所以这里两件事一起做。
+     *
+     * @return 是否真的执行了迁移
+     */
+    fun ensureSchema(context: Context): Boolean = runCatching {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val stored = prefs.getInt(KEY_SCHEMA, 0)
+        val hasFiles = dir(context).listFiles()?.isNotEmpty() == true
+        val migrate = shouldMigrate(stored, SCHEMA_VERSION, hasFiles)
+        if (migrate) {
+            clearAll(context)
+            // 记账也要清：否则"今天已经对齐过"会让旧缓存作废后的当天不再拉取
+            com.asmrone.app.data.prefs.AppPrefs.clearAutoSyncDays()
+        }
+        prefs.edit().putInt(KEY_SCHEMA, SCHEMA_VERSION).apply()
+        migrate
+    }.getOrDefault(false)
+
     /**
      * 缓存格式版本。
      *
      * 只要 [CachedWork] 的字段发生不兼容变化就要 +1 ——
      * 否则旧版本写下的 JSON 被新版本读出来会缺字段，静默产生错误数据。
+     *
+     * ## 为什么必须靠这个版本、而不是"下次刷新自然就更新了"
+     *
+     * 同步缓存是**条件请求**的本地副本：内容没变时服务端回 304，本地**不会重写**。
+     * 所以给缓存加了字段之后，旧 JSON 会一直缺字段 —— 下拉刷新多少次都拿不到
+     * （请求带 If-None-Match，304 直接命中）。+1 会让 [SyncCacheStore] 把旧文件
+     * 视为不存在，下一次同步自然变成无条件请求，把带新字段的内容重新写一遍。
+     *
+     * 版本历史：
+     * - 1：初版
+     * - 2（2026-10）：[CachedWork] 追加声优名 `vas`（收藏卡片要显示声优）
+     * - 3（2026-10）：[CachedWork] 追加年龄分级 `nsfw` / `age`
+     *   （否则还原出来的作品永远是"全年龄"，整个收藏夹会被误标）
      */
-    const val SCHEMA_VERSION = 1
+    const val SCHEMA_VERSION = 3
 }
 
 /**

@@ -14,16 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -154,26 +150,25 @@ fun FlatRow(
 /** 设置行右侧的统一「›」箭头（Fluent 图标） */
 @Composable
 fun RowChevron() {
-    Icon(
-        painter = painterResource(R.drawable.ic_chevron_right_fluent),
+    FluentIcon(
+        res = R.drawable.ic_chevron_right_fluent,
         contentDescription = null,
         tint = MaterialTheme.colorScheme.onSurfaceVariant
     )
 }
 
-/** 设置页开关的统一配色 */
-@Composable
-fun settingsSwitchColors() = SwitchDefaults.colors(
-    checkedTrackColor = MaterialTheme.colorScheme.primary
-)
-
-/** 设置页开关（带统一配色的便捷封装） */
+/**
+ * 设置页开关 —— 使用 Backdrop 的 [LiquidToggle]。
+ *
+ * 轨道 64×28dp、滑块 40×24dp；按下/拖动滑块会放大，
+ * 选中的轨道从灰色过渡到主题主色。设置页没有页面级 Backdrop，
+ * 因此内部使用空取样源，滑块只对轨道做液态折射。
+ */
 @Composable
 fun SettingSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, enabled: Boolean = true) {
-    Switch(
-        checked = checked,
-        onCheckedChange = onCheckedChange,
-        enabled = enabled,
-        colors = settingsSwitchColors()
+    LiquidToggle(
+        selected = { checked },
+        onSelect = onCheckedChange,
+        enabled = enabled
     )
 }

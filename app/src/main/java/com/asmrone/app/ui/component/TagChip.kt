@@ -1,7 +1,7 @@
 package com.asmrone.app.ui.component
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -64,14 +64,16 @@ fun AsmrFilterChip(
     FilterChip(
         selected = selected,
         onClick = onClick,
-        modifier = modifier.then(
-            // 排除态额外描边，避免只靠底色区分（描边交给 Modifier，避免依赖 FilterChip 的 border 参数）
-            if (negativeActive) {
-                Modifier.border(1.dp, ErrorColor.copy(alpha = 0.5f), shape)
-            } else {
-                Modifier
-            }
-        ),
+        modifier = modifier,
+        // 排除态的描边**必须交给 FilterChip 自己的 border 参数**：
+        // 用 Modifier.border 画的是「布局外框」（含 48dp 最小触控区 + 内边距），
+        // 与 chip 实际的圆角底色不同形、不同大小 —— 会露出一圈红色方框（截图 5 的那个 bug），
+        // 而 border 参数画在 chip 自己的 shape 上，边缘严丝合缝。
+        border = if (negativeActive) {
+            BorderStroke(1.dp, ErrorColor.copy(alpha = 0.5f))
+        } else {
+            null
+        },
         shape = shape,
         label = {
             Text(

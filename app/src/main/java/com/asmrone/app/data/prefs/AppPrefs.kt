@@ -126,6 +126,21 @@ object AppPrefs {
     val themeMode: StateFlow<Int> = _themeMode.asStateFlow()
 
     /**
+     * 收藏页当前页签：0 = 标记，1 = 列表。
+     *
+     * 持久化是刻意的：从「标记」切到「列表」之后，只要用户不再主动切回去，
+     * 无论离开页面、切到别的标签页，还是杀进程重开，都应停留在「列表」。
+     */
+    private val _libraryTab = MutableStateFlow(0)
+    val libraryTab: StateFlow<Int> = _libraryTab.asStateFlow()
+
+    fun setLibraryTab(value: Int) {
+        val v = value.coerceIn(0, 1)
+        _libraryTab.value = v
+        sp.edit().putInt(KEY_LIBRARY_TAB, v).apply()
+    }
+
+    /**
      * 上次选择的收藏夹 id。
      *
      * 点收藏按钮时默认选它；第一次（空）则回退到系统的「我标记的」收藏夹。
@@ -188,6 +203,18 @@ object AppPrefs {
         }.getOrDefault(emptyMap())
     }
 
+    /**
+     * 清空"今天已自动对齐"的记账。
+     *
+     * 用在**缓存结构升级**之后（见 `CacheFiles.ensureSchema`）：
+     * 旧缓存被作废了，如果这些日期还留着，当天的自动对齐会被闸门挡下 ——
+     * 收藏页就会空白一整天，只能靠用户手动下拉刷新。
+     */
+    fun clearAutoSyncDays() {
+        if (!::sp.isInitialized) return
+        sp.edit().remove(KEY_AUTO_SYNC_DAYS).apply()
+    }
+
     fun setThemeMode(value: Int) {
         _themeMode.value = value
         sp.edit().putInt(KEY_THEME_MODE, value).apply()
@@ -218,6 +245,7 @@ object AppPrefs {
         ).coerceIn(AudioCachePolicy.MIN_PER_TRACK_MB, AudioCachePolicy.MAX_PER_TRACK_MB)
         _sleepTimerMinutes.value = sp.getInt(KEY_SLEEP_TIMER, 0)
         _themeMode.value = sp.getInt(KEY_THEME_MODE, 0)
+        _libraryTab.value = sp.getInt(KEY_LIBRARY_TAB, 0)
         _lastSelectedPlaylistId.value = sp.getString(KEY_LAST_PLAYLIST, "") ?: ""
     }
 
@@ -312,6 +340,7 @@ object AppPrefs {
     private const val KEY_PER_TRACK_CACHE_LIMIT_MB = "per_track_cache_limit_mb"
     private const val KEY_SLEEP_TIMER = "sleep_timer"
     private const val KEY_THEME_MODE = "theme_mode"
+    private const val KEY_LIBRARY_TAB = "library_tab"
     private const val KEY_LAST_PLAYLIST = "last_selected_playlist"
     private const val KEY_AUTO_SYNC_DAYS = "auto_sync_days"
 }
