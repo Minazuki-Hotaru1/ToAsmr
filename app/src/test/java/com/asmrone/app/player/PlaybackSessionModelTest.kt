@@ -70,15 +70,11 @@ class PlaybackSessionModelTest {
     }
 
     @Test
-    fun `第一首不声明上一首 —— 声明了却做不到的按钮等于坏按钮`() {
-        // 311 - SKIP_TO_PREVIOUS(16)
-        assertEquals(295L, PlaybackSessionModel.actionsOf(stateOf(index = 0)))
-    }
-
-    @Test
-    fun `最后一首不声明下一首`() {
-        // 311 - SKIP_TO_NEXT(32)
-        assertEquals(279L, PlaybackSessionModel.actionsOf(stateOf(index = 2)))
+    fun `首尾也声明上一首与下一首 —— 三种播放模式都会绕回`() {
+        // 老实现按 hasNext/hasPrev 声明，播到最后一首时锁屏上的「下一首」会消失；
+        // 现在列表循环会回到第一首、随机也会另挑一首，所以首尾同样换得了。
+        assertEquals(311L, PlaybackSessionModel.actionsOf(stateOf(index = 0)))
+        assertEquals(311L, PlaybackSessionModel.actionsOf(stateOf(index = 2)))
     }
 
     @Test

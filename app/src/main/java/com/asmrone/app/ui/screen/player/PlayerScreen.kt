@@ -1,6 +1,9 @@
 package com.asmrone.app.ui.screen.player
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
@@ -12,6 +15,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -46,6 +50,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import com.asmrone.app.ui.component.LiquidSlider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -71,6 +76,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -85,8 +92,11 @@ import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.player.AudioController
+import com.asmrone.app.player.PlayQueuePolicy
 import com.asmrone.app.ui.component.CoverImage
 import com.asmrone.app.ui.component.PlayingIndicator
+import com.asmrone.app.ui.component.ToastHost
+import com.asmrone.app.ui.component.rememberToastState
 import com.asmrone.app.ui.screen.lyrics.PlayerLyrics
 import com.asmrone.app.ui.theme.Sizes
 import kotlin.math.roundToInt
@@ -122,6 +132,9 @@ fun PlayerScreen(
     var showSleepTimer by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     val sleepUntilTrackEnd by AppPrefs.sleepUntilTrackEnd.collectAsState()
+    val playMode by AppPrefs.playMode.collectAsState()
+    val context = LocalContext.current
+    val toast = rememberToastState()
 
     // 播放器是深色沉浸页：临时把系统栏图标切成白色，离开时恢复应用主题的设置。
     // 作为「迷你播放器展开」的覆盖层时，只有铺满屏幕后才切，避免在亮色 app 上提前出现白图标。
@@ -259,6 +272,21 @@ fun PlayerScreen(
                     rotate = 90f
                 )
                 Spacer(Modifier.weight(1f))
+                // 分享：只复制链接，不调系统分享面板 —— 这个 app 的分享场景
+                // 基本是"把作品发给同好"，一个链接比一堆 App 图标更快。
+                PlayerTextButton(
+                    text = "分享",
+                    onClick = {
+                        val link = shareLink(state.workSourceId, state.workId)
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        if (clipboard != null && link.isNotBlank()) {
+                            clipboard.setPrimaryClip(ClipData.newPlainText("asmr.one", link))
+                            toast.show("链接已复制：$link")
+                        } else {
+                            toast.show("暂时没有可分享的链接")
+                        }
+                    }
+                )
                 PlayerIconButton(
                     iconRes = R.drawable.ic_queue_fluent,
                     contentDescription = "播放队列",
@@ -359,22 +387,34 @@ fun PlayerScreen(
             Spacer(Modifier.height(10.dp))
 
             // ── 固定底部：传输控制 ──
+            //
+            // 五个按钮：上一首 / 下一首两侧各加一个**跳转**键 ——
+            // 右侧 +30 秒（跳过还没听到的一段，ASMR 常见的"直接进正题"），
+            // 左侧 −5 秒（回退刚听过的一小段，复听一句刚才没听清的台词）。
+            // 两者都是纯文字，不加图标。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 26.dp),
+                    .padding(horizontal = 18.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                PlayerSkipButton(
+                    label = "-5s",
+                    contentDescription = "回退 5 秒",
+                    onClick = { AudioController.skipBack(5) },
+                    enabled = state.isPrepared
+                )
+
                 IconButton(
                     onClick = { AudioController.prev() },
-                    enabled = state.hasPrev,
+                    enabled = state.canSkipPrev,
                     modifier = Modifier.size(56.dp)
                 ) {
                     Icon(
                         painter = painterResource(R.drawable.ic_skip_previous_fluent),
                         contentDescription = "上一首",
-                        tint = if (state.hasPrev) PlayerText else PlayerTertiary,
+                        tint = if (state.canSkipPrev) PlayerText else PlayerTertiary,
                         modifier = Modifier.size(28.dp)
                     )
                 }
@@ -409,34 +449,52 @@ fun PlayerScreen(
 
                 IconButton(
                     onClick = { AudioController.next() },
-                    enabled = state.hasNext,
+                    enabled = state.canSkipNext,
                     modifier = Modifier.size(56.dp)
                 ) {
                     Icon(
                         painter = painterResource(R.drawable.ic_skip_next_fluent),
                         contentDescription = "下一首",
-                        tint = if (state.hasNext) PlayerText else PlayerTertiary,
+                        tint = if (state.canSkipNext) PlayerText else PlayerTertiary,
                         modifier = Modifier.size(28.dp)
                     )
                 }
+
+                PlayerSkipButton(
+                    label = "+30s",
+                    contentDescription = "快进 30 秒",
+                    onClick = { AudioController.skipForward(30) },
+                    enabled = state.isPrepared
+                )
             }
 
             Spacer(Modifier.height(6.dp))
 
-            // ── 底部三个文字入口：定时 / 播放队列 / 设置 ──
+            // ── 底部四个文字入口：定时 / 播放模式 / 播放队列 / 设置 ──
             //
-            // 刻意用纯文字而不是图标：这三项都是低频操作，文字反而更好认；
+            // 刻意用纯文字而不是图标：这几项都是低频操作，文字反而更好认；
             // 也和 Apple Music 底部那一排"歌词 / 播放队列 / 更多"的观感一致。
+            //
+            // 播放模式（列表 / 单曲 / 随机）放在这里而不是设置里：它会随手切换，
+            // 属于"当前这次播放"的一部分，藏进设置会多点两下。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
+                    .padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 PlayerTextButton(
                     text = sleepTimerLabel,
                     onClick = { showSleepTimer = true }
+                )
+                PlayerTextButton(
+                    text = PlayQueuePolicy.label(playMode),
+                    onClick = {
+                        val next = PlayQueuePolicy.nextMode(playMode)
+                        AppPrefs.setPlayMode(next)
+                        toast.show(PlayQueuePolicy.label(next))
+                    }
                 )
                 PlayerTextButton(
                     text = "播放队列",
@@ -450,6 +508,13 @@ fun PlayerScreen(
 
             Spacer(Modifier.height(20.dp))
         }
+
+        ToastHost(
+            state = toast,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 132.dp)
+        )
     }
 
     if (showQueue) {
@@ -501,6 +566,38 @@ private fun PlayerTextButton(text: String, onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp)
     )
+}
+
+/**
+ * 播放器底部的快捷跳转键（−5s / +30s）。
+ *
+ * 刻意做成文字：这一对按钮只在"想跳过一段"时才用，占 56dp 宽度刚好，
+ * 加图标反而会让两侧与上一首/下一首的图标视觉重量失衡。
+ */
+@Composable
+private fun PlayerSkipButton(
+    label: String,
+    contentDescription: String,
+    onClick: () -> Unit,
+    enabled: Boolean
+) {
+    Box(
+        modifier = Modifier
+            .size(width = 48.dp, height = 56.dp)
+            .clip(RoundedCornerShape(50))
+            .clickable(enabled = enabled, onClickLabel = contentDescription, onClick = onClick)
+            .semantics { this.contentDescription = contentDescription },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            color = if (enabled) PlayerSecondary else PlayerTertiary
+        )
+    }
 }
 
 /** 播放器顶部的小圆形描边按钮（收起 / 队列） */
@@ -1020,15 +1117,24 @@ private fun SleepTimerSheet(
 }
 
 /**
- * 底部「设置」弹窗 —— 目前只是个占位。
+ * 底部「设置」弹窗：播放速度、一首放完之后、睡眠淡出。
  *
- * 播放器自己的设置（播放速度、跳过间隔、后台行为…）还没定，
- * 先把入口和弹窗骨架占住，避免以后再加时又要动底部那一排。
+ * 三件事都**立刻生效并持久化**，没有"保存"按钮 —— 播放器里的开关都是
+ * 边调边听的，加一步确认反而打断试听。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val savedSpeed by AppPrefs.playbackSpeed.collectAsState()
+    val autoNext by AppPrefs.autoNext.collectAsState()
+    val fadeOut by AppPrefs.sleepFadeOut.collectAsState()
+
+    // 拖动过程中只改内核速度（preview），松手才落盘：
+    // 否则每一帧都写一次 SharedPreferences，既放大磁盘写入又会引起全 App 重组。
+    var draftSpeed by remember { mutableFloatStateOf(savedSpeed) }
+    // 弹窗重新打开时要跟上已保存的值（用户可能在外面被别的入口改过）
+    LaunchedEffect(savedSpeed) { draftSpeed = savedSpeed }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1050,13 +1156,210 @@ private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
                 style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                 color = PlayerText
             )
-            Spacer(Modifier.height(12.dp))
+
+            Spacer(Modifier.height(18.dp))
+
+            // ── 播放速度 ──
+            SettingsLabel("播放速度")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = formatSpeed(draftSpeed),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = PlayerText
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = if (draftSpeed == 1f) "原速" else "变速不变调",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = PlayerTertiary
+                )
+            }
+            LiquidSlider(
+                value = { draftSpeed },
+                onValueChange = {
+                    draftSpeed = it
+                    AudioController.previewPlaybackSpeed(it)
+                },
+                onValueChangeFinished = { AudioController.setPlaybackSpeed(draftSpeed) },
+                valueRange = AppPrefs.MIN_PLAYBACK_SPEED..AppPrefs.MAX_PLAYBACK_SPEED,
+                visibilityThreshold = 0.01f,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(32.dp)
+            )
+            // 滑杆是连续值，但实际想用的就那么几个档位：给一排快捷值，
+            // 免得不小心滑成 1.13× 这种自己都记不住的速度。
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SPEED_PRESETS.forEach { preset ->
+                    SpeedPresetChip(
+                        label = formatSpeed(preset),
+                        selected = kotlin.math.abs(preset - draftSpeed) < 0.005f,
+                        onClick = {
+                            draftSpeed = preset
+                            AudioController.setPlaybackSpeed(preset)
+                        }
+                    )
+                }
+            }
+
+            SettingsDivider()
+
+            // ── 一首放完之后 ──
+            SettingsLabel("一首放完之后")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                EndActionChip(
+                    label = "继续播放",
+                    selected = autoNext,
+                    modifier = Modifier.weight(1f),
+                    onClick = { AppPrefs.setAutoNext(true) }
+                )
+                EndActionChip(
+                    label = "播完即停",
+                    selected = !autoNext,
+                    modifier = Modifier.weight(1f),
+                    onClick = { AppPrefs.setAutoNext(false) }
+                )
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
-                text = "播放器设置项还在设计中，先留一个入口。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = PlayerSecondary
+                text = if (autoNext) {
+                    "一首播完按「播放模式」继续（列表下一首 / 单曲重放 / 随机下一首）。"
+                } else {
+                    "一首播完就停在这个位置，不动播放列表。"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = PlayerTertiary
+            )
+
+            SettingsDivider()
+
+            // ── 睡眠定时淡出 ──
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "睡眠定时淡出",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+                        color = PlayerText
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        text = "到点时音量在最后 4 秒渐弱，不会突然安静",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = PlayerTertiary
+                    )
+                }
+                Switch(
+                    checked = fadeOut,
+                    onCheckedChange = { AppPrefs.setSleepFadeOut(it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.Black,
+                        checkedTrackColor = PlayerText,
+                        uncheckedThumbColor = PlayerSecondary,
+                        uncheckedTrackColor = PlayerChrome
+                    )
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "开启后，若勾了「自动延时到歌曲播放完毕」，淡出会落在这一首的最后 4 秒再停。",
+                style = MaterialTheme.typography.labelSmall,
+                color = PlayerTertiary
             )
         }
+    }
+}
+
+/** 设置项的小标题 */
+@Composable
+private fun SettingsLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = PlayerSecondary,
+        modifier = Modifier.padding(bottom = 8.dp)
+    )
+}
+
+@Composable
+private fun SettingsDivider() {
+    Spacer(Modifier.height(18.dp))
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color.White.copy(alpha = 0.08f))
+    )
+    Spacer(Modifier.height(18.dp))
+}
+
+/** 播放速度的快捷档位 */
+@Composable
+private fun RowScope.SpeedPresetChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelMedium,
+        color = if (selected) Color.Black else PlayerSecondary,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .weight(1f)
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) PlayerText else PlayerChrome)
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp)
+    )
+}
+
+/** 「继续播放 / 播完即停」二选一 */
+@Composable
+private fun EndActionChip(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium),
+        color = if (selected) Color.Black else PlayerSecondary,
+        textAlign = TextAlign.Center,
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) PlayerText else PlayerChrome)
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp)
+    )
+}
+
+/** `1.25×` / `1.00×` —— 两位小数，避免 1.3000001 这种浮点尾巴 */
+private fun formatSpeed(speed: Float): String = "%.2f×".format(speed)
+
+/** 播放速度的快捷档位（0.75–2.0） */
+private val SPEED_PRESETS = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+
+/**
+ * 拼出可分享的作品链接。
+ *
+ * 优先用 RJ 号（`https://asmr.one/work/RJ01234567`）—— 这是站点的规范地址，
+ * 换域名也认；拿不到 RJ 时退回数字 id，站点同样能打开。
+ */
+private fun shareLink(sourceId: String?, workId: Int): String {
+    val key = sourceId?.trim().orEmpty()
+    return when {
+        key.isNotEmpty() -> "https://asmr.one/work/$key"
+        workId > 0 -> "https://asmr.one/work/$workId"
+        else -> ""
     }
 }
 

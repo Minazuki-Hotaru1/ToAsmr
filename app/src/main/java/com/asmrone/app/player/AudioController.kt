@@ -11,6 +11,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.PlaybackParams
 import android.os.PowerManager
 import android.os.SystemClock
 import com.asmrone.app.data.model.Track
@@ -47,12 +48,31 @@ data class PlayerState(
     val positionMs: Int = 0,
     val error: String? = null,
     /** 睡眠定时器剩余毫秒；0 表示未启用 */
-    val sleepTimerRemainingMs: Long = 0L
+    val sleepTimerRemainingMs: Long = 0L,
+    /**
+     * 当前播放倍速（0.5–2.0）。
+     *
+     * 放在状态里是给**系统媒体卡片**用的：`PlaybackState.setPlaybackSpeed`
+     * 靠它外推进度，报错的话锁屏进度会与声音对不上。
+     */
+    val playbackSpeed: Float = 1f
 ) {
     val currentTrack: Track? get() = tracks.getOrNull(index)
     val trackTitle: String get() = currentTrack?.title.orEmpty()
     val hasNext: Boolean get() = index in 0 until tracks.lastIndex
     val hasPrev: Boolean get() = index > 0
+
+    /**
+     * 手动「下一首」是否可用。
+     *
+     * 与 [hasNext] 的区别：三种播放模式**都会绕回**（列表循环回到第一首、
+     * 随机挑一首别的），所以只要不止一首就永远可用；[hasNext] 只表示
+     * "后面还有"，仍然被系统媒体控件与队列面板用来判断方向。
+     */
+    val canSkipNext: Boolean get() = tracks.size > 1
+
+    /** 手动「上一首」是否可用，理由同 [canSkipNext] */
+    val canSkipPrev: Boolean get() = tracks.size > 1
     val progress: Float
         get() = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
     val isActive: Boolean get() = tracks.isNotEmpty()
@@ -84,6 +104,12 @@ object AudioController {
     /** 焦点被"允许压低"（导航播报等）时的音量系数 */
     private const val DUCK_FACTOR = 0.2f
 
+    /** 睡眠定时结束时淡出的总时长 */
+    private const val SLEEP_FADE_MS = 4_000L
+
+    /** 淡出时每档的步长：100ms 一档，4 秒 = 40 档，听感上是连续下滑 */
+    private const val FADE_STEP_MS = 100L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var player: MediaPlayer? = null
     private var ticker: Job? = null
@@ -102,6 +128,24 @@ object AudioController {
      * 而用户设的音量本身要留着（否则还原时就找不回来了）。
      */
     private var duckFactor: Float = 1.0f
+
+    /**
+     * 淡出进行中的音量系数（乘在 [gain] 上，1 = 未淡出）。
+     *
+     * 和 [duckFactor] 分开是因为语义不同：duck 是"被别的 App 打断，等回来"，
+     * 淡出是"要睡了，别再响"。混用一个字段会让这两种场景互相还原掉。
+     */
+    private var fadeFactor: Float = 1.0f
+    private var fadeJob: Job? = null
+    /**
+     * 定时到点时置起：这一首放完再停，并且**在最后几秒淡出**。
+     *
+     * 只由 [stopAfterTrack] 为 true 且用户开了 [AppPrefs.sleepFadeOut] 时置真，
+     * 消费点在 ticker 里（见 [maybeFadeBeforeTrackEnd]）。
+     */
+    private var fadeAtTrackEnd = false
+    /** 随机播放用；偏移量交给 PlayQueuePolicy 折算，便于单测 */
+    private val random = java.util.Random()
     /** 上次写播放快照的时间（uptimeMillis），避免每 500ms tick 都写盘 */
     private var lastPersistAt = 0L
 
@@ -272,6 +316,8 @@ object AudioController {
             return
         }
         val p = player ?: return
+        // 用户主动点播放 = 不想睡了：把没走完的淡出撤掉
+        cancelFade()
         ensureFocus()?.request()
         // 服务可能已被系统回收（暂停态不是前台服务），从通知/锁屏续播时要重新拉起
         appContext?.let { PlaybackService.start(it) }
@@ -297,12 +343,24 @@ object AudioController {
 
     fun next() {
         val s = _state.value
-        if (s.hasNext) playTrackAt(s.index + 1)
+        val target = PlayQueuePolicy.manualNextIndex(
+            mode = AppPrefs.playMode.value,
+            index = s.index,
+            size = s.tracks.size,
+            randomOffset = random.nextInt(Int.MAX_VALUE)
+        )
+        if (target >= 0) playTrackAt(target)
     }
 
     fun prev() {
         val s = _state.value
-        if (s.hasPrev) playTrackAt(s.index - 1) else seekTo(0)
+        val target = PlayQueuePolicy.manualPrevIndex(
+            mode = AppPrefs.playMode.value,
+            index = s.index,
+            size = s.tracks.size,
+            randomOffset = random.nextInt(Int.MAX_VALUE)
+        )
+        if (target >= 0) playTrackAt(target) else seekTo(0)
     }
 
     fun seekTo(positionMs: Int) {
@@ -337,12 +395,60 @@ object AudioController {
         applyGain()
     }
 
-    /** 睡眠定时器：到点自动暂停 */
+    /**
+     * 设置播放速度并**落盘**（0.5×–2.0×）。
+     *
+     * 拖动滑杆的过程中不要调这个 —— 每一帧都写一次 SharedPreferences 是浪费，
+     * 中途用 [previewPlaybackSpeed]，松手时再调这里。
+     */
+    fun setPlaybackSpeed(speed: Float) {
+        AppPrefs.setPlaybackSpeed(speed)
+        applySpeed(AppPrefs.playbackSpeed.value)
+    }
+
+    /** 只改当前内核的速度，不落盘（滑杆拖动中用） */
+    fun previewPlaybackSpeed(speed: Float) {
+        applySpeed(speed)
+    }
+
+    /**
+     * 把速度套到内核上。
+     *
+     * 用 `PlaybackParams()` 新建而不是读 `player.playbackParams` —— 后者在
+     * 未 prepare 时会抛 `IllegalStateException`，我们这里是"能套就套、不能就等
+     * prepare 完成后再套"，不该因为时序问题炸掉。
+     *
+     * `setPitch(1f)`：**保持音高**。变速不变调对耳语素材很关键，
+     * 不然 0.75× 会听成低沉的老头。
+     */
+    private fun applySpeed(speed: Float) {
+        val p = player ?: return
+        if (!_state.value.isPrepared) return
+        val v = speed.coerceIn(AppPrefs.MIN_PLAYBACK_SPEED, AppPrefs.MAX_PLAYBACK_SPEED)
+        runCatching {
+            p.playbackParams = PlaybackParams().setSpeed(v).setPitch(1f)
+        }.onFailure {
+            // 个别解码器不支持变速：降级成原速，不要打断播放
+            HttpLog.error("设置播放速度失败：${it.message}")
+        }
+        // 报给系统媒体卡片的是"实际生效的速度"，所以放在设置成功之后写；
+        // 失败时退回 1f，锁屏进度才不会按错误倍速外推。
+        _state.value = _state.value.copy(playbackSpeed = v)
+    }
+
+    /** 在当前进度上快进 / 快退，供播放器两侧的 "+30s" "−5s" 使用 */
+    fun skipForward(seconds: Int) = skipBy(seconds)
+
+    fun skipBack(seconds: Int) = skipBy(-seconds)
+
+    /** 睡眠定时器：到点自动暂停（可选淡出、可选"等这首放完"） */
     fun setSleepTimer(minutes: Int) {
         sleepJob?.cancel()
-        // 重新设定 / 取消定时都清掉"等这一首放完"的待办，否则旧的待办会
-        // 在下一次自然结束时把刚设好的新定时提前掐掉。
+        // 重新设定 / 取消定时都清掉上一轮留下的淡出与"等这首放完"待办，
+        // 否则旧待办会掐掉刚设好的新定时。
         stopAfterTrack = false
+        fadeAtTrackEnd = false
+        cancelFade()
         if (minutes <= 0) {
             _state.value = _state.value.copy(sleepTimerRemainingMs = 0L)
             return
@@ -355,12 +461,19 @@ object AudioController {
                 remaining -= 1_000
             }
             _state.value = _state.value.copy(sleepTimerRemainingMs = 0L)
-            if (AppPrefs.sleepUntilTrackEnd.value && player?.isPlaying == true) {
-                // 到点但还在放：不立刻静音，交给完成回调在这首歌结束时停
-                stopAfterTrack = true
-            } else {
-                // 到点直接暂停：走统一入口，顺带让出音频焦点
-                pauseInternal(fromFocusLoss = false)
+            val fade = AppPrefs.sleepFadeOut.value
+            val playing = player?.isPlaying == true
+            when {
+                // ① 到点但还在放，且用户要"等这首放完"：把淡出交给这一首的最后几秒，
+                //    免得刚过点就提前静音、也免得放完时突然断掉
+                AppPrefs.sleepUntilTrackEnd.value && playing -> {
+                    stopAfterTrack = true
+                    fadeAtTrackEnd = fade
+                }
+                // ② 要淡出：立刻开始，淡完暂停
+                fade && playing -> startFade(SLEEP_FADE_MS, pauseWhenDone = true)
+                // ③ 不淡出：直接暂停
+                else -> pauseInternal(fromFocusLoss = false)
             }
             persistSession()
         }
@@ -371,6 +484,8 @@ object AudioController {
         ticker?.cancel()
         sleepJob?.cancel()
         stopAfterTrack = false
+        fadeAtTrackEnd = false
+        cancelFade()
         ensureFocus()?.abandon()
         player?.let {
             runCatching { if (it.isPlaying) it.stop() }
@@ -394,6 +509,9 @@ object AudioController {
         val s = _state.value
         val track = s.currentTrack ?: return
         val url = track.mediaStreamUrl
+
+        // 换轨即清掉上一轨的淡出/压低残留，避免新的一轨以低音量起播
+        cancelFade()
 
         // 已下载的文件：直接读本地路径，连本地代理都不走。
         //
@@ -474,24 +592,30 @@ object AudioController {
                     error = null
                 )
                 applyGain()
+                // 速度是持久化设置：换曲、冷启动恢复之后都要重新套一遍
+                applySpeed(AppPrefs.playbackSpeed.value)
                 mp.start()
                 startTicker()
                 persistSession()
             }
             p.setOnCompletionListener {
                 val cur = _state.value
+                // 上一首的淡出绝不能带到下一首：先还原音量再决定去处
+                cancelFade()
                 if (stopAfterTrack) {
                     // 定时到点后的"自然收尾"：停在这里，不续下一轨
                     stopAfterTrack = false
-                    stopTicker()
-                    _state.value = cur.copy(isPlaying = false, positionMs = cur.durationMs)
-                    persistSession()
-                } else if (cur.hasNext) {
-                    playTrackAt(cur.index + 1)
+                    fadeAtTrackEnd = false
+                    finishPlayback(cur)
                 } else {
-                    stopTicker()
-                    _state.value = cur.copy(isPlaying = false, positionMs = cur.durationMs)
-                    persistSession()
+                    val target = PlayQueuePolicy.completionIndex(
+                        mode = AppPrefs.playMode.value,
+                        index = cur.index,
+                        size = cur.tracks.size,
+                        autoNext = AppPrefs.autoNext.value,
+                        randomOffset = random.nextInt(Int.MAX_VALUE)
+                    )
+                    if (target >= 0) playTrackAt(target) else finishPlayback(cur)
                 }
             }
             p.setOnErrorListener { _, what, extra ->
@@ -519,8 +643,68 @@ object AudioController {
     }
 
     private fun applyGain() {
-        val effective = gain * duckFactor
+        val effective = gain * duckFactor * fadeFactor
         player?.let { runCatching { it.setVolume(effective, effective) } }
+    }
+
+    /**
+     * 在这一首的**最后几秒**开始淡出 —— 供"定时到点 + 等这首放完"使用。
+     *
+     * 之所以放在 ticker 里判断：位置本来就在轮询，顺带比较一下剩余时长
+     * 的成本可以忽略；换成别的手段（延迟到"预计结束时间 - 4s"再触发）
+     * 会在用户拖动进度条之后算错。
+     */
+    private fun maybeFadeBeforeTrackEnd(positionMs: Int, durationMs: Int) {
+        if (!fadeAtTrackEnd) return
+        if (durationMs <= 0) return
+        if (fadeJob?.isActive == true) return
+        val remain = durationMs - positionMs
+        if (remain in 1..SLEEP_FADE_MS) {
+            startFade(remain.toLong(), pauseWhenDone = false)
+        }
+    }
+
+    /**
+     * 在 [durationMs] 内把音量线性降到 0。
+     *
+     * @param pauseWhenDone true = 降完就暂停（定时到点、且不等这首放完）；
+     *   false = 只降音量，暂停交给完成回调（等这首放完时，降到底正好是曲末）。
+     */
+    private fun startFade(durationMs: Long, pauseWhenDone: Boolean) {
+        if (fadeJob?.isActive == true) return
+        fadeJob = scope.launch {
+            val total = durationMs.coerceAtLeast(FADE_STEP_MS)
+            var elapsed = 0L
+            while (elapsed < total) {
+                if (!_state.value.isPlaying) break
+                elapsed += FADE_STEP_MS
+                fadeFactor = (1f - elapsed.toFloat() / total).coerceIn(0f, 1f)
+                applyGain()
+                delay(FADE_STEP_MS)
+            }
+            if (pauseWhenDone && _state.value.isPlaying) {
+                // 先还原系数再暂停：否则下次 resume 会以 0 音量起播（等于静音）
+                fadeFactor = 1f
+                pauseInternal(fromFocusLoss = false)
+            }
+        }
+    }
+
+    /** 取消淡出并把音量还原（切歌、重新定时、手动暂停都要走一遍） */
+    private fun cancelFade() {
+        fadeJob?.cancel()
+        fadeJob = null
+        if (fadeFactor != 1f) {
+            fadeFactor = 1f
+            applyGain()
+        }
+    }
+
+    /** 一首放完就停在这里（播完即停 / 队列末尾 / 定时收尾共用的收尾动作） */
+    private fun finishPlayback(cur: PlayerState) {
+        stopTicker()
+        _state.value = cur.copy(isPlaying = false, positionMs = cur.durationMs)
+        persistSession()
     }
 
     /**
@@ -562,6 +746,7 @@ object AudioController {
                         positionMs = pos,
                         durationMs = if (dur > 0) dur else s.durationMs
                     )
+                    maybeFadeBeforeTrackEnd(pos, if (dur > 0) dur else s.durationMs)
                     // 播放中每 2 秒落一次快照；被杀进程也能最多丢 2 秒。
                     if (SystemClock.uptimeMillis() - lastPersistAt >= 2_000L) {
                         persistSession()

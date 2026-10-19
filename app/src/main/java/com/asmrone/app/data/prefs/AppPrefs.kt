@@ -37,6 +37,13 @@ object AppPrefs {
         "https://api.asmr-300.com"
     )
 
+    /** 播放速度允许区间：再低就听不清，再高就把音声扯成噪音 */
+    const val MIN_PLAYBACK_SPEED = 0.5f
+    const val MAX_PLAYBACK_SPEED = 2.0f
+
+    /** 播放模式允许区间（0 = 列表循环，1 = 单曲循环，2 = 随机播放） */
+    val PLAY_MODE_RANGE = 0..2
+
     private val _host = MutableStateFlow(HOST_PRESETS.first())
     val host: StateFlow<String> = _host.asStateFlow()
 
@@ -129,6 +136,38 @@ object AppPrefs {
      */
     private val _sleepUntilTrackEnd = MutableStateFlow(true)
     val sleepUntilTrackEnd: StateFlow<Boolean> = _sleepUntilTrackEnd.asStateFlow()
+
+    /**
+     * 睡眠定时结束时是否**淡出**（把音量在几秒内降到 0），而不是突然静音。
+     *
+     * 与 [sleepUntilTrackEnd] 是两件事、可以叠加：打开了"等这首放完"时，
+     * 淡出会落在这一首的**最后几秒**；没打开时，到点立刻开始淡出、淡完暂停。
+     */
+    private val _sleepFadeOut = MutableStateFlow(true)
+    val sleepFadeOut: StateFlow<Boolean> = _sleepFadeOut.asStateFlow()
+
+    /**
+     * 播放速度：0.5× – 2.0×，1.0 = 原速。
+     *
+     * 持久化是刻意的：调速度通常针对"这类素材"的整体偏好，而不是某一首的
+     * 一次性动作 —— 换曲、重启之后都应当沿用（`AudioController` 在每次
+     * prepare 完成后重新套用）。
+     */
+    private val _playbackSpeed = MutableStateFlow(1.0f)
+    val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
+
+    /** 播放模式：0 = 列表循环，1 = 单曲循环，2 = 随机播放（语义见 `PlayQueuePolicy`） */
+    private val _playMode = MutableStateFlow(0)
+    val playMode: StateFlow<Int> = _playMode.asStateFlow()
+
+    /**
+     * 一首放完后是否自动接着往下放；false = 播完即停。
+     *
+     * 它是**硬开关**：false 时任何播放模式都不会自动前进（含单曲循环）。
+     * 手动的上一首 / 下一首不受影响 —— 那是用户主动的动作。
+     */
+    private val _autoNext = MutableStateFlow(true)
+    val autoNext: StateFlow<Boolean> = _autoNext.asStateFlow()
 
     /** 主题模式：0 = 跟随系统，1 = 强制亮色，2 = 强制暗色 */
     private val _themeMode = MutableStateFlow(0)
@@ -254,6 +293,12 @@ object AppPrefs {
         ).coerceIn(AudioCachePolicy.MIN_PER_TRACK_MB, AudioCachePolicy.MAX_PER_TRACK_MB)
         _sleepTimerMinutes.value = sp.getInt(KEY_SLEEP_TIMER, 0)
         _sleepUntilTrackEnd.value = sp.getBoolean(KEY_SLEEP_UNTIL_TRACK_END, true)
+        _sleepFadeOut.value = sp.getBoolean(KEY_SLEEP_FADE_OUT, true)
+        _playbackSpeed.value = sp.getFloat(KEY_PLAYBACK_SPEED, 1.0f)
+            .coerceIn(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
+        _playMode.value = sp.getInt(KEY_PLAY_MODE, 0)
+            .let { if (it in PLAY_MODE_RANGE) it else 0 }
+        _autoNext.value = sp.getBoolean(KEY_AUTO_NEXT, true)
         _themeMode.value = sp.getInt(KEY_THEME_MODE, 0)
         _libraryTab.value = sp.getInt(KEY_LIBRARY_TAB, 0)
         _lastSelectedPlaylistId.value = sp.getString(KEY_LAST_PLAYLIST, "") ?: ""
@@ -342,6 +387,34 @@ object AppPrefs {
         sp.edit().putBoolean(KEY_SLEEP_UNTIL_TRACK_END, value).apply()
     }
 
+    fun setSleepFadeOut(value: Boolean) {
+        _sleepFadeOut.value = value
+        sp.edit().putBoolean(KEY_SLEEP_FADE_OUT, value).apply()
+    }
+
+    /**
+     * 设置播放速度。
+     *
+     * 在这里就夹到 [MIN_PLAYBACK_SPEED]..[MAX_PLAYBACK_SPEED]：恢复备份之类
+     * 的情况可能塞进来 0 或 100，0 会让播放变成静音、100 会把音频扯成噪音。
+     */
+    fun setPlaybackSpeed(value: Float) {
+        val v = value.coerceIn(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
+        _playbackSpeed.value = v
+        sp.edit().putFloat(KEY_PLAYBACK_SPEED, v).apply()
+    }
+
+    fun setPlayMode(value: Int) {
+        val v = if (value in PLAY_MODE_RANGE) value else 0
+        _playMode.value = v
+        sp.edit().putInt(KEY_PLAY_MODE, v).apply()
+    }
+
+    fun setAutoNext(value: Boolean) {
+        _autoNext.value = value
+        sp.edit().putBoolean(KEY_AUTO_NEXT, value).apply()
+    }
+
     private const val KEY_HOST = "host"
     private const val KEY_AUDIO_FORMAT = "audio_format"
     private const val KEY_HOME_ENABLED = "home_enabled"
@@ -355,6 +428,10 @@ object AppPrefs {
     private const val KEY_PER_TRACK_CACHE_LIMIT_MB = "per_track_cache_limit_mb"
     private const val KEY_SLEEP_TIMER = "sleep_timer"
     private const val KEY_SLEEP_UNTIL_TRACK_END = "sleep_until_track_end"
+    private const val KEY_SLEEP_FADE_OUT = "sleep_fade_out"
+    private const val KEY_PLAYBACK_SPEED = "playback_speed"
+    private const val KEY_PLAY_MODE = "play_mode"
+    private const val KEY_AUTO_NEXT = "auto_next"
     private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_LIBRARY_TAB = "library_tab"
     private const val KEY_LAST_PLAYLIST = "last_selected_playlist"

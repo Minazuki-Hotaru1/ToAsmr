@@ -290,13 +290,16 @@ class TrackCacheLedgerTest {
             controller.contains("AppPrefs.perTrackCacheLimitMb.value")
         )
         assertTrue(
-            "next() 走 playTrackAt",
-            controller.contains("if (s.hasNext) playTrackAt(s.index + 1)")
+            "next() 的下标由播放模式决定，但必须落到 playTrackAt 上（否则不会重置记账）",
+            controller.contains("PlayQueuePolicy.manualNextIndex(")
         )
-        assertTrue("prev() 走 playTrackAt", controller.contains("playTrackAt(s.index - 1)"))
         assertTrue(
-            "播完自动连播也要走 playTrackAt",
-            controller.contains("playTrackAt(cur.index + 1)")
+            "prev() 同样要经 playTrackAt",
+            controller.contains("PlayQueuePolicy.manualPrevIndex(")
+        )
+        assertTrue(
+            "播完自动连播也要走 playTrackAt（下标可能指向任意一首，记账必须跟着换）",
+            controller.contains("if (target >= 0) playTrackAt(target) else finishPlayback(cur)")
         )
     }
 

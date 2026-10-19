@@ -28,19 +28,28 @@ internal object PlaybackSessionModel {
     /**
      * 系统可以发给我们哪些操作。
      *
-     * 只在真有上一首/下一首时声明 SKIP_* —— 声明了却做不到，系统的耳机键
+     * 只在真能换歌时声明 SKIP_* —— 声明了却做不到，系统的耳机键
      * 和蓝牙上一曲会变成一个"按了没反应"的按钮。
+     *
+     * 用 [PlayerState.canSkipNext] 而不是 [PlayerState.hasNext]：三种播放模式
+     * 都会绕回（列表循环回到第一首、随机另挑一首），最后一首也应该能换 ——
+     * 否则播到末尾时锁屏上的「下一首」会消失，与界面上的按钮不一致。
      */
     fun actionsOf(state: PlayerState): Long {
         var actions = PlaybackState.ACTION_PLAY or
             PlaybackState.ACTION_PAUSE or
             PlaybackState.ACTION_SEEK_TO or
             PlaybackState.ACTION_STOP
-        if (state.hasNext) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
-        if (state.hasPrev) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
+        if (state.canSkipNext) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
+        if (state.canSkipPrev) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
         return actions
     }
 
-    /** 播放速度：暂停时必须报 0，否则系统会按"还在走"继续外推进度 */
-    fun speedOf(state: PlayerState): Float = if (state.isPlaying) 1f else 0f
+    /**
+     * 播放速度：暂停时必须报 0，否则系统会按"还在走"继续外推进度。
+     *
+     * 播放中要报**真实倍速**：系统按这个值外推锁屏上的进度，
+     * 报固定 1.0 而实际 1.5× 时，锁屏进度会比声音慢三分之一。
+     */
+    fun speedOf(state: PlayerState): Float = if (state.isPlaying) state.playbackSpeed else 0f
 }
