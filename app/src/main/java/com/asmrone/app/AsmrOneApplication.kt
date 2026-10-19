@@ -64,7 +64,12 @@ class AsmrOneApplication : Application() {
         // 音频缓存的清理放到后台线程：它要遍历缓存目录数文件，
         // 放在 onCreate 里会拖慢冷启动的首帧。
         // 内部有 10 分钟的最小间隔，所以频繁冷启动不会反复扫盘。
-        CoroutineScope(Dispatchers.IO).launch { AudioCacheMaintenance.run() }
+        CoroutineScope(Dispatchers.IO).launch {
+            // 旧版本只按 RJ 落盘、没有"workId → RJ"指针。补一次，
+            // 否则那些**已经缓存过**的作品还要再拉一遍树才读得到。
+            TrackTreeStore.backfillPointers()
+            AudioCacheMaintenance.run()
+        }
 
         // 调试期把网络日志落盘，便于用 adb 取出分析。
         //

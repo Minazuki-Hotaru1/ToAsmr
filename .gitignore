@@ -11,3 +11,5 @@ local.properties
 *.jks
 *.keystore
 keystore.properties
+# 本地提交草稿
+commitmsg*.txt

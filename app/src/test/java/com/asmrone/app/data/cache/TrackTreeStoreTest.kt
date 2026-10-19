@@ -172,9 +172,10 @@ class TrackTreeStoreTest {
     @Test
     fun `RJ 号里的非法字符被清掉，不会跑出目录`() = runBlocking {
         TrackTreeStore.save("../../etc/passwd", 1, "h", sampleTree())
-        val files = dir.listFiles()!!.map { it.name }
-        assertEquals("只该在缓存目录里留一个文件", 1, files.size)
-        assertTrue("文件名不能含斜杠或点：${files.single()}", !files.single().contains('/'))
+        val trees = dir.listFiles()!!.filter { it.name.endsWith(".json") }
+        assertEquals("树只该在缓存目录里留一份", 1, trees.size)
+        val name = trees.single().name
+        assertTrue("文件名不能含斜杠或点：$name", !name.contains('/') && !name.contains(".."))
         assertNotNull(TrackTreeStore.load("../../etc/passwd", 1))
     }
 
@@ -201,7 +202,8 @@ class TrackTreeStoreTest {
         TrackTreeStore.save("RJ1", 1, "h", sampleTree())
         val size = TrackTreeStore.sizeBytes()
         assertTrue("应当统计到实际字节数，实际 $size", size > 0)
-        assertEquals(File(dir, "RJ1.json").length(), size)
+        // 树 + 指针，都算在占用里
+        assertEquals(dir.listFiles()!!.sumOf { it.length() }, size)
     }
 
     @Test
@@ -243,5 +245,97 @@ class TrackTreeStoreTest {
             "读一次之后时间戳应当变新",
             File(dir, "RJ-a.json").lastModified() > 1_000_000L
         )
+    }
+
+    // ───────────────────── 只有 workId 的调用方（指针文件） ─────────────────────
+
+    /**
+     * 详情页正是"只有 workId"的调用方：元数据与文件树**并发**获取，
+     * 树那一路拿不到 RJ 号。以前这种调用必然 miss —— 明明缓存过，
+     * 每次冷启动还要再拉一遍 6MB 的树。
+     */
+    @Test
+    fun `★ 只拿到 workId 也能读到按 RJ 存的树`() = runBlocking {
+        TrackTreeStore.save("RJ243448", 243448, "h", sampleTree())
+
+        val back = TrackTreeStore.load(null, 243448)
+
+        assertNotNull("写过指针就该命中，不该当成未缓存", back)
+        assertEquals(3, back!!.size)
+    }
+
+    @Test
+    fun `指针只是索引，不计入缓存的作品数量`() = runBlocking {
+        TrackTreeStore.save("RJ1", 1, "h", sampleTree())
+        TrackTreeStore.save("RJ2", 2, "h", sampleTree())
+
+        assertEquals(2, TrackTreeStore.count())
+        assertTrue(File(dir, "w1.rj").exists())
+    }
+
+    /** 强制刷新要真的清空这份作品 —— 指针留着就等于"还缓存着" */
+    @Test
+    fun `forget 连指针一起删`() = runBlocking {
+        TrackTreeStore.save("RJ1", 1, "h", sampleTree())
+
+        TrackTreeStore.forget("RJ1", 1)
+
+        assertNull(TrackTreeStore.load("RJ1", 1))
+        assertNull(TrackTreeStore.load(null, 1))
+        assertTrue(File(dir, "w1.rj").exists().not())
+    }
+
+    /** 指针指向的树被清掉后，不能挡住历史遗留的 `w<id>.json` */
+    @Test
+    fun `指针悬空时回退到按 workId 存的树`() = runBlocking {
+        TrackTreeStore.save(null, 7, "h", sampleTree())
+        File(dir, "w7.rj").writeText("""{"v":1,"rj":"RJ7"}""", Charsets.UTF_8)
+
+        assertNotNull("RJ7.json 不存在，应当继续试 w7.json", TrackTreeStore.load(null, 7))
+    }
+
+    /** 一个坏文件不该让整份缓存失效 */
+    @Test
+    fun `坏文件会跳过并继续试下一个候选`() = runBlocking {
+        TrackTreeStore.save(null, 9, "h", sampleTree())
+        File(dir, "w9.rj").writeText("""{"v":1,"rj":"RJ9"}""", Charsets.UTF_8)
+        File(dir, "RJ9.json").writeText("{ 这不是 JSON", Charsets.UTF_8)
+
+        assertNotNull(TrackTreeStore.load(null, 9))
+        assertTrue("坏文件应当被删掉", File(dir, "RJ9.json").exists().not())
+    }
+
+    /** 树没了的指针要及时清掉，否则会越攒越多 */
+    @Test
+    fun `prune 清理悬空指针`() = runBlocking {
+        TrackTreeStore.save("RJ1", 1, "h", sampleTree())
+        File(dir, "RJ1.json").delete()
+
+        TrackTreeStore.save("RJ2", 2, "h", sampleTree())
+
+        assertTrue("悬空指针应当被清掉", File(dir, "w1.rj").exists().not())
+    }
+
+    /**
+     * 升级前的缓存只有 `RJxxx.json`，没有指针。补一次之后，
+     * 那些"明明缓存过"的作品不用再拉一遍树。
+     */
+    @Test
+    fun `迁移会给旧缓存补上指针`() = runBlocking {
+        TrackTreeStore.save("RJ243448", 243448, "h", sampleTree())
+        File(dir, "w243448.rj").delete()          // 模拟旧版本：只有树，没有指针
+        assertNull("前置条件：此时只拿到 workId 应当读不到", TrackTreeStore.load(null, 243448))
+
+        val created = TrackTreeStore.backfillPointers()
+
+        assertEquals(1, created)
+        assertNotNull("补完指针就该按 workId 读得回来", TrackTreeStore.load(null, 243448))
+    }
+
+    @Test
+    fun `迁移是幂等的，已有指针不会重复补`() = runBlocking {
+        TrackTreeStore.save("RJ1", 1, "h", sampleTree())
+
+        assertEquals(0, TrackTreeStore.backfillPointers())
     }
 }
