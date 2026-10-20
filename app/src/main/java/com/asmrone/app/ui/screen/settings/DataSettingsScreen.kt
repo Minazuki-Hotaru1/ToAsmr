@@ -1,22 +1,18 @@
 package com.asmrone.app.ui.screen.settings
 
-import androidx.compose.foundation.clickable
-import android.os.Environment
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -27,7 +23,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
@@ -38,7 +33,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.asmrone.app.data.audio.AudioCacheMaintenance
 import com.asmrone.app.data.download.DownloadManager
-import com.asmrone.app.data.download.DownloadStorage
 import com.asmrone.app.data.download.LocalDownloadStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.repo.updateAllDictionaries
@@ -72,6 +66,26 @@ private val TOTAL_STOPS_MB = listOf(256, 512, 1024, 2048, 4096, 5120, UNLIMITED_
 fun DataSettingsScreen(onBack: () -> Unit, onOpenCache: () -> Unit) {
     val scope = rememberCoroutineScope()
     var dictState by remember { mutableStateOf(readDictionaryUpdateState()) }
+    var confirmUpdate by remember { mutableStateOf(false) }
+
+    fun startUpdate() {
+        if (dictState.updating) return
+        dictState = dictState.copy(updating = true, message = null, progress = null)
+        scope.launch {
+            val outcome = updateAllDictionaries { text ->
+                dictState = dictState.copy(progress = text)
+            }
+            // 手动更新过也算"初始化过了"：下次冷启动不再自动拉一遍
+            AppPrefs.setDictionariesInitialized(true)
+            // 重新从本地读，而不是相信返回值：某本失败时本地仍是旧的那份
+            val fresh = readDictionaryUpdateState()
+            dictState = fresh.copy(
+                updating = false,
+                progress = null,
+                message = outcome.message(fresh.totalCount)
+            )
+        }
+    }
 
     SettingsScaffold(title = "数据", onBack = onBack) {
         // ── 缓存 ──
@@ -104,22 +118,9 @@ fun DataSettingsScreen(onBack: () -> Unit, onOpenCache: () -> Unit) {
                         ?: dictState.message?.let { append("\n").append(it) }
                 },
                 onClick = {
-                    if (dictState.updating) return@FlatRow
-                    dictState = dictState.copy(updating = true, message = null, progress = null)
-                    scope.launch {
-                        val outcome = updateAllDictionaries { text ->
-                            dictState = dictState.copy(progress = text)
-                        }
-                        // 手动更新过也算"初始化过了"：下次冷启动不再自动拉一遍
-                        AppPrefs.setDictionariesInitialized(true)
-                        // 重新从本地读，而不是相信返回值：某本失败时本地仍是旧的那份
-                        val fresh = readDictionaryUpdateState()
-                        dictState = fresh.copy(
-                            updating = false,
-                            progress = null,
-                            message = outcome.message(fresh.totalCount)
-                        )
-                    }
+                    // 更新会重新下载三份索引（要联网、要时间），点一下就开跑太突然，
+                    // 先问一句再动手
+                    if (!dictState.updating) confirmUpdate = true
                 },
                 trailing = {
                     if (dictState.updating) {
@@ -145,6 +146,23 @@ fun DataSettingsScreen(onBack: () -> Unit, onOpenCache: () -> Unit) {
         // ── 音频缓存 ────────────────────────────────────────
         AudioCacheSection()
     }
+
+    if (confirmUpdate) {
+        AlertDialog(
+            onDismissRequest = { confirmUpdate = false },
+            title = { Text("更新搜索索引") },
+            text = { Text("将重新下载标签、声优、社团三份索引，需要联网。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmUpdate = false
+                    startUpdate()
+                }) { Text("更新") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmUpdate = false }) { Text("取消") }
+            }
+        )
+    }
 }
 
 /**
@@ -152,21 +170,49 @@ fun DataSettingsScreen(onBack: () -> Unit, onOpenCache: () -> Unit) {
  *
  * 保存位置（系统 / 本地）的开关在「下载」页顶栏，这里只管"本地"那一档落在哪 ——
  * 设置页放一个开关、下载页再放一个，两边状态容易对不上，用户也不知道哪个生效。
+ *
+ * 目录由**系统文件选择器**挑（`ACTION_OPEN_DOCUMENT_TREE`），拿回来再映射成文件系统路径：
+ * 落盘仍然走 `java.io.File`（这样能原样保留作品内部的目录结构），
+ * 所以这里只是借系统的选择界面，并不使用 SAF 的文档树写入。
  */
 @Composable
 private fun DownloadLocationSection() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val dir by AppPrefs.localDownloadDir.collectAsState()
-    var pickerOpen by remember { mutableStateOf(false) }
     var accessTick by remember { mutableIntStateOf(0) }
+    var pickError by remember { mutableStateOf<String?>(null) }
     val hasAccess = remember(accessTick, dir) { LocalDownloadStore.hasAccess(context) }
 
-    // 两条授权路径（API 30+ 跳设置页、API 28/29 弹运行时权限）都收在这一个函数里
+    fun applyDir(picked: File) {
+        AppPrefs.setLocalDownloadDir(picked.absolutePath)
+        pickError = null
+        scope.launch {
+            // 换了根目录：重建索引，再让下载页的列表跟着刷（否则它仍显示旧目录里的作品）
+            LocalDownloadStore.rescan()
+            DownloadManager.refreshLibrary()
+        }
+    }
+
+    val treePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val picked = LocalDownloadStore.pathFromTreeUri(uri)
+        if (picked == null) {
+            // 云端 provider（网盘等）没有对应的文件系统路径，写不进去
+            pickError = "这个位置不是本机存储，请选内部存储里的文件夹"
+        } else {
+            applyDir(picked)
+        }
+    }
+
+    // 两条授权路径（API 30+ 跳设置页、API 28/29 弹运行时权限）都收在这一个函数里；
+    // 授权成功后直接打开系统选择器，省一次点击
     val requestAccess = rememberLocalStorageRequester { granted ->
         if (granted) {
             accessTick++
-            pickerOpen = true
+            treePicker.launch(null)
         }
     }
 
@@ -182,132 +228,35 @@ private fun DownloadLocationSection() {
 
     FlatSection(title = "下载") {
         FlatRow(
-            title = "本地文件夹",
+            title = "切换本地下载文件夹",
             description = buildString {
                 append(dir)
-                append(
-                    if (!hasAccess) "\n缺少存储权限，点此授予" else "\n下载页切到「本地」后存到这里"
-                )
+                if (!hasAccess) append("\n缺少存储权限，点此授予")
             },
             onClick = {
-                if (hasAccess) {
-                    pickerOpen = true
-                } else {
-                    requestAccess()
-                }
+                pickError = null
+                if (hasAccess) treePicker.launch(null) else requestAccess()
             },
             trailing = { RowChevron() }
         )
     }
 
-    if (pickerOpen) {
-        LocalFolderPickerDialog(
-            startDir = File(dir),
-            onDismiss = { pickerOpen = false },
-            onPick = { picked ->
-                pickerOpen = false
-                AppPrefs.setLocalDownloadDir(picked.absolutePath)
-                scope.launch {
-                    // 换了根目录：重建索引，再让下载页的列表跟着刷（否则它仍显示旧目录里的作品）
-                    LocalDownloadStore.rescan()
-                    DownloadManager.refreshLibrary()
-                }
-            }
-        )
+    if (pickError != null) {
+        pickError?.let { SectionHint(it) }
     }
 }
 
-/**
- * 极简目录选择器：只列子文件夹，点名字进入，底部确认当前目录。
- *
- * 没有用 SAF（`ACTION_OPEN_DOCUMENT_TREE`）：那套返回的是 tree Uri，
- * 写文件要逐级 `DocumentFile` 创建子目录，没法保留作品原来的目录结构；
- * 拿到「所有文件访问权限」后直接用 `File` 反而能原样落盘。
- */
+/** 一行红色小字提示（放在分组下面，不占行高） */
 @Composable
-private fun LocalFolderPickerDialog(
-    startDir: File,
-    onPick: (File) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val root = remember { Environment.getExternalStorageDirectory() }
-    var dir by remember(startDir) {
-        mutableStateOf(if (startDir.isDirectory) startDir else root)
-    }
-    val children = remember(dir) {
-        dir.listFiles()
-            ?.filter { it.isDirectory && !it.name.startsWith(".") }
-            ?.sortedBy { it.name.lowercase() }
-            .orEmpty()
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("本地文件夹") },
-        text = {
-            Column(modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
-                Text(
-                    text = dir.absolutePath,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
-                // 上一级：到外置存储根就停住，避免把 /storage 也列出来
-                if (dir.absolutePath != root.absolutePath) {
-                    Text(
-                        text = "↑ 上一级",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { dir.parentFile?.let { dir = it } }
-                            .padding(vertical = 10.dp)
-                    )
-                }
-                children.forEach { child ->
-                    Text(
-                        text = child.name,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { dir = child }
-                            .padding(vertical = 10.dp)
-                    )
-                }
-                if (children.isEmpty()) {
-                    Text(
-                        text = "（没有子文件夹）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 10.dp)
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "恢复默认（/storage/emulated/0/ToAsmr）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            dir = File(root, "ToAsmr").also { it.mkdirs() }
-                        }
-                        .padding(vertical = 10.dp)
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                if (!dir.exists()) dir.mkdirs()
-                onPick(dir)
-            }) {
-                Text("使用此文件夹")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        }
+private fun SectionHint(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = com.asmrone.app.ui.theme.ErrorColor,
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
     )
 }
+
 
 /**
  * 音频缓存区块：两个带停留节点的滑杆（单曲 / 总上限）。

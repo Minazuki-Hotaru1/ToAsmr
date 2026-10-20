@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.Settings
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.prefs.AppPrefs
@@ -103,6 +104,34 @@ object LocalDownloadStore {
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
                 .setData(Uri.parse("package:${context.packageName}"))
         }
+
+    /**
+     * 把系统文件选择器（`ACTION_OPEN_DOCUMENT_TREE`）返回的 tree Uri 映射回文件系统路径。
+     *
+     * 落盘走的是 `java.io.File`（拿到「所有文件访问权限」后能原样保留作品内部的目录结构），
+     * 所以系统选择器只用来**挑位置**，并不使用 SAF 的文档树写入。
+     *
+     * `DocumentsContract.getTreeDocumentId(uri)` 给出 `<volumeId>:<相对路径>`：
+     *  - `primary:Download/ToAsmr` → `/storage/emulated/0/Download/ToAsmr`
+     *  - `1A2B-3C4D:Music`          → `/storage/1A2B-3C4D/Music`
+     *
+     * 网盘类 provider 没有对应的文件系统路径（或对应的卷不存在），返回 null 让调用方提示重选。
+     */
+    fun pathFromTreeUri(uri: Uri): File? {
+        val docId = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
+            ?: return null
+        val volume = docId.substringBefore(':', "")
+        val relative = docId.substringAfter(':', "")
+        val root = when {
+            volume.isEmpty() || volume.equals("primary", ignoreCase = true) ->
+                Environment.getExternalStorageDirectory()
+            else -> File("/storage", volume)
+        }
+        if (!root.isDirectory) return null
+        // 选中的一定有已存在的路径；映射不出来就说明这家 provider 不是本机存储
+        val dir = if (relative.isEmpty()) root else File(root, relative)
+        return dir.takeIf { it.isDirectory }
+    }
 
     /** 启动/改目录后扫描一遍：只认带清单的作品目录 */
     suspend fun rescan() = withContext(Dispatchers.IO) {

@@ -116,14 +116,18 @@ fun SettingsScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // ── 其它：工具 + 关于 ──
-        FlatSection(title = "其它") {
+        // ── 测试设置：排查问题用的工具，平时用不到 ──
+        FlatSection(title = "测试设置") {
             FlatRow(
                 title = "网络日志",
                 onClick = { showHttpLog = true },
                 trailing = { RowChevron() }
             )
-            FlatDivider()
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        FlatSection(title = "其它") {
             FlatRow(
                 title = "关于",
                 onClick = onOpenAbout,
@@ -227,7 +231,6 @@ fun AppearanceSettingsScreen(
         FlatSection(title = "主题") {
             FlatRow(
                 title = "跟随系统",
-                description = "关闭后可手动选择亮暗",
                 trailing = {
                     SettingSwitch(
                         checked = followSystem,
@@ -249,7 +252,6 @@ fun AppearanceSettingsScreen(
             FlatDivider()
             FlatRow(
                 title = "暗色模式",
-                description = if (followSystem) "由系统决定" else null,
                 trailing = {
                     SettingSwitch(
                         checked = darkNow,
