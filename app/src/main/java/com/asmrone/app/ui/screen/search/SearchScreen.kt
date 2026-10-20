@@ -59,6 +59,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.R
+import com.asmrone.app.data.links.WorkLink
 import com.asmrone.app.data.model.SearchSuggestion
 import com.asmrone.app.data.prefs.SearchHistoryEntry
 import com.asmrone.app.data.prefs.SearchHistoryStore
@@ -102,12 +103,14 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
  *  - 顶栏高度仍用 `onSizeChanged` 实测，首帧按「稳定状态栏高 + 56dp」估算。
  *
  * @param onOpenResults 搜索已提交后跳转到结果页
+ * @param onOpenRj 输入的是一串 RJ 号：不搜索、也不进结果页，直接打开那部作品
  */
 @Composable
 fun SearchScreen(
     viewModel: SearchViewModel,
     onOpenResults: () -> Unit,
-    onWorkClick: (Int) -> Unit
+    onWorkClick: (Int) -> Unit,
+    onOpenRj: (String) -> Unit = {}
 ) {
     val state by viewModel.state.collectAsState()
     // 搜索历史：本地持久化，直接订阅 store（单一数据源）
@@ -138,6 +141,15 @@ fun SearchScreen(
 
     fun submitSimple() {
         if (state.query.isBlank()) return
+        // RJ 号是一个"地址"，不是一个"关键词"：直接打开那部作品，
+        // 既不发搜索、也不进结果页（结果页会空着，因为 RJ 号不是按标题搜的）。
+        // 把整条链接粘进搜索框也认（`https://asmr.one/work/RJ01700554`）。
+        val token = WorkLink.tokenFromUrl(state.query) ?: WorkLink.rjCodeOf(state.query)
+        if (token != null) {
+            focusManager.clearFocus()
+            onOpenRj(token)
+            return
+        }
         focusManager.clearFocus()
         viewModel.submit()
         onOpenResults()

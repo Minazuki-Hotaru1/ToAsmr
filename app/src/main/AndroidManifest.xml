@@ -53,6 +53,41 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+              外部链接直达作品详情：在别的 App 里点
+              https://asmr.one/work/RJ01700554 就跳进本 App 的这一部作品。
+
+              `autoVerify` 会去读 https://asmr.one/.well-known/assetlinks.json：
+              站点有这个文件、且声明了本 App 的签名指纹，系统才会把这类链接
+              默认交给本 App；没有的话系统仍会把它列进「用哪个应用打开」的候选里
+              （用户选一次并「始终」之后也生效）。所以这条是可选的加分项，不是前提。
+
+              多个 <data> 的属性是**合并**的：scheme=https + 这几个 host + /work/ 前缀。
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="asmr.one" />
+                <data android:host="www.asmr.one" />
+                <data android:host="beta.asmr.one" />
+                <data android:pathPrefix="/work/" />
+            </intent-filter>
+
+            <!--
+              本站自己的 scheme：toasmr://work/RJ01700554
+              （给别的 App / 自己的分享功能用，不依赖域名校验）
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="work"
+                    android:scheme="toasmr" />
+            </intent-filter>
         </activity>
 
         <!--

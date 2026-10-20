@@ -37,6 +37,7 @@ import com.asmrone.app.data.cache.WorkMetaStore
 import com.asmrone.app.data.cache.WorkPageCodec
 import com.asmrone.app.data.download.DownloadSources
 import com.asmrone.app.data.download.DownloadStore
+import com.asmrone.app.data.links.WorkLink
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.remote.ApiConfig
 import com.asmrone.app.data.remote.AsmrOneApi
@@ -180,6 +181,56 @@ object AsmrRepository {
         result.items.forEach { workCache[it.id] = it }
         return result
     }
+
+    /**
+     * 把"作品线索"换成数据库里的 **workId**。
+     *
+     * 线索来自两处：[WorkLink.tokenFromUri]（`https://asmr.one/work/RJ…`）与
+     * 搜索框里直接敲的 RJ 号。它不一定是 id —— RJ 号需要问服务端换。
+     *
+     * 换法就是关键词搜索，因为**服务端没有"按 RJ 查 id"的端点**：
+     * `GET /api/search/{keyword}` 会把 `RJ01700554` 命中到唯一一条作品上
+     * （实测 2026-10-21，api.asmr-200.com）。
+     *
+     * 两个细节：
+     *  - 前导零必须保留（`RJ1700554` 少一位 0 时服务端 0 命中），所以先按原样查；
+     *  - 用户手打的号常常少零，于是再用**去掉前导零的纯数字**查一次兜底
+     *    （实测 `1700554` 能命中同一部作品）。
+     *
+     * 命中的判定不是"搜到东西就算"：优先要 `source_id` 的数字部分与输入一致；
+     * 只有**整批结果就一条**（`totalCount <= 1`）时才直接采纳 —— 否则搜
+     * `RJ1700554` 时排第一的可能是标题里恰好带这串数字的另一部作品。
+     *
+     * @return workId；线索不像 RJ、或服务端查不到（含网络失败）时 null
+     */
+    suspend fun resolveWorkId(token: String): Int? {
+        val text = token.trim()
+        if (text.isEmpty()) return null
+        // 链接里直接就是数据库 id（asmr.one/work/1700554）时不必查
+        if (text.all { it.isDigit() }) return text.toIntOrNull()
+        val rj = WorkLink.rjCodeOf(text) ?: return null
+        val digits = digitsOf(rj)
+        if (digits.isEmpty()) return null
+        for ((index, query) in listOf(rj, digits).withIndex()) {
+            val page = runCatching {
+                getWorks(page = 1, pageSize = 20, keyword = query)
+            }.getOrNull() ?: continue
+            val exact = page.items.firstOrNull { digitsOf(it.sourceId) == digits }
+            if (exact != null) return exact.id
+            // 兜底一：原始 RJ 串的搜索**几乎不可能**是模糊命中（实测 total=1），
+            // 所以只有一条、或整批就一条时直接采纳 —— 但绝不在"搜出一堆"时乱认。
+            if (index == 0 && page.totalCount <= 1 && page.items.isNotEmpty()) {
+                return page.items.first().id
+            }
+            // 兜底二：去零数字的搜索命中唯一一条时采纳（RJ1700554 → 1700554）
+            page.items.singleOrNull()?.let { return it.id }
+        }
+        return null
+    }
+
+    /** `"RJ01700554"` → `"1700554"`：去掉非数字与前导零，用来比"是不是同一部作品"。 */
+    private fun digitsOf(sourceId: String?): String =
+        sourceId.orEmpty().filter { it.isDigit() }.trimStart('0')
 
     /**
      * 落盘 JSON 是否是**详情页可用的完整响应**。

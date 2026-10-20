@@ -57,6 +57,7 @@ import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.asmrone.app.data.auth.AuthManager
+import com.asmrone.app.data.links.WorkLink
 import com.asmrone.app.data.lyrics.LyricsLoader
 import com.asmrone.app.data.model.OpenableFile
 import com.asmrone.app.data.prefs.AccountStore
@@ -133,6 +134,15 @@ class MainActivity : ComponentActivity() {
      */
     private var openPlayerRequest by mutableIntStateOf(0)
 
+    /**
+     * 从外部链接带进来的作品线索（`RJ01700554` 或数字 id）。
+     *
+     * 与 [openPlayerRequest] 同一套思路：`singleTask` 下热启动走 `onNewIntent`、
+     * 冷启动读启动 Intent，两条路都要接。区别是这里存的是**内容**而不是计数，
+     * 因为链接每次都不一样；导航图消费掉之后由 [MainApp] 回调清空。
+     */
+    private var pendingWorkToken by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -152,8 +162,10 @@ class MainActivity : ComponentActivity() {
         // 再消费本次启动 Intent 里可能带着的同一个标记。
         addOnNewIntentListener { incoming ->
             if (incoming.getBooleanExtra(EXTRA_OPEN_PLAYER, false)) openPlayerRequest++
+            acceptWorkLink(incoming)
         }
         if (intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true) openPlayerRequest++
+        acceptWorkLink(intent)
 
         setContent {
             val themeMode by AppPrefs.themeMode.collectAsState()
@@ -185,10 +197,28 @@ class MainActivity : ComponentActivity() {
                     LocalStableStatusBarTop provides stableStatusTop,
                     LocalStableNavigationBarBottom provides stableNavBottom
                 ) {
-                    MainApp(openPlayerRequest = openPlayerRequest)
+                    MainApp(
+                        openPlayerRequest = openPlayerRequest,
+                        pendingWorkToken = pendingWorkToken,
+                        onWorkTokenConsumed = { pendingWorkToken = null }
+                    )
                 }
             }
         }
+    }
+
+    /**
+     * 记住 Intent 里带的作品链接。
+     *
+     * 不在这里直接导航：冷启动时导航图还没组合出来，热启动时又得抢在
+     * "用户当前所在页面"之上跳转 —— 两种时序都不一样。统一交给
+     * `AppNavGraph` 的 `LaunchedEffect` 处理，这里只负责把线索存下来。
+     */
+    private fun acceptWorkLink(incoming: Intent?) {
+        if (incoming == null) return
+        WorkLink.tokenFromUri(incoming.data)?.let { pendingWorkToken = it }
+        // 消费完把 data 清掉：同一份 Intent 在配置变化后被重新读到时不该再跳一次
+        incoming.data = null
     }
 
     override fun onStop() {
@@ -206,7 +236,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MainApp(openPlayerRequest: Int = 0) {
+fun MainApp(
+    openPlayerRequest: Int = 0,
+    pendingWorkToken: String? = null,
+    onWorkTokenConsumed: () -> Unit = {}
+) {
     val navController = rememberNavController()
     val homeViewModel: HomeViewModel = viewModel()
     val searchViewModel: SearchViewModel = viewModel()
@@ -480,7 +514,9 @@ fun MainApp(openPlayerRequest: Int = 0) {
                     AppNavGraph(
                         navController = navController,
                         homeViewModel = homeViewModel,
-                        searchViewModel = searchViewModel
+                        searchViewModel = searchViewModel,
+                        pendingWorkToken = pendingWorkToken,
+                        onWorkTokenConsumed = onWorkTokenConsumed
                     )
                 }
             }

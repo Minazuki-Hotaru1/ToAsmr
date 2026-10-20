@@ -28,6 +28,7 @@ import com.asmrone.app.ui.screen.home.HomeScreen
 import com.asmrone.app.ui.screen.home.HomeViewModel
 import com.asmrone.app.ui.screen.library.LibraryScreen
 import com.asmrone.app.ui.screen.library.PlaylistDetailScreen
+import com.asmrone.app.ui.screen.link.WorkLinkScreen
 import com.asmrone.app.ui.screen.player.PlayerScreen
 import com.asmrone.app.ui.screen.search.SearchResultScreen
 import com.asmrone.app.ui.screen.search.SearchScreen
@@ -48,6 +49,17 @@ object Routes {
 
     /** 搜索结果页（搜索之后跳进来的独立展示界面） */
     const val SEARCH_RESULT = "search/result"
+
+    /**
+     * 外部链接 / RJ 号的落地页：进来把线索换成 workId 就立刻跳详情。
+     *
+     * 它不是给人看的页面（只在换 id 的那一两百毫秒里可见），存在的意义是
+     * 让"冷启动被链接拉起"与"搜索框敲 RJ 号"共用同一条解析 + 报错路径。
+     */
+    const val WORK_LINK = "work-link/{token}"
+
+    /** [WORK_LINK] 的构造辅助；token 可能是 `RJ01700554` 也可能是一串数字。 */
+    fun workLink(token: String) = "work-link/${android.net.Uri.encode(token)}"
 
     /**
      * 「某一项字典资源的作品」页 —— 详情页点标签 / 声优 / 社团**直达**。
@@ -111,13 +123,26 @@ object Routes {
  *  - 普通页面：淡入淡出（300ms）
  *  - 详情页：左右滑动（进 spring、回 tween），有"层级推进"的感觉
  *  - 播放器：缩放进入（scale 0.92 → 1），像一层浮起来的界面
+ *
+ * @param pendingWorkToken 从外部链接带进来的作品线索（`RJ01700554` / 数字 id）。
+ *   非空时导航到 [Routes.WORK_LINK] 去换 workId —— 冷启动（系统点了链接拉起 App）
+ *   与热启动（App 已在后台）都由 `MainActivity` 塞进这个参数。
+ * @param onWorkTokenConsumed 线索已经被受理，调用方应把它清空，否则重组时会再跳一次
  */
 @Composable
 fun AppNavGraph(
     navController: NavHostController,
     homeViewModel: HomeViewModel,
-    searchViewModel: SearchViewModel
+    searchViewModel: SearchViewModel,
+    pendingWorkToken: String? = null,
+    onWorkTokenConsumed: () -> Unit = {}
 ) {
+    LaunchedEffect(pendingWorkToken) {
+        val token = pendingWorkToken?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        navController.navigate(Routes.workLink(token)) { launchSingleTop = true }
+        onWorkTokenConsumed()
+    }
+
     NavHost(
         navController = navController,
         startDestination = Routes.HOME,
@@ -142,6 +167,8 @@ fun AppNavGraph(
                         launchSingleTop = true
                     }
                 },
+                // 搜索框里敲的是 RJ 号：不搜、也不进结果页，直接去换 workId 并打开作品
+                onOpenRj = { rj -> navController.navigate(Routes.workLink(rj)) },
                 onWorkClick = { navController.navigate(Routes.detail(it)) }
             )
         }
@@ -290,6 +317,23 @@ fun AppNavGraph(
         }
         composable(Routes.SETTINGS_ABOUT) {
             AboutSettingsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = Routes.WORK_LINK,
+            arguments = listOf(navArgument("token") { type = NavType.StringType })
+        ) { entry ->
+            WorkLinkScreen(
+                token = entry.arguments?.getString("token").orEmpty(),
+                onResolved = { workId ->
+                    // 把自己从返回栈里摘掉：从详情页返回时应该回到"点链接之前那一页"，
+                    // 而不是回到这个纯转圈的中转页
+                    navController.navigate(Routes.detail(workId)) {
+                        popUpTo(Routes.WORK_LINK) { inclusive = true }
+                    }
+                },
+                onBack = { navController.popBackStack() }
+            )
         }
 
         composable(
