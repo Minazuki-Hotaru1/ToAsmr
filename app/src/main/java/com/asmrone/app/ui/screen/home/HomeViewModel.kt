@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -31,7 +32,7 @@ data class HomeUiState(
     val board: HomeBoard = HomeBoard.ALL,
     /** 每个板块各自的状态：来回切换不会重新请求，也不会丢掉滚动数据 */
     val boards: Map<HomeBoard, BoardState> = emptyMap(),
-    /** 「设置 → 通用 → 加载首页」被关闭 */
+    /** 「设置 → 外观 → 首页 → 加载首页榜单」被关闭 */
     val disabled: Boolean = false
 ) {
     val current: BoardState get() = boards[board] ?: BoardState(loading = true)
@@ -53,7 +54,28 @@ class HomeViewModel : ViewModel() {
     private val jobs = mutableMapOf<HomeBoard, Job>()
 
     init {
-        load(HomeBoard.ALL)
+        // 「设置 → 外观 → 加载首页榜单」要能当场生效：
+        // 之前只在 [load] 里读一次 `AppPrefs.homeEnabled.value`，而关掉开关时没有任何人
+        // 再调用 load()，首页就停在旧画面上，必须重启才变。
+        // 这里订阅它 —— 关掉立刻切成「加载已关闭」并取消在飞的请求，打开就马上拉。
+        viewModelScope.launch {
+            AppPrefs.homeEnabled.collect { enabled ->
+                if (enabled) {
+                    // 之前加载过的板块留着（切回来是瞬时的），没加载过才发请求
+                    _state.value = _state.value.copy(disabled = false)
+                    load(_state.value.board)
+                } else {
+                    jobs.values.forEach { it.cancel() }
+                    jobs.clear()
+                    _state.value = _state.value.copy(
+                        disabled = true,
+                        boards = _state.value.boards.mapValues { (_, board) ->
+                            board.copy(loading = false, loadingMore = false)
+                        }
+                    )
+                }
+            }
+        }
     }
 
     /** 切换板块：已加载过的用缓存，没加载过的才发请求 */

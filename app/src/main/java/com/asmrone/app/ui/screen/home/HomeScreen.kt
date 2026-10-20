@@ -114,7 +114,7 @@ fun HomeScreen(
             when {
                 state.disabled -> EmptyHint(
                     title = "首页加载已关闭",
-                    description = "可在「设置 → 通用」中开启「加载首页」",
+                    description = "可在「设置 → 外观 → 首页」中开启「加载首页榜单」",
                     modifier = Modifier.padding(contentPadding)
                 )
 
