@@ -89,7 +89,7 @@ internal val LocalLiquidBottomTabScale =
  *  - 拖动速度驱动横向拉伸 / 纵向压缩；
  *  - 松手后按目标索引吸附，并通知导航切页。
  *
- * 与示例的差异只有内容与配色适配：图标/文字换成 AsmrOne 的四个标签，
+ * 与示例的差异只有内容与配色适配：图标/文字换成 ToAsmr 的四个标签，
  * 容器色使用主题 surface（40%）。
  *
  * 调用方需要在内容层挂 `Modifier.layerBackdrop(backdrop)`。

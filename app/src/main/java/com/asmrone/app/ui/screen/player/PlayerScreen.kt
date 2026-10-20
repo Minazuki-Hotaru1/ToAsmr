@@ -4,6 +4,9 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
@@ -47,6 +50,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.asmrone.app.ui.component.LiquidSlider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -92,6 +97,7 @@ import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.player.AudioController
+import com.asmrone.app.player.LyricsOverlay
 import com.asmrone.app.player.PlayQueuePolicy
 import com.asmrone.app.ui.component.CoverImage
 import com.asmrone.app.ui.component.PlayingIndicator
@@ -135,6 +141,20 @@ fun PlayerScreen(
     val playMode by AppPrefs.playMode.collectAsState()
     val context = LocalContext.current
     val toast = rememberToastState()
+
+    // 悬浮窗歌词：开关状态就是 AppPrefs 里那一个布尔值 ——
+    // 悬浮窗内部点「删除」时也能把这里的图标同步关掉，不用两边各存一份。
+    val overlayLyricsOn by AppPrefs.overlayLyrics.collectAsState()
+    val overlayPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        val shown = LyricsOverlay.show(context)
+        AppPrefs.setOverlayLyrics(shown)
+        if (!shown) toast.show("没有获得悬浮窗权限")
+    }
+    LaunchedEffect(Unit) {
+        LyricsOverlay.restore(context)
+    }
 
     // 播放器是深色沉浸页：临时把系统栏图标切成白色，离开时恢复应用主题的设置。
     // 作为「迷你播放器展开」的覆盖层时，只有铺满屏幕后才切，避免在亮色 app 上提前出现白图标。
@@ -257,7 +277,7 @@ fun PlayerScreen(
                 .fillMaxSize()
                 .navigationBarsPadding()
         ) {
-            // ── 顶部：收起 + 队列（Apple Music 的极简 chrome）──
+            // ── 顶部：收起 + 分享（Apple Music 的极简 chrome）──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -274,8 +294,9 @@ fun PlayerScreen(
                 Spacer(Modifier.weight(1f))
                 // 分享：只复制链接，不调系统分享面板 —— 这个 app 的分享场景
                 // 基本是"把作品发给同好"，一个链接比一堆 App 图标更快。
-                PlayerTextButton(
-                    text = "分享",
+                PlayerIconButton(
+                    iconRes = R.drawable.ic_share_fluent,
+                    contentDescription = "复制作品链接",
                     onClick = {
                         val link = shareLink(state.workSourceId, state.workId)
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -286,12 +307,6 @@ fun PlayerScreen(
                             toast.show("暂时没有可分享的链接")
                         }
                     }
-                )
-                PlayerIconButton(
-                    iconRes = R.drawable.ic_queue_fluent,
-                    contentDescription = "播放队列",
-                    onClick = { showQueue = true },
-                    enabled = state.tracks.isNotEmpty()
                 )
             }
 
@@ -391,7 +406,9 @@ fun PlayerScreen(
             // 五个按钮：上一首 / 下一首两侧各加一个**跳转**键 ——
             // 右侧 +30 秒（跳过还没听到的一段，ASMR 常见的"直接进正题"），
             // 左侧 −5 秒（回退刚听过的一小段，复听一句刚才没听清的台词）。
-            // 两者都是纯文字，不加图标。
+            // 图标用**描边**的双箭头（与上一首/下一首的描边风格一致），
+            // 秒数仍由下方的小字给出 —— 这两个动作的时长不是平台惯例值，
+            // 只靠图标无法表达"5 秒"还是"10 秒"。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -400,6 +417,7 @@ fun PlayerScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 PlayerSkipButton(
+                    iconRes = R.drawable.ic_rewind_outline_fluent,
                     label = "-5s",
                     contentDescription = "回退 5 秒",
                     onClick = { AudioController.skipBack(5) },
@@ -461,6 +479,7 @@ fun PlayerScreen(
                 }
 
                 PlayerSkipButton(
+                    iconRes = R.drawable.ic_fast_forward_outline_fluent,
                     label = "+30s",
                     contentDescription = "快进 30 秒",
                     onClick = { AudioController.skipForward(30) },
@@ -470,10 +489,12 @@ fun PlayerScreen(
 
             Spacer(Modifier.height(6.dp))
 
-            // ── 底部四个文字入口：定时 / 播放模式 / 播放队列 / 设置 ──
+            // ── 底部四个入口：定时 / 播放模式 / 播放队列 / 设置 ──
             //
-            // 刻意用纯文字而不是图标：这几项都是低频操作，文字反而更好认；
-            // 也和 Apple Music 底部那一排"歌词 / 播放队列 / 更多"的观感一致。
+            // 只留图标，不再带文字：这一排是低频的"工具"入口，文字说明会让
+            // 底部显得拥挤，而且和上方传输控制之间没有视觉分区时更像"没做完"。
+            // 四个 Fluent 图标（timer / repeat / queue / settings）本身语义足够清楚，
+            // 文案改由 contentDescription 承担，不影响无障碍朗读。
             //
             // 播放模式（列表 / 单曲 / 随机）放在这里而不是设置里：它会随手切换，
             // 属于"当前这次播放"的一部分，藏进设置会多点两下。
@@ -484,24 +505,69 @@ fun PlayerScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                PlayerTextButton(
-                    text = sleepTimerLabel,
+                PlayerBottomIconButton(
+                    iconRes = R.drawable.ic_timer_fluent,
+                    contentDescription = if (state.sleepTimerRemainingMs > 0L) {
+                        "定时关闭（$sleepTimerLabel）"
+                    } else {
+                        "定时关闭"
+                    },
                     onClick = { showSleepTimer = true }
                 )
-                PlayerTextButton(
-                    text = PlayQueuePolicy.label(playMode),
+                PlayerBottomIconButton(
+                    iconRes = when (playMode) {
+                        PlayQueuePolicy.MODE_SINGLE -> R.drawable.ic_repeat_one_fluent
+                        PlayQueuePolicy.MODE_SHUFFLE -> R.drawable.ic_shuffle_fluent
+                        else -> R.drawable.ic_repeat_all_fluent
+                    },
+                    contentDescription = "播放模式：${PlayQueuePolicy.label(playMode)}",
                     onClick = {
                         val next = PlayQueuePolicy.nextMode(playMode)
                         AppPrefs.setPlayMode(next)
                         toast.show(PlayQueuePolicy.label(next))
                     }
                 )
-                PlayerTextButton(
-                    text = "播放队列",
+                PlayerBottomIconButton(
+                    iconRes = R.drawable.ic_queue_outline_fluent,
+                    contentDescription = "播放队列",
                     onClick = { showQueue = true }
                 )
-                PlayerTextButton(
-                    text = "设置",
+                // 悬浮窗歌词：开着的时候图标保持高亮（白），关着是常规的 62% 白。
+                // 状态不跟播放器生命周期绑定 —— 退出播放页窗口还在，正是这个功能的用途。
+                PlayerBottomIconButton(
+                    iconRes = R.drawable.ic_picture_in_picture_fluent,
+                    contentDescription = if (overlayLyricsOn) "关闭悬浮窗歌词" else "悬浮窗歌词",
+                    active = overlayLyricsOn,
+                    onClick = {
+                        when {
+                            LyricsOverlay.isShowing -> {
+                                LyricsOverlay.hide()
+                                AppPrefs.setOverlayLyrics(false)
+                            }
+
+                            !LyricsOverlay.canDraw(context) -> {
+                                toast.show("请在系统设置里允许「显示在其他应用上层」")
+                                runCatching {
+                                    overlayPermissionLauncher.launch(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:${context.packageName}")
+                                        )
+                                    )
+                                }
+                            }
+
+                            else -> {
+                                val shown = LyricsOverlay.show(context)
+                                AppPrefs.setOverlayLyrics(shown)
+                                if (!shown) toast.show("悬浮窗歌词打开失败")
+                            }
+                        }
+                    }
+                )
+                PlayerBottomIconButton(
+                    iconRes = R.drawable.ic_settings_fluent,
+                    contentDescription = "播放设置",
                     onClick = { showSettings = true }
                 )
             }
@@ -551,48 +617,61 @@ fun PlayerScreen(
     }
 }
 
-/** 播放器底部的文字入口（定时 / 播放队列 / 设置） */
+/** 播放器底部的纯图标入口（定时 / 播放模式 / 播放队列 / 悬浮歌词 / 设置） */
 @Composable
-private fun PlayerTextButton(text: String, onClick: () -> Unit) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge.copy(
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium
-        ),
-        color = PlayerSecondary,
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp)
-    )
+private fun PlayerBottomIconButton(
+    @DrawableRes iconRes: Int,
+    contentDescription: String,
+    onClick: () -> Unit,
+    active: Boolean = false
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.size(48.dp)
+    ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = contentDescription,
+            tint = if (active) PlayerText else PlayerSecondary,
+            modifier = Modifier.size(22.dp)
+        )
+    }
 }
 
 /**
  * 播放器底部的快捷跳转键（−5s / +30s）。
  *
- * 刻意做成文字：这一对按钮只在"想跳过一段"时才用，占 56dp 宽度刚好，
- * 加图标反而会让两侧与上一首/下一首的图标视觉重量失衡。
+ * 图标用描边的双箭头（Rewind / Fast Forward），和上一首 / 下一首的描边图标同重；
+ * 具体秒数放在图标下方的小字里 —— 5 秒 / 30 秒不是平台标准值，光看图标说不清。
  */
 @Composable
 private fun PlayerSkipButton(
+    @DrawableRes iconRes: Int,
     label: String,
     contentDescription: String,
     onClick: () -> Unit,
     enabled: Boolean
 ) {
-    Box(
+    Column(
         modifier = Modifier
-            .size(width = 48.dp, height = 56.dp)
+            .size(width = 52.dp, height = 60.dp)
             .clip(RoundedCornerShape(50))
             .clickable(enabled = enabled, onClickLabel = contentDescription, onClick = onClick)
             .semantics { this.contentDescription = contentDescription },
-        contentAlignment = Alignment.Center
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            tint = if (enabled) PlayerSecondary else PlayerTertiary,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.height(3.dp))
         Text(
             text = label,
-            style = MaterialTheme.typography.labelLarge.copy(
-                fontSize = 12.sp,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
                 fontWeight = FontWeight.Medium
             ),
             color = if (enabled) PlayerSecondary else PlayerTertiary
@@ -600,7 +679,7 @@ private fun PlayerSkipButton(
     }
 }
 
-/** 播放器顶部的小圆形描边按钮（收起 / 队列） */
+/** 播放器顶部的小圆形描边按钮（收起 / 分享） */
 @Composable
 private fun PlayerIconButton(
     @DrawableRes iconRes: Int,

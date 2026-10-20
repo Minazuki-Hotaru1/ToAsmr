@@ -3,6 +3,7 @@ package com.asmrone.app.data.prefs
 import org.json.JSONObject
 
 import com.asmrone.app.data.audio.AudioCachePolicy
+import com.asmrone.app.data.download.DownloadStorage
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -26,6 +27,9 @@ import kotlinx.coroutines.flow.asStateFlow
 object AppPrefs {
 
     private const val FILE = "asmrone_prefs"
+
+    /** [overlayPosX]/[overlayPosY] 的"还没记录过"哨兵值 */
+    const val OVERLAY_POS_UNSET = Int.MIN_VALUE
 
     private lateinit var sp: SharedPreferences
 
@@ -189,10 +193,117 @@ object AppPrefs {
     }
 
     /**
+     * 悬浮窗歌词是否开启。
+     *
+     * 持久化的理由：用户打开它之后往往会切到别的 App 边听边看歌词，
+     * 这时本应用被切到后台、甚至界面被回收；重新回到前台时如果不恢复，
+     * 悬浮窗就"莫名其妙关了"。权限被用户撤销时 [setOverlayLyrics] 之外
+     * 还会有一道 `Settings.canDrawOverlays` 的检查兜底。
+     */
+    private val _overlayLyrics = MutableStateFlow(false)
+    val overlayLyrics: StateFlow<Boolean> = _overlayLyrics.asStateFlow()
+
+    fun setOverlayLyrics(value: Boolean) {
+        _overlayLyrics.value = value
+        sp.edit().putBoolean(KEY_OVERLAY_LYRICS, value).apply()
+    }
+
+    /**
+     * 新下载默认存哪：[DownloadStorage.APP]（App 私有目录）或
+     * [DownloadStorage.LOCAL]（公共存储里的 `ToAsmr/`）。
+     *
+     * 它只是「新任务的默认值」——已经排队的任务在 [DownloadStorage] 里
+     * 各自记着自己的目标目录，中途改这里不会把它们的文件拆到两处。
+     */
+    private val _downloadStorage = MutableStateFlow(DownloadStorage.APP)
+    val downloadStorage: StateFlow<DownloadStorage> = _downloadStorage.asStateFlow()
+
+    fun setDownloadStorage(value: DownloadStorage) {
+        _downloadStorage.value = value
+        sp.edit().putString(KEY_DOWNLOAD_STORAGE, value.name).apply()
+    }
+
+    /**
+     * 本地保存的根目录（绝对路径）。
+     *
+     * 默认是公共存储根目录下的 `ToAsmr`，也就是用户插上数据线能在
+     * `内部存储/ToAsmr` 里直接看到的位置。改这个值不会搬动已经存下的作品
+     * （每个作品的清单里记着自己的目录），只影响之后的新下载与"另存到本地"。
+     */
+    private val _localDownloadDir = MutableStateFlow(defaultLocalDownloadDir())
+    val localDownloadDir: StateFlow<String> = _localDownloadDir.asStateFlow()
+
+    fun setLocalDownloadDir(path: String) {
+        val normalized = path.trim().trimEnd('/')
+        if (normalized.isBlank()) return
+        _localDownloadDir.value = normalized
+        sp.edit().putString(KEY_LOCAL_DOWNLOAD_DIR, normalized).apply()
+    }
+
+    fun resetLocalDownloadDir() {
+        setLocalDownloadDir(defaultLocalDownloadDir())
+    }
+
+    private fun defaultLocalDownloadDir(): String {
+        val root = android.os.Environment.getExternalStorageDirectory().absolutePath
+        return "$root/ToAsmr"
+    }
+
+    // ── 悬浮窗歌词的外观设置 ──
+    // 这几项只有悬浮窗自己在读写，界面不观察它们（不需要重组），
+    // 所以用普通 get/set 而不是 StateFlow。
+
+    /** 锁定后窗口不能拖动（防止误挪），但仍可点开工具条解锁 */
+    fun overlayLocked(): Boolean = sp.getBoolean(KEY_OVERLAY_LOCKED, false)
+
+    fun setOverlayLocked(value: Boolean) {
+        sp.edit().putBoolean(KEY_OVERLAY_LOCKED, value).apply()
+    }
+
+    /** 歌词文字颜色（ARGB） */
+    fun overlayTextColor(): Int = sp.getInt(KEY_OVERLAY_COLOR, 0xFFFFFFFF.toInt())
+
+    fun setOverlayTextColor(argb: Int) {
+        sp.edit().putInt(KEY_OVERLAY_COLOR, argb).apply()
+    }
+
+    /** 歌词主行字号（sp） */
+    fun overlayTextSize(): Int = sp.getInt(KEY_OVERLAY_SIZE, 15).coerceIn(10, 32)
+
+    fun setOverlayTextSize(value: Int) {
+        sp.edit().putInt(KEY_OVERLAY_SIZE, value.coerceIn(10, 32)).apply()
+    }
+
+    /** 歌词文字不透明度（10..100） */
+    fun overlayTextAlpha(): Int = sp.getInt(KEY_OVERLAY_ALPHA, 100).coerceIn(10, 100)
+
+    fun setOverlayTextAlpha(value: Int) {
+        sp.edit().putInt(KEY_OVERLAY_ALPHA, value.coerceIn(10, 100)).apply()
+    }
+
+    /**
+     * 悬浮窗上次拖到的位置（窗口坐标偏移，`x` 相对水平居中、`y` 相对顶边）。
+     *
+     * 关掉再打开、甚至重启应用后都要回到原处 —— 用户是特意把它挪开的，
+     * 每次重开都跳回屏幕顶部中间会很难受。没记录过时返回 [OVERLAY_POS_UNSET]。
+     */
+    fun overlayPosX(): Int = sp.getInt(KEY_OVERLAY_POS_X, OVERLAY_POS_UNSET)
+
+    fun overlayPosY(): Int = sp.getInt(KEY_OVERLAY_POS_Y, OVERLAY_POS_UNSET)
+
+    fun setOverlayPos(x: Int, y: Int) {
+        sp.edit()
+            .putInt(KEY_OVERLAY_POS_X, x)
+            .putInt(KEY_OVERLAY_POS_Y, y)
+            .apply()
+    }
+
+    /**
      * 上次选择的收藏夹 id。
      *
-     * 点收藏按钮时默认选它；第一次（空）则回退到系统的「我标记的」收藏夹。
-     * 对应需求："默认选择上一次选择的收藏夹，第一次则选择我标记的"。
+     * 点收藏按钮会**直接**把作品放进它（不再弹窗）；第一次（空）
+     * 则回退到系统的「我喜欢的」收藏夹。只有点提示里的「修改」
+     * 或者在弹窗里换了收藏夹时才会更新这个值。
      */
     private val _lastSelectedPlaylistId = MutableStateFlow("")
     val lastSelectedPlaylistId: StateFlow<String> = _lastSelectedPlaylistId.asStateFlow()
@@ -301,6 +412,13 @@ object AppPrefs {
         _autoNext.value = sp.getBoolean(KEY_AUTO_NEXT, true)
         _themeMode.value = sp.getInt(KEY_THEME_MODE, 0)
         _libraryTab.value = sp.getInt(KEY_LIBRARY_TAB, 0)
+        _overlayLyrics.value = sp.getBoolean(KEY_OVERLAY_LYRICS, false)
+        _downloadStorage.value = sp.getString(KEY_DOWNLOAD_STORAGE, null)
+            ?.let { runCatching { DownloadStorage.valueOf(it) }.getOrNull() }
+            ?: DownloadStorage.APP
+        _localDownloadDir.value = sp.getString(KEY_LOCAL_DOWNLOAD_DIR, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: defaultLocalDownloadDir()
         _lastSelectedPlaylistId.value = sp.getString(KEY_LAST_PLAYLIST, "") ?: ""
     }
 
@@ -434,6 +552,15 @@ object AppPrefs {
     private const val KEY_AUTO_NEXT = "auto_next"
     private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_LIBRARY_TAB = "library_tab"
+    private const val KEY_OVERLAY_LYRICS = "overlay_lyrics"
+    private const val KEY_DOWNLOAD_STORAGE = "download_storage"
+    private const val KEY_LOCAL_DOWNLOAD_DIR = "local_download_dir"
+    private const val KEY_OVERLAY_LOCKED = "overlay_locked"
+    private const val KEY_OVERLAY_COLOR = "overlay_color"
+    private const val KEY_OVERLAY_SIZE = "overlay_size"
+    private const val KEY_OVERLAY_ALPHA = "overlay_alpha"
+    private const val KEY_OVERLAY_POS_X = "overlay_pos_x"
+    private const val KEY_OVERLAY_POS_Y = "overlay_pos_y"
     private const val KEY_LAST_PLAYLIST = "last_selected_playlist"
     private const val KEY_AUTO_SYNC_DAYS = "auto_sync_days"
 }

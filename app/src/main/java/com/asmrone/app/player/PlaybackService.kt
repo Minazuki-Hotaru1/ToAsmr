@@ -207,7 +207,7 @@ class PlaybackService : Service() {
         val builder = MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, state.trackTitle.ifBlank { state.workTitle })
             .putString(MediaMetadata.METADATA_KEY_ARTIST, state.workTitle)
-            .putString(MediaMetadata.METADATA_KEY_ALBUM, "AsmrOne")
+            .putString(MediaMetadata.METADATA_KEY_ALBUM, "ToAsmr")
             .putLong(MediaMetadata.METADATA_KEY_DURATION, state.durationMs.toLong())
         coverBitmap?.let { builder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
         session.setMetadata(builder.build())
@@ -245,7 +245,7 @@ class PlaybackService : Service() {
     }
 
     private fun buildNotification(state: PlayerState): Notification {
-        val title = state.trackTitle.ifBlank { state.workTitle }.ifBlank { "AsmrOne" }
+        val title = state.trackTitle.ifBlank { state.workTitle }.ifBlank { "ToAsmr" }
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_headphones_fluent)
             .setContentTitle(title)
@@ -387,8 +387,8 @@ class PlaybackService : Service() {
     }
 
     companion object {
-        private const val TAG = "AsmrOnePlayback"
-        private const val SESSION_TAG = "AsmrOne"
+        private const val TAG = "ToAsmrPlayback"
+        private const val SESSION_TAG = "ToAsmr"
         private const val CHANNEL_ID = "playback"
         private const val NOTIFICATION_ID = 1001
         private const val COVER_PX = 256

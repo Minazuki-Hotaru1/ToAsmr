@@ -40,7 +40,9 @@ data class DownloadManifest(
     /** 完整文件树（不是只有已下载的那些） */
     val tree: List<Track>,
     /** 已下载的文件，按树内路径索引 */
-    val files: Map<String, DownloadedFile>
+    val files: Map<String, DownloadedFile>,
+    /** 这份清单落在哪个目录：App 私有目录还是用户选的公共目录（旧清单没有该字段 → APP） */
+    val storage: DownloadStorage = DownloadStorage.APP
 ) {
     val fileCount: Int get() = files.size
 
@@ -62,6 +64,8 @@ data class DownloadManifest(
         put("workId", workId)
         put("host", host)
         put("savedAt", savedAt)
+        // 新增字段，向后兼容：旧版本读到不认识的键会忽略，新版本读到缺省值按 APP
+        put("s", storage.name)
         workJson?.takeIf { it.isNotBlank() }?.let { put("work", it) }
         put("tree", TrackJson.encodeTree(tree))
         put(
@@ -117,18 +121,27 @@ data class DownloadManifest(
                 savedAt = o.optLong("savedAt", 0L),
                 workJson = o.optString("work").ifBlank { null },
                 tree = tree,
-                files = files
+                files = files,
+                storage = DownloadStorage.entries
+                    .firstOrNull { it.name == o.optString("s") } ?: DownloadStorage.APP
             )
         }
 
         /** 空清单（还没有任何文件落盘时的初始值） */
-        fun empty(workId: Int, host: String, workJson: String?, tree: List<Track>) = DownloadManifest(
+        fun empty(
+            workId: Int,
+            host: String,
+            workJson: String?,
+            tree: List<Track>,
+            storage: DownloadStorage = DownloadStorage.APP
+        ) = DownloadManifest(
             workId = workId,
             host = host,
             savedAt = System.currentTimeMillis(),
             workJson = workJson,
             tree = tree,
-            files = emptyMap()
+            files = emptyMap(),
+            storage = storage
         )
     }
 }

@@ -58,6 +58,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.lyrics.LyricsLoader
+import com.asmrone.app.data.model.OpenableFile
 import com.asmrone.app.data.prefs.AccountStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.prefs.LibraryStore
@@ -71,6 +72,8 @@ import com.asmrone.app.ui.component.LocalBottomBarState
 import com.asmrone.app.ui.component.LocalStableNavigationBarBottom
 import com.asmrone.app.ui.component.LocalStableStatusBarTop
 import com.asmrone.app.ui.component.MiniPlayerBar
+import com.asmrone.app.ui.component.viewer.TextViewerPage
+import com.asmrone.app.ui.component.viewer.TextViewerState
 import com.asmrone.app.ui.navigation.AppNavGraph
 import com.asmrone.app.ui.navigation.Routes
 import com.asmrone.app.ui.screen.home.HomeViewModel
@@ -83,20 +86,20 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 
-/** 底部导航项（5 项：音声库 / 搜索 / 下载 / 收藏 / 设置；图标为 Fluent 矢量图资源） */
+/** 底部导航项（5 项：音声库 / 搜索 / 收藏 / 下载 / 设置；图标为 Fluent 矢量图资源） */
 private val bottomNavItems = listOf(
     GlassTabItem(Routes.HOME, "音声库", R.drawable.ic_home_fluent, R.drawable.ic_home_outline_fluent),
     GlassTabItem(Routes.SEARCH, "搜索", R.drawable.ic_search_fluent, R.drawable.ic_search_outline_fluent),
     GlassTabItem(
-        // 「下载」：折叠夹 / 打勾的文件夹 —— "已经在本地"比箭头更贴切。
-        // 这个图标是先借用的，等有专门的下载图标再换（不影响布局）。
-        Routes.DOWNLOADS, "下载",
-        R.drawable.ic_folder_check_fluent, R.drawable.ic_folder_fluent
-    ),
-    GlassTabItem(
         // 「收藏」：用书签图标（与详情页收藏按钮语义一致），选中实心 / 未选线框
         Routes.LIBRARY, "收藏",
         R.drawable.ic_bookmark_fluent, R.drawable.ic_bookmark_outline_fluent
+    ),
+    GlassTabItem(
+        // 「下载」：Fluent 的 arrow-download（箭头落进托盘），是平台通用的下载语义。
+        // 之前借用的文件夹图标在 24dp 下和「收藏夹 / 本地文件」分不开，容易误解。
+        Routes.DOWNLOADS, "下载",
+        R.drawable.ic_arrow_download_fluent, R.drawable.ic_arrow_download_fluent
     ),
     GlassTabItem(
         Routes.SETTINGS, "设置",
@@ -501,6 +504,36 @@ fun MainApp(openPlayerRequest: Int = 0) {
                 visible = playerOverlayVisible,
                 onBack = { closePlayerOverlay() }
             )
+        }
+
+        // ── 文本查看器覆盖层 ──
+        //
+        // 挂在最外层、与播放器覆盖层并列：它要盖住迷你播放器与底栏，
+        // 而且**不能**再用 Dialog —— 对话框窗口会在退出动画期间留一层
+        // 系统遮罩，表现为"关闭后约一秒的灰色、点不动的界面"。
+        //
+        // 退出动画期间状态已经变回 null，所以要多留一份 lastFile 给
+        // AnimatedVisibility 播完再走。
+        val textViewerFile by TextViewerState.file.collectAsState()
+        var lastTextViewerFile by remember { mutableStateOf<OpenableFile?>(null) }
+        LaunchedEffect(textViewerFile) {
+            if (textViewerFile != null) lastTextViewerFile = textViewerFile
+        }
+        AnimatedVisibility(
+            visible = textViewerFile != null,
+            // 与播放器覆盖层同一套弹簧：从底部推上来、原路滑下去
+            enter = slideInVertically(
+                initialOffsetY = { it },
+                animationSpec = spring(dampingRatio = 1f, stiffness = 320f)
+            ) + fadeIn(tween(200)),
+            exit = slideOutVertically(
+                targetOffsetY = { it },
+                animationSpec = spring(dampingRatio = 1f, stiffness = 380f)
+            ) + fadeOut(tween(180))
+        ) {
+            lastTextViewerFile?.let { file ->
+                TextViewerPage(file = file, onClose = { TextViewerState.close() })
+            }
         }
     }
 }

@@ -45,7 +45,7 @@ class EmbeddedLyricsGuardTest {
         )
 
         val repo = source("data/repo/AsmrRepository.kt")
-        assertTrue("已下载的文件应当直接读本地", repo.contains("DownloadStore.localFileFor("))
+        assertTrue("已下载的文件应当直接读本地", repo.contains("DownloadSources.localFileFor("))
         assertTrue(repo.contains("api.readPrefix("))
 
         val api = source("data/remote/AsmrOneApi.kt")

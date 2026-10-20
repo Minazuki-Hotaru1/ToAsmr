@@ -115,9 +115,10 @@ class PlaylistLifecycleTest {
     fun `★ 确认成功后只清 dirty，不再重复改内容与件数`() {
         // 旧实现的成功路径又调了一次 patchPlaylistWorksCache，而那个函数会
         // 无条件把件数 ±1 —— 于是"成功收藏一次，列表里显示 +2"。
-        val body = functionBody(repoSource, "suspend fun addWorkToPlaylist(")
+        // 快捷收藏重构后：本地那一半在 addWorkToPlaylist，网络那一半（含成功/失败分支）
+        // 搬到了 sendPlaylistAdd。这里断言的是网络那半的行为。
+        val body = functionBody(repoSource, "private suspend fun sendPlaylistAdd(")
         assertTrue(body.isNotEmpty())
-        // 只取 `runCatching { … }` 成功分支 —— 它前面的"本地先行"patch 是要保留的
         val successRegion = body.substringAfter("return runCatching {").substringBefore("getOrElse")
         assertTrue(
             "成功路径应当只清 dirty",
@@ -152,7 +153,7 @@ class PlaylistLifecycleTest {
 
     @Test
     fun `★ 加入失败且收藏夹不存在时：不记待补写 + 撤销本地改动 + 给出理由`() {
-        val body = functionBody(repoSource, "suspend fun addWorkToPlaylist(")
+        val body = functionBody(repoSource, "private suspend fun sendPlaylistAdd(")
         assertTrue(body.isNotEmpty())
 
         // 精确取出 `if (e is PlaylistNotFoundException) { … }` 这一块。
@@ -178,7 +179,7 @@ class PlaylistLifecycleTest {
 
     @Test
     fun `★ 移出失败且收藏夹不存在时同样不记待补写`() {
-        val body = functionBody(repoSource, "suspend fun removeWorkFromPlaylist(")
+        val body = functionBody(repoSource, "private suspend fun sendPlaylistRemove(")
         assertTrue(body.isNotEmpty())
         val block = bracedBlockAfter(body, "is PlaylistNotFoundException")
         assertTrue("必须识别这个异常，实际函数体：\n$body", block.isNotEmpty())
@@ -190,7 +191,8 @@ class PlaylistLifecycleTest {
 
     @Test
     fun `★ 删收藏夹时丢掉它的待补写，不再为它同步`() {
-        val body = functionBody(repoSource, "suspend fun deletePlaylist(")
+        // 界面「本地先行」删除 → deletePlaylistLocally 清痕迹；网络那半是 deletePlaylistRemote
+        val body = functionBody(repoSource, "fun deletePlaylistLocally(")
         assertTrue(body.isNotEmpty())
         assertTrue(
             "★ 用户删掉收藏夹 = 不要里面的内容了 → 必须清掉它的待补写记录",

@@ -31,7 +31,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.data.model.Work
-import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
 import com.asmrone.app.ui.component.EmptyHint
@@ -72,7 +71,6 @@ fun SearchResultScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val host = remember { AsmrRepository.host }
-    val progressMap by LibraryStore.progress.collectAsState()
     val backdrop = rememberLayerBackdrop()
 
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -111,7 +109,6 @@ fun SearchResultScreen(
                 else -> WorkResultGrid(
                     works = state.results,
                     host = host,
-                    progressMap = progressMap,
                     // 顶部让开玻璃栏的高度（与收藏夹详情页同一套算法），
                     // 否则第一行卡片会被顶栏压住
                     contentPadding = PaddingValues(

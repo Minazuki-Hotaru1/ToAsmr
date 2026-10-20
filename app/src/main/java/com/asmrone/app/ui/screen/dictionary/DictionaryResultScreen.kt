@@ -19,7 +19,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.data.repo.DictionaryQuery
 import com.asmrone.app.ui.component.EmptyHint
@@ -57,7 +56,6 @@ fun DictionaryResultScreen(
 
     val state by viewModel.state.collectAsState()
     val host = remember { AsmrRepository.host }
-    val progressMap by LibraryStore.progress.collectAsState()
     val backdrop = rememberLayerBackdrop()
 
     val density = LocalDensity.current
@@ -89,7 +87,6 @@ fun DictionaryResultScreen(
                 else -> WorkResultGrid(
                     works = state.works,
                     host = host,
-                    progressMap = progressMap,
                     // 顶部让开玻璃栏的高度（与搜索结果页同一套算法）
                     contentPadding = PaddingValues(
                         top = with(density) { barHeight.toDp() } + Liquid.CONTENT_TOP_GAP,

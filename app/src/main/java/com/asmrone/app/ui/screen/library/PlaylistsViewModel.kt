@@ -6,6 +6,7 @@ import com.asmrone.app.data.cache.SyncTrigger
 import com.asmrone.app.data.model.Playlist
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.repo.AsmrRepository
+import com.asmrone.app.data.sync.PendingSync
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,10 +105,18 @@ class PlaylistsViewModel : ViewModel() {
         }
     }
 
+    /**
+     * @param successToast 对齐成功后要弹的一条提示（新建收藏夹用）。
+     *
+     * ⚠️ 必须由这里在**这次**同步的落点上写，而不是调用方先 `copy(toastMessage=…)`
+     * 再调 [sync]：同步的收尾会整体重建 `PlaylistsUiState`，那条提示会被立刻覆盖掉，
+     * 用户什么也看不到。
+     */
     private fun sync(
         trigger: SyncTrigger?,
         userInitiated: Boolean,
-        notifyOnFailure: Boolean = false
+        notifyOnFailure: Boolean = false,
+        successToast: String? = null
     ) {
         // 先铺本地，避免对齐期间空白
         AsmrRepository.cachedPlaylists()?.let { cached ->
@@ -128,7 +137,8 @@ class PlaylistsViewModel : ViewModel() {
                         playlists = sortPlaylists(list),
                         loading = false,
                         refreshing = false,
-                        syncedAt = AsmrRepository.playlistsSyncedAt()
+                        syncedAt = AsmrRepository.playlistsSyncedAt(),
+                        toastMessage = successToast
                     )
                 }
                 .onFailure { e ->
@@ -141,7 +151,8 @@ class PlaylistsViewModel : ViewModel() {
                         loading = false,
                         refreshing = false,
                         error = if (hasContent) null else reason,
-                        toastMessage = if (notifyOnFailure) reason else null
+                        // 新建成功但这次对齐失败：收藏夹确实建好了，提示不能被错误信息顶掉
+                        toastMessage = successToast ?: if (notifyOnFailure) reason else null
                     )
                 }
         }
@@ -151,12 +162,70 @@ class PlaylistsViewModel : ViewModel() {
     private fun sortPlaylists(list: List<Playlist>): List<Playlist> =
         list.sortedByDescending { it.isSystem }
 
+    /**
+     * 删除收藏夹（**本地先行**：列表里立刻消失，云端在后台删）。
+     *
+     * 与收藏/标记同一套语义：先让用户看到结果，网络失败再靠一次对齐把它读回来并提示。
+     * 系统收藏夹在这里就拦掉，仓库里还有第二道拦截。
+     */
     fun delete(playlist: Playlist) {
+        if (playlist.isSystem) {
+            _state.value = _state.value.copy(
+                toastMessage = "「${playlist.displayName}」是系统收藏夹，不能删除"
+            )
+            return
+        }
+        // ① 本地先行：清缓存 + 从列表里摘掉
+        AsmrRepository.deletePlaylistLocally(playlist)
+        _state.value = _state.value.copy(
+            playlists = _state.value.playlists.filterNot { it.id == playlist.id },
+            // 本地已经没了 → 立刻给反馈（云端失败会再提示一次并把它读回来）
+            toastMessage = "已删除「${playlist.displayName}」"
+        )
+
+        // ② 云端后台删；失败就把列表对齐回来（收藏夹其实还在）并提示
+        val key = "playlist-delete:${playlist.id}"
+        PendingSync.hold(key) {
+            val result = AsmrRepository.deletePlaylistRemote(playlist)
+            if (result.isFailure) {
+                val reason = result.exceptionOrNull()?.message ?: "网络异常"
+                sync(SyncTrigger.USER_REFRESH, userInitiated = false)
+                _state.value = _state.value.copy(toastMessage = "删除失败：$reason")
+            }
+        }
+        PendingSync.schedule(key, 0L)
+    }
+
+    /**
+     * 新建收藏夹（「列表」页签顶栏的按钮）。
+     *
+     * 创建成功后**必须重新拉一次列表**：`createPlaylist` 只返回 id、
+     * 并作废了本地列表缓存（见 `AsmrRepository.createPlaylist`），
+     * 新条目要等服务端那份列表回来才有名字/封面/系统标记这些字段。
+     *
+     * 名字为空不当作错误弹错误页，只给一条轻量提示 —— 用户可能只是手滑点了按钮。
+     */
+    fun create(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            _state.value = _state.value.copy(toastMessage = "收藏夹名字不能为空")
+            return
+        }
         viewModelScope.launch {
-            AsmrRepository.deletePlaylist(playlist).fold(
-                onSuccess = { sync(SyncTrigger.USER_REFRESH, userInitiated = false) },
+            AsmrRepository.createPlaylist(trimmed).fold(
+                onSuccess = {
+                    // 提示交给 sync 的收尾去写（见 sync 的 successToast 说明），
+                    // 它能活过"整体重建 state"这一下
+                    sync(
+                        SyncTrigger.USER_REFRESH,
+                        userInitiated = false,
+                        successToast = "已新建「$trimmed」"
+                    )
+                },
                 onFailure = { e ->
-                    _state.value = _state.value.copy(error = e.message ?: "删除失败")
+                    _state.value = _state.value.copy(
+                        toastMessage = e.message ?: "新建收藏夹失败"
+                    )
                 }
             )
         }
@@ -283,6 +352,25 @@ class PlaylistDetailViewModel : ViewModel() {
         }
     }
 
+    /**
+     * 本地收藏数据被改动（长按弹窗里移出/移动、别处收藏进本夹）后的重读。
+     *
+     * **只读本地缓存、不发请求**：改动刚由 App 自己写进本地，
+     * 服务端还在 6 秒反悔窗口里没收到，这时去问云端反而会把界面拉回旧状态。
+     * 和 [PlaylistsViewModel.onLocalDataChanged] 同一套思路。
+     */
+    fun onLocalDataChanged() {
+        val result = AsmrRepository.cachedPlaylistWorks(playlistId) ?: return
+        _state.value = _state.value.copy(
+            works = result.works,
+            totalCount = result.totalCount,
+            loadedPages = result.loadedPages,
+            hasMore = result.works.size < result.totalCount,
+            syncedAt = result.syncedAt,
+            pendingIds = AsmrRepository.pendingWorkIdsInPlaylist(playlistId)
+        )
+    }
+
     fun loadMore() {
         val s = _state.value
         if (s.loading || s.loadingMore || !s.hasMore) return
@@ -307,30 +395,36 @@ class PlaylistDetailViewModel : ViewModel() {
         }
     }
 
-    /** 把作品移出当前收藏夹（本地先行：界面立刻消失，网络失败只打标等待重试） */
+    /** 把作品移出当前收藏夹（本地先行：界面立刻消失，网络后台补发） */
     fun removeWork(work: Work) {
-        // 本地立刻摘掉，用户的视角是即时的
+        // 本地立刻摘掉，用户的视角是即时的；同时给一条反馈
         _state.value = _state.value.copy(
             works = _state.value.works.filterNot { it.id == work.id },
             totalCount = (_state.value.totalCount - 1).coerceAtLeast(0),
             playlist = _state.value.playlist?.let {
                 it.copy(worksCount = (it.worksCount - 1).coerceAtLeast(0))
-            }
+            },
+            toastMessage = "已从收藏夹移出"
         )
+        // 本地缓存也补一笔（deferNetwork = true 时只会写本地），网络等进程级计时器发
         viewModelScope.launch {
+            AsmrRepository.removeWorkFromPlaylist(
+                playlistId = playlistId,
+                workId = work.id,
+                deferNetwork = true
+            )
+        }
+        val key = "playlist-write:$playlistId:${work.id}:rm"
+        PendingSync.hold(key) {
             val result = AsmrRepository.removeWorkFromPlaylist(playlistId, work.id)
             if (!result.ok) {
                 // 失败：本地保持"已移除"，只是提示还没送到云端
                 _state.value = _state.value.copy(
                     error = "${result.error}（本地已移除，会在下次同步时重试）"
                 )
-                return@launch
-            }
-            if (!result.changed) {
-                // 云端本来就没有它 —— 正好是我们想要的结果，不必再拉一次列表
-                _state.value = _state.value.copy(error = null)
             }
         }
+        PendingSync.schedule(key, 0L)
     }
 
     /**
@@ -346,7 +440,8 @@ class PlaylistDetailViewModel : ViewModel() {
             _state.value = _state.value.copy(
                 retryingId = null,
                 pendingIds = AsmrRepository.pendingWorkIdsInPlaylist(playlistId),
-                error = error
+                error = error,
+                toastMessage = if (error == null) "已同步" else "同步失败：$error"
             )
         }
     }

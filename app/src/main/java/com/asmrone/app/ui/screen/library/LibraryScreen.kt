@@ -2,6 +2,7 @@ package com.asmrone.app.ui.screen.library
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -38,6 +39,7 @@ import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,11 +76,12 @@ import com.asmrone.app.data.model.CollectionStatus
 import com.asmrone.app.data.model.Playlist
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.prefs.AppPrefs
-import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.ui.component.AsmrFilterChip
 import com.asmrone.app.ui.component.ListHint
+import com.asmrone.app.ui.component.PrefetchNearEnd
 import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
+import com.asmrone.app.ui.component.CompactSearchField
 import com.asmrone.app.ui.component.CoverImage
 import com.asmrone.app.ui.component.EmptyHint
 import com.asmrone.app.ui.component.FluentIcon
@@ -126,9 +129,6 @@ fun LibraryScreen(
     val playlistsViewModel: PlaylistsViewModel = viewModel()
     val playlists by playlistsViewModel.state.collectAsState()
 
-    // 收听进度（与首页/搜索结果同一份数据源）：卡片底部那条 3dp 进度线
-    val progressMap by LibraryStore.progress.collectAsState()
-
     // 页签选择**持久化**：切到「列表」后，离开页面 / 杀进程重开都停在「列表」，
     // 直到用户主动切回「标记」。
     val tab by AppPrefs.libraryTab.collectAsState()
@@ -145,6 +145,15 @@ fun LibraryScreen(
      * 默认**收起**：收藏页的第一屏留给作品本身。
      */
     var filtersExpanded by remember { mutableStateOf(false) }
+
+    // 「列表」页签顶栏的「新建收藏夹」：弹窗开关与输入中的名字。
+    // 名字放在这里（而不是弹窗内部）是为了让"取消后再次打开"仍然是空的 ——
+    // 打开时清空一次，比依赖 remember 的作用域更不容易漏。
+    var createPlaylistOpen by remember { mutableStateOf(false) }
+    var newPlaylistName by remember { mutableStateOf("") }
+    LaunchedEffect(createPlaylistOpen) {
+        if (createPlaylistOpen) newPlaylistName = ""
+    }
 
     // ① 进入收藏页 → 两份数据都"报个到"。
     //
@@ -253,14 +262,13 @@ fun LibraryScreen(
                             state = collection,
                             contentPadding = contentPadding,
                             filtersExpanded = filtersExpanded,
-                            // 与首页卡片一致：底部那条 3dp 收听进度线
-                            progressMap = progressMap,
                             onWorkClick = onWorkClick,
                             onSelectFilter = { collectionViewModel.selectFilter(it) },
                             onRefresh = { collectionViewModel.refresh() },
                             onPullRefresh = { collectionViewModel.pullRefresh() },
                             onLoadMore = { collectionViewModel.loadMore() },
                             onChanged = { work, status -> collectionViewModel.setStatus(work, status) },
+                            onRemoveMark = { collectionViewModel.removeMark(it) },
                             onRetryPending = { collectionViewModel.retryPending(it) }
                         )
 
@@ -270,7 +278,15 @@ fun LibraryScreen(
                             onOpenPlaylist = onOpenPlaylist,
                             onRefresh = { playlistsViewModel.load() },
                             onPullRefresh = { playlistsViewModel.pullRefresh() },
-                            onDelete = { pendingDelete = it }
+                            onDelete = { playlist ->
+                                // 系统收藏夹（我标记的 / 我喜欢的）不能删：给一句提示，
+                                // 而不是让长按毫无反应（用户会以为卡住了）
+                                if (playlist.isSystem) {
+                                    toast.show("「${playlist.displayName}」是系统收藏夹，不能删除")
+                                } else {
+                                    pendingDelete = playlist
+                                }
+                            }
                         )
                     }
                 }
@@ -286,24 +302,45 @@ fun LibraryScreen(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.weight(1f)
             )
-            // 「标记 / 列表」页签切换（40dp 液态玻璃胶囊）。
+            // 左上角这块动作区在两个页签里**是同一个位置**，只是内容不同：
+            //   「标记」→ 状态筛选胶囊（文字＝当前状态，点击展开/收起下方 chip 条）
+            //   「列表」→ 新建收藏夹
             //
-            // 左侧还有一枚**状态筛选**胶囊（只在「标记」页签出现）：
-            // 点击展开/收起下面的状态 chip 条，箭头 90° 旋转；
-            // 胶囊上的文字始终显示当前筛选状态，收起后也知道筛的是什么。
-            if (tab == TAB_MARKED && authState.isLoggedIn) {
-                val arrowRotation by animateFloatAsState(
-                    targetValue = if (filtersExpanded) 90f else 0f,
-                    animationSpec = tween(200),
-                    label = "filterArrow"
-                )
-                TopBarAction(
-                    onClick = { filtersExpanded = !filtersExpanded },
-                    backdrop = backdrop,
-                    iconRes = R.drawable.ic_chevron_right_fluent,
-                    label = collection.filter?.label ?: "全部",
-                    iconRotation = arrowRotation
-                )
+            // 所以用 AnimatedContent 做"换了一身衣服"的过渡：淡入淡出 + 宽度过渡
+            // （SizeTransform 负责长度动画），而不是两个元素各自进退 ——
+            // 后者会让右侧的页签胶囊先被挤开再弹回，看起来像两个按钮在抢位置。
+            if (authState.isLoggedIn) {
+                AnimatedContent(
+                    targetState = tab,
+                    transitionSpec = {
+                        (fadeIn(animationSpec = tween(220)) togetherWith
+                            fadeOut(animationSpec = tween(160)))
+                            .using(SizeTransform(clip = false) { _, _ -> tween(260) })
+                    },
+                    label = "libraryLeftAction"
+                ) { current ->
+                    if (current == TAB_MARKED) {
+                        val arrowRotation by animateFloatAsState(
+                            targetValue = if (filtersExpanded) 90f else 0f,
+                            animationSpec = tween(200),
+                            label = "filterArrow"
+                        )
+                        TopBarAction(
+                            onClick = { filtersExpanded = !filtersExpanded },
+                            backdrop = backdrop,
+                            iconRes = R.drawable.ic_chevron_right_fluent,
+                            label = collection.filter?.label ?: "全部",
+                            iconRotation = arrowRotation
+                        )
+                    } else {
+                        TopBarAction(
+                            onClick = { createPlaylistOpen = true },
+                            backdrop = backdrop,
+                            iconRes = R.drawable.ic_add_fluent,
+                            label = "新建收藏夹"
+                        )
+                    }
+                }
                 Spacer(Modifier.width(6.dp))
             }
 
@@ -319,10 +356,11 @@ fun LibraryScreen(
             )
         }
 
-        // 轻量提示（用户主动刷新失败时）—— 固定在偏下方，不随列表滚动
+        // 轻量提示（用户主动刷新失败时）—— 固定在偏下方，不随列表滚动。
+        // 抬到「导航栏 + 迷你播放器」之上，否则会被它们压住看不见。
         ToastHost(
             state = toast,
-            toastOffset = 72.dp,
+            toastOffset = Liquid.TOAST_OFFSET,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
@@ -337,6 +375,64 @@ fun LibraryScreen(
             onDismiss = { pendingDelete = null }
         )
     }
+
+    if (createPlaylistOpen) {
+        CreatePlaylistDialog(
+            name = newPlaylistName,
+            onNameChange = { newPlaylistName = it },
+            onConfirm = {
+                // 先关弹窗再发请求：新建要等一次网络往返，
+                // 把弹窗留在屏幕上"转圈"没有任何额外信息，列表里出现新条目就是反馈
+                createPlaylistOpen = false
+                playlistsViewModel.create(newPlaylistName)
+            },
+            onDismiss = { createPlaylistOpen = false }
+        )
+    }
+}
+
+/**
+ * 新建收藏夹弹窗（「列表」页签顶栏那个按钮的落点）。
+ *
+ * 与 [PlaylistPickerDialog] 里的"输入名字"保持同一套控件（[CompactSearchField]），
+ * 两处观感一致；这里只做"起名字 + 创建"，不涉及具体作品。
+ */
+@Composable
+private fun CreatePlaylistDialog(
+    name: String,
+    onNameChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("新建收藏夹") },
+        text = {
+            Column {
+                Text(
+                    text = "为收藏夹起个名字，创建后可以在「列表」里看到它。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                CompactSearchField(
+                    value = name,
+                    onValueChange = onNameChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = "收藏夹名称"
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                enabled = name.isNotBlank()
+            ) { Text("新建") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 // ─────────────────────────── 「标记」页签 ───────────────────────────
@@ -347,13 +443,14 @@ private fun CollectionTab(
     contentPadding: PaddingValues,
     /** 状态筛选条是否展开（由顶栏玻璃胶囊控制） */
     filtersExpanded: Boolean,
-    progressMap: Map<Int, Float>,
     onWorkClick: (Int) -> Unit,
     onSelectFilter: (CollectionStatus?) -> Unit,
     onRefresh: () -> Unit,
     onPullRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onChanged: (Work, CollectionStatus?) -> Unit,
+    /** 弹窗里的「删除」：评分与状态整条移出 */
+    onRemoveMark: (Work) -> Unit,
     /** 点某个作品卡片上的「待同步」→ 只重试这一个 */
     onRetryPending: (Int) -> Unit
 ) {
@@ -364,6 +461,12 @@ private fun CollectionTab(
     CollapsibleBottomBarEffect {
         listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
     }
+
+    // 还剩约一屏半就开始取下一页；带筛选时列表是本地算的，不分页，别白喊
+    listState.PrefetchNearEnd(
+        enabled = state.filter == null && state.hasMore && !state.loadingMore,
+        onLoadMore = onLoadMore
+    )
 
     // 入场动画只播一次：滚动回来不重播（与首页 / 搜索结果的 animatedKeys 同一套做法）
     val animatedKeys = remember { mutableSetOf<Int>() }
@@ -519,10 +622,12 @@ private fun CollectionTab(
                         work = work,
                         host = AsmrRepository.host,
                         onClick = { onWorkClick(work.id) },
-                        progress = progressMap[work.id],
                         // 收藏页显示「社团 / 声优 / 年龄分级 / 星级」；
                         // 标签在网页端也没有展示价值，这里关掉。
                         showTags = false,
+                        // 长按 = 修改标记（与点状态角标同一个弹窗），
+                        // 不再提供"长按清掉标记"这种不可撤销的快捷操作
+                        onLongClick = { editing = work },
                         badge = {
                             CollectionStatusBadge(
                                 status = work.collectionStatus,
@@ -563,8 +668,15 @@ private fun CollectionTab(
     editing?.let { work ->
         CollectionStatusDialog(
             title = "标记状态",
+            workTitle = work.title,
             currentStatus = work.collectionStatus,
             currentRating = work.userRating,
+            // 从卡片上的状态角标打开的，说明本来就有标记 → 可以删除
+            canRemove = true,
+            onRemove = {
+                editing = null
+                onRemoveMark(work)
+            },
             onConfirm = { status, _ ->
                 editing = null
                 onChanged(work, status)
@@ -710,6 +822,8 @@ private fun PlaylistsTab(
     onDelete: (Playlist) -> Unit
 ) {
     val listState = rememberLazyStaggeredGridState()
+    // 入场动画只播一次：切回来 / 滚动回来不重播（与「标记」页同一套做法）
+    val animatedKeys = remember { mutableSetOf<String>() }
     CollapsibleBottomBarEffect {
         listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
     }
@@ -757,12 +871,25 @@ private fun PlaylistsTab(
             item(key = "sync_state", span = StaggeredGridItemSpan.FullLine) {
                 SyncStateLine(syncedAt = state.syncedAt)
             }
-            items(state.playlists, key = { it.id }) { playlist ->
-                PlaylistCard(
-                    playlist = playlist,
-                    onClick = { onOpenPlaylist(playlist) },
-                    onLongClick = { if (!playlist.isSystem) onDelete(playlist) }
-                )
+            itemsIndexed(state.playlists, key = { _: Int, playlist: Playlist -> playlist.id }) { index, playlist ->
+                // 与「标记」页 / 首页同一套入场：淡入 + 轻微上移，按序号错峰。
+                // 收藏夹数量一般不多，错峰看起来是"一张张落下来"，不会拖沓。
+                val alpha = remember(playlist.id) {
+                    Animatable(if (playlist.id in animatedKeys) 1f else 0f)
+                }
+                LaunchedEffect(playlist.id) {
+                    if (playlist.id !in animatedKeys) {
+                        animatedKeys.add(playlist.id)
+                        alpha.animateCardEntrance(index)
+                    }
+                }
+                Box(modifier = Modifier.cardEntrance(alpha)) {
+                    PlaylistCard(
+                        playlist = playlist,
+                        onClick = { onOpenPlaylist(playlist) },
+                        onLongClick = { onDelete(playlist) }
+                    )
+                }
             }
         }
         }
@@ -780,7 +907,7 @@ private fun PlaylistsTab(
 private fun PlaylistCard(
     playlist: Playlist,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: (() -> Unit)?
 ) {
     val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Card(

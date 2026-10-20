@@ -201,7 +201,7 @@ object LyricsLoader {
 
         // ③' 歌词文件本身也下载过 → 直接读本地，断网可用（与音频同理）
         val localLyric = runCatching {
-            com.asmrone.app.data.download.DownloadStore.localFileFor(workId, lyric.path)
+            com.asmrone.app.data.download.DownloadSources.localFileFor(workId, lyric.path)
         }.getOrNull()
         val url = lyric.mediaStreamUrl?.takeIf { it.isNotBlank() }
         if (localLyric == null && url == null) {

@@ -1,5 +1,6 @@
 package com.asmrone.app.ui.screen.library
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,13 +13,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
-import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -36,15 +34,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.asmrone.app.R
 import com.asmrone.app.data.model.Work
-import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.ui.component.EmptyHint
 import com.asmrone.app.ui.component.GlassTopBar
+import com.asmrone.app.ui.component.PrefetchNearEnd
+import com.asmrone.app.ui.component.animateCardEntrance
+import com.asmrone.app.ui.component.cardEntrance
 import com.asmrone.app.ui.component.rememberStatusBarTopDp
 import com.asmrone.app.ui.component.ToastHost
 import com.asmrone.app.ui.component.WorkCard
@@ -59,9 +58,12 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
  * 收藏夹详情 —— 展示某个收藏夹里的作品。
  *
  * 作品卡与「标记」页**完全同源**：同一个 `WorkCard` + 同一个瀑布流。
- * 卡片上只多两件事（都是收藏夹特有的）：
- *  - 「待同步」：这条改动还没送到云端，点它重试；
- *  - 封面右下角的移出按钮（长按卡片同样可以移出）。
+ * 卡片上只多一件事（收藏夹特有的）：
+ *  - 「待同步」：这条改动还没送到云端，点它重试。
+ *
+ * 移出/移动作品走**长按卡片** → 收藏夹修改弹窗（多选差集），
+ * 卡片上不再有"点 × 直接移出"的入口：作品可能同时在多个收藏夹里，
+ * 一键移出很容易误操作，而且表达不了"移到另一个收藏夹"。
  *
  * 星数刻意不显示：收藏夹里的作品没有"我的评分"这份数据。
  */
@@ -76,9 +78,22 @@ fun PlaylistDetailScreen(
 
     val state by viewModel.state.collectAsState()
     val backdrop = rememberLayerBackdrop()
-    val progressMap by LibraryStore.progress.collectAsState()
-    var removing by remember { mutableStateOf<Work?>(null) }
     val playlist = state.playlist
+
+    // 长按卡片 → 收藏夹修改弹窗（与详情页收藏按钮同一套多选差集）。
+    // 收藏夹里不再有"点 × 直接移出"这种入口：移出必须经过弹窗，
+    // 因为作品可能同时属于多个收藏夹，直接移出很容易误操作。
+    var pickerOpen by remember { mutableStateOf(false) }
+    var pickerWork by remember { mutableStateOf<Work?>(null) }
+    val pickerViewModel: PlaylistPickerViewModel = viewModel()
+    val pickerState by pickerViewModel.state.collectAsState()
+    val pickerResult by pickerViewModel.result.collectAsState()
+
+    // 本地收藏数据被改动 → 只重读本地缓存（弹窗里移出/移动、别处收藏进本夹）。
+    // 不发请求：改动刚写进本地，云端还在反悔窗口里，问它会把界面拉回旧状态。
+    LaunchedEffect(Unit) {
+        AsmrRepository.libraryChanges.collect { viewModel.onLocalDataChanged() }
+    }
 
     val density = LocalDensity.current
     val statusTopDp = rememberStatusBarTopDp()
@@ -94,6 +109,14 @@ fun PlaylistDetailScreen(
         )
     }
     val listState = rememberLazyStaggeredGridState()
+
+    // 还剩约一屏半就开始取下一页（与首页 / 搜索结果 / 收藏同一套机制）
+    listState.PrefetchNearEnd(
+        enabled = state.hasMore && !state.loadingMore,
+        onLoadMore = { viewModel.loadMore() }
+    )
+    // 入场动画只播一次：滚动回来 / 切出去再进来不重播
+    val animatedKeys = remember { mutableSetOf<Int>() }
 
     // 轻量提示：只在用户主动刷新失败时用（自动对齐失败刻意安静）。
     // 展示后立刻清掉消息，避免离开页面再回来时重复弹出。
@@ -163,16 +186,31 @@ fun PlaylistDetailScreen(
                             }
                         }
 
-                        items(state.works, key = { it.id }) { work ->
-                            PlaylistWorkCard(
-                                work = work,
-                                progress = progressMap[work.id],
-                                pending = work.id in state.pendingIds,
-                                retrying = state.retryingId == work.id,
-                                onClick = { onWorkClick(work.id) },
-                                onRemove = { removing = work },
-                                onRetrySync = { viewModel.retryPending(work) }
-                            )
+                        itemsIndexed(state.works, key = { _: Int, work: Work -> work.id }) { index, work ->
+                            // 与「标记」页完全同一套入场：淡入 + 上移，按序号错峰
+                            val alpha = remember(work.id) {
+                                Animatable(if (work.id in animatedKeys) 1f else 0f)
+                            }
+                            LaunchedEffect(work.id) {
+                                if (work.id !in animatedKeys) {
+                                    animatedKeys.add(work.id)
+                                    alpha.animateCardEntrance(index)
+                                }
+                            }
+                            Box(modifier = Modifier.cardEntrance(alpha)) {
+                                PlaylistWorkCard(
+                                    work = work,
+                                    pending = work.id in state.pendingIds,
+                                    retrying = state.retryingId == work.id,
+                                    onClick = { onWorkClick(work.id) },
+                                    onLongPress = {
+                                        pickerWork = work
+                                        pickerOpen = true
+                                        pickerViewModel.open(work)
+                                    },
+                                    onRetrySync = { viewModel.retryPending(work) }
+                                )
+                            }
                         }
 
                         if (state.hasMore) {
@@ -215,34 +253,38 @@ fun PlaylistDetailScreen(
             // 而每日首次进入也会自动与云端对齐一次 —— 多一个入口只是噪音。
         )
 
-        // 轻量提示（用户主动刷新失败时）—— 固定在偏下方，不随列表滚动
+        // 轻量提示（用户主动刷新失败时）—— 抬到迷你播放器之上，不随列表滚动
         ToastHost(
             state = toast,
-            toastOffset = 72.dp,
+            toastOffset = Liquid.TOAST_OFFSET,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
 
-    // 移出确认
-    removing?.let { work ->
-        AlertDialog(
-            onDismissRequest = { removing = null },
-            title = { Text("移出收藏夹") },
-            text = {
-                Text(
-                    "把「${work.title}」从「${playlist?.displayName ?: "该收藏夹"}」移出？\n\n" +
-                        "作品本身不会被删除。"
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    removing = null
-                    viewModel.removeWork(work)
-                }) { Text("移出", color = ErrorColor) }
-            },
-            dismissButton = {
-                TextButton(onClick = { removing = null }) { Text("取消") }
-            }
+    // 修改收藏夹的结果：关弹窗 + 提示（与详情页同一套消息）
+    LaunchedEffect(pickerResult) {
+        val message = pickerResult
+        if (message != null) {
+            pickerOpen = false
+            if (message.isNotEmpty()) toast.show(message)
+            pickerViewModel.clearResult()
+        }
+    }
+
+    // 移出确认 → 改成长按打开「修改收藏夹」弹窗
+    if (pickerOpen) {
+        PlaylistPickerDialog(
+            workTitle = pickerWork?.title.orEmpty(),
+            state = pickerState,
+            canRemove = true,
+            onToggle = { pickerViewModel.toggle(it.id) },
+            onConfirm = { pickerViewModel.confirm() },
+            onRemove = { pickerViewModel.removeFromAllPlaylists() },
+            onStartCreate = { pickerViewModel.startCreate() },
+            onNewNameChange = { pickerViewModel.onNewNameChange(it) },
+            onCreateConfirm = { pickerViewModel.createAndAdd() },
+            onCancelCreate = { pickerViewModel.cancelCreate() },
+            onDismiss = { pickerOpen = false }
         )
     }
 }
@@ -250,27 +292,27 @@ fun PlaylistDetailScreen(
 /**
  * 收藏夹里的一张作品卡：与「标记」页同一张 [WorkCard]。
  *
- * 卡片上只有两件事是收藏夹特有的：「待同步」角标、封面右下角的移出按钮。
- * 长按卡片同样可以移出（与按钮等价，都会先弹确认）。
+ * 卡片上只有一件事是收藏夹特有的：「待同步」角标（点它重试）。
+ * 移出/移动作品一律走长按 → 收藏夹修改弹窗，卡片上不再有任何直接移出的按钮。
+ *
+ * 星数不显示：收藏夹里的作品没有"我的评分"这份数据。
  */
 @Composable
 private fun PlaylistWorkCard(
     work: Work,
-    progress: Float?,
     pending: Boolean,
     retrying: Boolean,
     onClick: () -> Unit,
-    onRemove: () -> Unit,
+    onLongPress: () -> Unit,
     onRetrySync: () -> Unit
 ) {
     WorkCard(
         work = work,
         host = AsmrRepository.host,
         onClick = onClick,
-        progress = progress,
         // 与「标记」页一致：不显示标签；星数也不显示（收藏夹没有这份数据）
         showTags = false,
-        onLongClick = onRemove,
+        onLongClick = onLongPress,
         badge = {
             if (pending) {
                 Box(
@@ -282,25 +324,6 @@ private fun PlaylistWorkCard(
                 ) {
                     if (retrying) BusyDot() else OverlayPill(text = "待同步", color = ErrorColor)
                 }
-            }
-
-            // 移出：右下角的小圆钮（半透明白底，任何封面上都看得清）
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(6.dp)
-                    .size(24.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
-                    .clickable(onClick = onRemove),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_close_fluent),
-                    contentDescription = "移出收藏夹",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(13.dp)
-                )
             }
         }
     )

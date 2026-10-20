@@ -31,6 +31,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.R
 import com.asmrone.app.data.model.CollectionStatus
+import com.asmrone.app.ui.component.ConfirmDeleteDialog
 import com.asmrone.app.ui.component.SmallTagChip
 import com.asmrone.app.ui.component.TagTone
 import com.asmrone.app.ui.theme.ErrorColor
@@ -43,27 +44,37 @@ import com.asmrone.app.ui.theme.TouchTarget
  *
  * 参考实现是一个底部弹窗（竖屏）/ 居中对话框（横屏），左侧三个状态、右侧两个状态，
  * 右下角一个「移除」。本项目按同一套信息结构做了扁平化：
- * 五种状态竖排 + 星级评分 + 底部「移除标记」/「取消」/「确认」。
+ * 五种状态竖排 + 星级评分 + 底部「删除」/「取消」/「确认」。
  *
  * 与参考实现一致的两个行为细节：
  *  1. **勾选是临时的**，只有点「确认」才提交（和 PlaylistPickerDialog 的思路一致）；
- *  2. **只有在已有标记时才显示「移除」** —— 没标记过的作品没有东西可移除。
+ *  2. **只有在已有标记时才显示「删除」** —— 没标记过的作品没有东西可删；
+ *     点「取消」则完全不做任何事（快捷标记会被撤销）。
  *
  * @param currentStatus 当前状态，null = 未标记
  * @param currentRating 当前用户评分（1~5），null = 未评分
- * @param onConfirm 确认回调；status 为 null 表示移除标记
+ * @param canRemove 是否显示「删除」：只有**打开弹窗之前就已经标记过**才显示。
+ *   快捷标记（点一下先给 5 星）打开的这个弹窗不算 —— 那种情况下「取消」
+ *   就是撤销掉那次快捷标记，不需要再给一个「删除」。
+ * @param workTitle 作品标题，只用在删除确认的文案里（「删除「xxx」的全部标记」）
+ * @param onConfirm 确认回调
+ * @param onRemove 删除回调：把评分与状态整条移除
  */
 @Composable
 fun CollectionStatusDialog(
     title: String,
     currentStatus: CollectionStatus?,
     currentRating: Int?,
+    canRemove: Boolean,
     onConfirm: (status: CollectionStatus?, rating: Int?) -> Unit,
-    onDismiss: () -> Unit
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit,
+    workTitle: String = ""
 ) {
     var selectedStatus by remember { mutableStateOf(currentStatus) }
     var selectedRating by remember { mutableStateOf(currentRating) }
-    val hasExistingMark = currentStatus != null || currentRating != null
+    // 删除是一次性动作（评分 + 状态一起没），必须再确认一次
+    var confirmingRemove by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -169,10 +180,10 @@ fun CollectionStatusDialog(
         },
         dismissButton = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 移除标记：只有已经标记过才出现（与参考实现一致）
-                if (hasExistingMark) {
+                // 删除：只有打开前就标记过才出现（未标记的作品没有东西可删）
+                if (canRemove) {
                     TextButton(
-                        onClick = { onConfirm(null, null) },
+                        onClick = { confirmingRemove = true },
                         modifier = Modifier.heightIn(min = TouchTarget.compact)
                     ) {
                         Icon(
@@ -182,13 +193,27 @@ fun CollectionStatusDialog(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(Modifier.width(6.dp))
-                        Text("移除", color = ErrorColor)
+                        Text("删除", color = ErrorColor)
                     }
                 }
                 TextButton(onClick = onDismiss) { Text("取消") }
             }
         }
     )
+
+    // 删除的二次确认：说明会连星级一起删、且不能恢复
+    if (confirmingRemove) {
+        ConfirmDeleteDialog(
+            title = "删除标记？",
+            message = "会删除「${workTitle.ifBlank { "这个作品" }}」的全部标记内容" +
+                "（星级与状态一起清空），删除后无法恢复。",
+            onConfirm = {
+                confirmingRemove = false
+                onRemove()
+            },
+            onDismiss = { confirmingRemove = false }
+        )
+    }
 }
 
 /**

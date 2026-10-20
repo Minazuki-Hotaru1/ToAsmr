@@ -1,5 +1,6 @@
 package com.asmrone.app.player
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -133,7 +134,7 @@ class PlayerSettingsGuardTest {
     }
 
     @Test
-    fun `上一首与下一首两侧各有一个纯文字跳转键`() {
+    fun `上一首与下一首两侧各有一个跳转键`() {
         assertTrue(playerScreen.contains("label = \"-5s\""))
         assertTrue(playerScreen.contains("label = \"+30s\""))
         assertTrue(playerScreen.contains("AudioController.skipBack(5)"))
@@ -141,14 +142,35 @@ class PlayerSettingsGuardTest {
     }
 
     @Test
-    fun `跳转键不使用图标`() {
-        // 用户要求这几项只放文字；图标只能出现在既有播放/上一首/下一首上
+    fun `跳转键是图标加秒数，不是纯文字`() {
+        // 2026-10 需求：播放器里所有功能都要有图标；±5s / +30s 的秒数不是平台惯例值，
+        // 所以保留文字，做成"描边双箭头 + 下方小字"，避免只剩图标说不清时长。
         val skipButton = playerScreen.substringAfter("private fun PlayerSkipButton(")
             .substringBefore("private fun PlayerIconButton(")
-        assertTrue("跳转键里不该有 Icon(", !skipButton.contains("Icon("))
+        assertTrue("跳转键要有图标", skipButton.contains("Icon("))
+        assertTrue("秒数仍要由文字给出", skipButton.contains("Text("))
+        assertTrue("用的是描边 Rewind", playerScreen.contains("ic_rewind_outline_fluent"))
+        assertTrue("用的是描边 Fast Forward", playerScreen.contains("ic_fast_forward_outline_fluent"))
     }
 
     // ── 播放模式入口在播放器主页 ──
+
+    @Test
+    fun `底部四个入口只有图标，顶部不再重复放队列按钮`() {
+        // 2026-10 需求：定时 / 播放模式 / 播放队列 / 设置 只留图标（文案进 contentDescription）；
+        // 同时删掉顶部那个和第二、第三、四项重复的队列按钮。
+        val bottomButton = playerScreen.substringAfter("private fun PlayerBottomIconButton(")
+            .substringBefore("@Composable")
+        assertFalse("底部入口不应再带文字", bottomButton.contains("Text("))
+        assertTrue("无障碍描述不能省", bottomButton.contains("contentDescription = contentDescription"))
+        assertTrue(
+            "四个入口都要用新按钮",
+            Regex("""PlayerBottomIconButton\(
+\s+iconRes =""").findAll(playerScreen).count() >= 4
+        )
+        val topBar = playerScreen.substringBefore("HorizontalPager(")
+        assertFalse("顶栏不再放队列按钮（底部已有）", topBar.contains("ic_queue_outline_fluent"))
+    }
 
     @Test
     fun `播放模式入口在播放器底部，不在设置里`() {

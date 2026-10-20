@@ -1,19 +1,28 @@
 package com.asmrone.app.ui.screen.settings
 
+import androidx.compose.foundation.clickable
+import android.os.Environment
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -21,9 +30,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.asmrone.app.data.audio.AudioCacheMaintenance
+import com.asmrone.app.data.download.DownloadStorage
+import com.asmrone.app.data.download.LocalDownloadStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.repo.updateAllDictionaries
 import com.asmrone.app.ui.component.FlatDivider
@@ -31,7 +46,8 @@ import com.asmrone.app.ui.component.FlatRow
 import com.asmrone.app.ui.component.FlatSection
 import com.asmrone.app.ui.component.LiquidSlider
 import com.asmrone.app.ui.component.RowChevron
-import com.asmrone.app.ui.theme.ErrorColor
+import com.asmrone.app.ui.component.rememberLocalStorageRequester
+import java.io.File
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -46,17 +62,31 @@ private val PER_TRACK_STOPS_MB = listOf(32, 64, 128, 256, 512, 1024, UNLIMITED_M
 private val TOTAL_STOPS_MB = listOf(256, 512, 1024, 2048, 4096, 5120, UNLIMITED_MB)
 
 /**
- * 「数据」二级页 —— 搜索字典 + 音频缓存。
+ * 「数据」二级页 —— 缓存管理 + 搜索字典 + 音频缓存上限。
  *
- * 这些都属于"本地数据"：字典是一次性下载的静态数据，音频缓存是会占用磁盘的落地内容。
+ * 这些都属于"本地数据"：字典是一次性下载的静态数据，缓存是会占用磁盘的落地内容。
  * 它们与"连哪台服务器"无关，所以从「服务器」页拆了出来。
  */
 @Composable
-fun DataSettingsScreen(onBack: () -> Unit) {
+fun DataSettingsScreen(onBack: () -> Unit, onOpenCache: () -> Unit) {
     val scope = rememberCoroutineScope()
     var dictState by remember { mutableStateOf(readDictionaryUpdateState()) }
 
     SettingsScaffold(title = "数据", onBack = onBack) {
+        // ── 缓存 ──
+        // 单个"清除缓存"按钮会把再生成本完全不同的东西混在一起
+        // （图片只是重下缩略图，音频要重新边播边下），所以给一个二级页分类处理。
+        FlatSection(title = "缓存") {
+            FlatRow(
+                title = "缓存管理",
+                description = "查看图片、音频、详情等各类缓存的占用，按类清除",
+                onClick = onOpenCache,
+                trailing = { RowChevron() }
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
         // ── 搜索字典 ──
         FlatSection(title = "搜索字典") {
             FlatRow(
@@ -108,23 +138,189 @@ fun DataSettingsScreen(onBack: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
 
+        // ── 下载保存位置 ────────────────────────────────────
+        DownloadLocationSection()
+
+        Spacer(Modifier.height(12.dp))
+
         // ── 音频缓存 ────────────────────────────────────────
         AudioCacheSection()
     }
 }
 
 /**
- * 音频缓存区块：两个带停留节点的滑杆（单曲 / 总上限）+ 清空。
+ * 本地下载文件夹：选一个公共目录里的文件夹。
+ *
+ * 保存位置（系统 / 本地）的开关在「下载」页顶栏，这里只管"本地"那一档落在哪 ——
+ * 设置页放一个开关、下载页再放一个，两边状态容易对不上，用户也不知道哪个生效。
+ */
+@Composable
+private fun DownloadLocationSection() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val dir by AppPrefs.localDownloadDir.collectAsState()
+    var pickerOpen by remember { mutableStateOf(false) }
+    var accessTick by remember { mutableIntStateOf(0) }
+    val hasAccess = remember(accessTick, dir) { LocalDownloadStore.hasAccess(context) }
+
+    // 两条授权路径（API 30+ 跳设置页、API 28/29 弹运行时权限）都收在这一个函数里
+    val requestAccess = rememberLocalStorageRequester { granted ->
+        if (granted) {
+            accessTick++
+            pickerOpen = true
+        }
+    }
+
+    // 从系统授权页回来时刷新一次权限状态（否则要杀进程重进才认）
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) accessTick++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    FlatSection(title = "下载") {
+        FlatRow(
+            title = "本地文件夹",
+            description = buildString {
+                append(dir)
+                if (!hasAccess) {
+                    append("\n还没有存储权限，点此去授予")
+                } else {
+                    append("\n「下载」页切到「本地」后，文件会存到这里")
+                }
+            },
+            onClick = {
+                if (hasAccess) {
+                    pickerOpen = true
+                } else {
+                    requestAccess()
+                }
+            },
+            trailing = { RowChevron() }
+        )
+    }
+
+    if (pickerOpen) {
+        LocalFolderPickerDialog(
+            startDir = File(dir),
+            onDismiss = { pickerOpen = false },
+            onPick = { picked ->
+                pickerOpen = false
+                AppPrefs.setLocalDownloadDir(picked.absolutePath)
+                scope.launch { LocalDownloadStore.rescan() }
+            }
+        )
+    }
+}
+
+/**
+ * 极简目录选择器：只列子文件夹，点名字进入，底部确认当前目录。
+ *
+ * 没有用 SAF（`ACTION_OPEN_DOCUMENT_TREE`）：那套返回的是 tree Uri，
+ * 写文件要逐级 `DocumentFile` 创建子目录，没法保留作品原来的目录结构；
+ * 拿到「所有文件访问权限」后直接用 `File` 反而能原样落盘。
+ */
+@Composable
+private fun LocalFolderPickerDialog(
+    startDir: File,
+    onPick: (File) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val root = remember { Environment.getExternalStorageDirectory() }
+    var dir by remember(startDir) {
+        mutableStateOf(if (startDir.isDirectory) startDir else root)
+    }
+    val children = remember(dir) {
+        dir.listFiles()
+            ?.filter { it.isDirectory && !it.name.startsWith(".") }
+            ?.sortedBy { it.name.lowercase() }
+            .orEmpty()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("本地文件夹") },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    text = dir.absolutePath,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                // 上一级：到外置存储根就停住，避免把 /storage 也列出来
+                if (dir.absolutePath != root.absolutePath) {
+                    Text(
+                        text = "↑ 上一级",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { dir.parentFile?.let { dir = it } }
+                            .padding(vertical = 10.dp)
+                    )
+                }
+                children.forEach { child ->
+                    Text(
+                        text = child.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { dir = child }
+                            .padding(vertical = 10.dp)
+                    )
+                }
+                if (children.isEmpty()) {
+                    Text(
+                        text = "（没有子文件夹）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 10.dp)
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "恢复默认（/storage/emulated/0/ToAsmr）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            dir = File(root, "ToAsmr").also { it.mkdirs() }
+                        }
+                        .padding(vertical = 10.dp)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (!dir.exists()) dir.mkdirs()
+                onPick(dir)
+            }) {
+                Text("使用此文件夹")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/**
+ * 音频缓存区块：两个带停留节点的滑杆（单曲 / 总上限）。
  *
  * 上限用滑杆而不是芯片：从 32MB 到「无限制」跨度很大，芯片一行放不下，
  * 滑杆能在一个控件里覆盖整个量级范围，松手后吸附到最近的节点。
+ *
+ * "清空"不在这里，统一收在「缓存管理」页（[CacheSettingsScreen]）——
+ * 那里才看得到当前占用，也才能和其他类的缓存放在一起比较。
  */
 @Composable
 private fun AudioCacheSection() {
     val limitMb by AppPrefs.audioCacheLimitMb.collectAsState()
     val perTrackMb by AppPrefs.perTrackCacheLimitMb.collectAsState()
-    var status by remember { mutableStateOf(AudioCacheMaintenance.status()) }
-    var confirmingClear by remember { mutableStateOf(false) }
 
     FlatSection(title = "音频缓存") {
         CacheLimitSlider(
@@ -143,41 +339,8 @@ private fun AudioCacheSection() {
             onValueChange = { mb ->
                 // 改上限后立刻按新上限收敛一次：用户调小时，期望是"现在就腾出空间"
                 AudioCacheMaintenance.applyLimit(mb)
-                status = AudioCacheMaintenance.status()
             }
         )
-
-        if (status.usedBytes > 0) {
-            FlatDivider()
-            FlatRow(
-                title = if (confirmingClear) {
-                    "再点一次确认"
-                } else {
-                    "清空音频缓存（释放 ${status.usedText}）"
-                },
-                description = if (confirmingClear) "将释放 ${status.usedText}" else null,
-                onClick = {
-                    if (!confirmingClear) {
-                        confirmingClear = true
-                    } else {
-                        confirmingClear = false
-                        AudioCacheMaintenance.clearAll()
-                        status = AudioCacheMaintenance.status()
-                    }
-                },
-                trailing = {
-                    if (confirmingClear) {
-                        Text(
-                            text = "确认",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = ErrorColor
-                        )
-                    } else {
-                        RowChevron()
-                    }
-                }
-            )
-        }
     }
 }
 

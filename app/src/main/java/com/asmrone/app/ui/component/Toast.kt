@@ -4,6 +4,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -16,7 +19,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -51,6 +57,17 @@ class ToastState internal constructor() {
         private set
 
     /**
+     * 可选的行动按钮（如"已收藏至「我喜欢的」  **修改**"）。
+     *
+     * 与文字一起保留到淡出结束：淡出过程中按钮不能先消失，否则会看到
+     * 提示框里"少了一块"再整体淡掉。
+     */
+    var actionLabel: String? by mutableStateOf(null)
+        private set
+
+    private var action: (() -> Unit)? = null
+
+    /**
      * 自增序号：用来"重启"自动消失的计时。
      *
      * 必须是计数器而不是布尔 —— 连续调用两次 [show] 时，
@@ -59,11 +76,27 @@ class ToastState internal constructor() {
     internal var seq: Int by mutableIntStateOf(0)
         private set
 
-    /** 显示一条提示；已在显示时会被替换并重新计时 */
+    /** 显示一条纯文字提示；已在显示时会被替换并重新计时 */
     fun show(message: String) {
+        showInternal(message, actionLabel = null, action = null)
+    }
+
+    /**
+     * 显示一条带行动按钮的提示。
+     *
+     * @param actionLabel 按钮文字（很短，如「修改」）
+     * @param onAction 点击按钮：先收起提示，再执行回调
+     */
+    fun show(message: String, actionLabel: String, onAction: () -> Unit) {
+        showInternal(message, actionLabel, onAction)
+    }
+
+    private fun showInternal(message: String, actionLabel: String?, action: (() -> Unit)?) {
         // 空消息没有任何意义，直接忽略（比显示一个空框好）
         if (message.isBlank()) return
         text = message
+        this.actionLabel = actionLabel?.takeIf { it.isNotBlank() }
+        this.action = if (this.actionLabel == null) null else action
         isVisible = true
         seq++
     }
@@ -71,6 +104,14 @@ class ToastState internal constructor() {
     /** 立即收起 */
     fun dismiss() {
         isVisible = false
+    }
+
+    /** 触发行动按钮（由 [ToastHost] 调用，点完立即收起） */
+    internal fun runAction() {
+        val callback = action
+        action = null
+        dismiss()
+        callback?.invoke()
     }
 }
 
@@ -81,16 +122,18 @@ fun rememberToastState(): ToastState = remember { ToastState() }
 /**
  * 轻量提示宿主 —— 固定在屏幕偏下方，不随内容滚动。
  *
- * 样式与 **comicApp 漫画详情页**的「已复制」提示一致：
- * 半透明深色圆角胶囊 + 小号浅色文字，淡入 150ms、淡出 400ms，
- * 默认 1.5 秒后自动消失。
+ * 样式：半透明深色圆角胶囊（22dp 圆角）+ 正文号浅色文字，淡入 150ms、淡出 400ms，
+ * 默认 1.5 秒后自动消失；带行动按钮时停留 4 秒。
  *
- * 位置刻意"偏下而不是贴底"：贴底会与底部导航栏混在一起，
+ * 字号一度用的是 `labelSmall`（11sp），在 6.7 寸屏上小得几乎读不清，
+ * 现在统一成 `bodyMedium`（14sp）——提示是要被读的，不是装饰。
+ *
+ * 位置刻意"偏下而不是贴底"：贴底会与底部导航栏 / 迷你播放器混在一起，
  * 让提示看起来像界面的一部分而不是临时反馈。
  *
- * 调用方需要把它放在一个 `Box` 里并自己给 `align` / `offset`
- * （见 `toastOffset`），这样同一个组件在带底部导航与不带导航的页面
- * 都能落到合适的位置。
+ * 调用方把它放进一个 `Box` 里给 `align`，再用 [toastOffset] 指定
+ * **距屏幕底部抬多高**（组件内部做 `offset(y = -toastOffset)`）：
+ * 主页面（导航栏 + 迷你播放器）约 168dp，详情页在播放器出现时约 128dp。
  */
 @Composable
 fun ToastHost(
@@ -99,10 +142,16 @@ fun ToastHost(
     toastOffset: Dp = 0.dp,
     durationMs: Long = 1500L
 ) {
+    // 带按钮的提示要留出反应时间：1.5 秒读完再抬手点「修改」根本来不及。
+    val effectiveDuration = if (state.actionLabel != null) {
+        maxOf(durationMs, ACTION_TOAST_DURATION_MS)
+    } else {
+        durationMs
+    }
     // 每次 show 都重新计时；isVisible 为 false 时不做无谓的等待
     LaunchedEffect(state.seq) {
         if (state.seq > 0 && state.isVisible) {
-            delay(durationMs)
+            delay(effectiveDuration)
             state.dismiss()
         }
     }
@@ -111,18 +160,45 @@ fun ToastHost(
         visible = state.isVisible,
         enter = fadeIn(tween(150)),
         exit = fadeOut(tween(400)),
-        modifier = modifier
+        // toastOffset 是"距屏幕底部抬多高"：贴底会被底部导航栏 / 迷你播放器挡住。
+        // 曾经这个参数只是声明在那里没被用到，结果提示总是压在播放器下面。
+        modifier = modifier.offset(y = -toastOffset)
     ) {
         Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f)
         ) {
-            Text(
-                text = state.text,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.surface
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = state.text,
+                    modifier = Modifier.padding(
+                        start = 20.dp,
+                        end = if (state.actionLabel == null) 20.dp else 6.dp,
+                        top = 12.dp,
+                        bottom = 12.dp
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.surface
+                )
+                state.actionLabel?.let { label ->
+                    // 只有状态里存了真实回调时才显示按钮，避免出现点了没反应的假按钮
+                    Text(
+                        text = label,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable { state.runAction() }
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        // inversePrimary 是专门给"深色底"用的主色，
+                        // 直接拿 primary 在深灰提示条上会偏暗
+                        color = MaterialTheme.colorScheme.inversePrimary
+                    )
+                }
+            }
         }
     }
 }
+
+/** 带按钮的提示停留时长：足够看清一句话并移手指点到按钮 */
+internal const val ACTION_TOAST_DURATION_MS = 4000L

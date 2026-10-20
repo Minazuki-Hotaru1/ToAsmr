@@ -1,10 +1,11 @@
 package com.asmrone.app.ui.screen.detail
 
+import com.asmrone.app.ui.component.ACTION_TOAST_DURATION_MS
 import com.asmrone.app.ui.component.rememberToastState
 import com.asmrone.app.ui.component.ToastHost
 import kotlinx.coroutines.launch
 import com.asmrone.app.ui.component.viewer.VideoPlayerDialog
-import com.asmrone.app.ui.component.viewer.TextViewerDialog
+import com.asmrone.app.ui.component.viewer.TextViewerState
 import com.asmrone.app.ui.component.viewer.ImageViewerDialog
 import com.asmrone.app.ui.component.viewer.ExternalFileOpener
 import com.asmrone.app.data.model.TrackKind
@@ -53,12 +54,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.FirstBaseline
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.asmrone.app.R
@@ -69,6 +84,7 @@ import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.sameFolderQueue
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.repo.AsmrRepository
+import com.asmrone.app.data.sync.PendingSync
 import com.asmrone.app.player.AudioController
 import com.asmrone.app.ui.component.CoverImage
 import com.asmrone.app.ui.component.FileTreeRow
@@ -147,26 +163,34 @@ fun DetailScreen(
     val work = state.work
     val playbackList = state.playbackList
 
-    // 「加入收藏夹」弹窗（详情页的收藏按钮走这条路）
+    // 「加入收藏夹」弹窗：收藏本身不再弹窗（直接写进默认收藏夹），
+    // 这里只在用户点提示里的「修改」时才打开
     var pickerOpen by remember { mutableStateOf(false) }
     // 「下载」选择弹窗（下半屏文件树 + 勾选）
     var downloadOpen by remember { mutableStateOf(false) }
     // 「标记」（/api/review 的收听状态）选择弹窗
     var collectionDialogOpen by remember { mutableStateOf(false) }
+    // 这次弹窗是不是"快捷评分"打开的：那种情况下用户点「取消」等于撤销刚才那一下
+    // （见 [DetailViewModel.revertQuickRate]）；已经标记过的作品打开时不做任何回滚。
+    var collectionDialogFromQuick by remember { mutableStateOf(false) }
+    // 收藏弹窗同理：从"快捷收藏"的提示里进来的，点「取消」要撤销那次收藏
+    var pickerFromQuick by remember { mutableStateOf(false) }
     val pickerViewModel: PlaylistPickerViewModel = viewModel()
     val pickerState by pickerViewModel.state.collectAsState()
     val pickerResult by pickerViewModel.result.collectAsState()
+    // 直接收藏（不弹窗）的状态与一次性提示
+    val quickCollect by pickerViewModel.quick.collectAsState()
+    val quickEvent by pickerViewModel.quickEvent.collectAsState()
     val authState by AuthManager.state.collectAsState()
     // 收藏结果的提示 —— 用项目共享的 Toast 组件（comicApp 那套样式），
     // 不再在这里手写一份（手写的那份没有淡出、也没有与其它页面一致的位置）
     val toastState = rememberToastState()
 
     // ── 文件树里非音频内容的打开状态 ──────────────────────
-    // 图片 / 视频 / 文本走内置查看器（用弹窗承载，不占导航栈 ——
-    // 它们是"临时看一眼"，返回键关掉即可）；PDF 交外部 App。
+    // 图片 / 视频走内置弹窗查看器（不占导航栈 —— 它们是"临时看一眼"）；
+    // 文本交给 MainActivity 的覆盖层页面（`TextViewerState`），PDF 交外部 App。
     var imageFile by remember { mutableStateOf<OpenableFile?>(null) }
     var videoFile by remember { mutableStateOf<OpenableFile?>(null) }
-    var textFile by remember { mutableStateOf<OpenableFile?>(null) }
     // PDF 正在下载（体积最大实测 17MB，要有进度，不能"点了没反应"）
     var downloadingPdf by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -177,9 +201,41 @@ fun DetailScreen(
         // 直接 show(pickerResult) 无法智能转换
         val message = pickerResult
         if (message != null) {
-            toastState.show(message)
+            // 提交完就关弹窗：结果提示挂在页面上（含中途失败的 error，此时弹窗仍在）。
+            // 空串表示"没有任何改动"，关掉就行，不用再弹一条提示。
+            pickerOpen = false
+            if (message.isNotEmpty()) toastState.show(message)
             pickerViewModel.clearResult()
         }
+    }
+
+    // 打开详情页时先问本地：这部作品在不在默认收藏夹里（只读缓存，不发请求）
+    LaunchedEffect(work?.id) {
+        work?.let { pickerViewModel.prepareQuick(it.id) }
+    }
+
+    // 直接收藏的提示：带「修改」按钮，点了才打开收藏夹选择弹窗
+    LaunchedEffect(quickEvent) {
+        val event = quickEvent ?: return@LaunchedEffect
+        if (event.canModify) {
+            toastState.show(event.message, actionLabel = "修改") {
+                // 用户要换收藏夹：先别发刚才那次，等他选完（见 PendingSync）
+                PendingSync.pause(QUICK_COLLECT_KEY)
+                pickerFromQuick = true
+                pickerOpen = true
+                // 把"还没发出去"的那个收藏夹带进弹窗：它在基线之外，
+                // 所以用户即使什么都不改、直接点「完成」，这笔收藏也会被补发。
+                work?.let {
+                    pickerViewModel.open(
+                        it,
+                        unsyncedPlaylistId = pickerViewModel.pendingQuickCollect()?.playlistId
+                    )
+                }
+            }
+        } else {
+            toastState.show(event.message)
+        }
+        pickerViewModel.clearQuickEvent()
     }
 
     // 来自 ViewModel 的一次性提示（如"没有能打开 PDF 的应用"）
@@ -270,8 +326,7 @@ fun DetailScreen(
                     item(key = "tree_header") {
                         TrackTreeHeader(
                             state = state,
-                            onRetry = { viewModel.refresh() },
-                            onDownload = { downloadOpen = true }
+                            onRetry = { viewModel.refresh() }
                         )
                     }
 
@@ -325,7 +380,7 @@ fun DetailScreen(
                                             when (kind) {
                                                 TrackKind.IMAGE -> imageFile = openable
                                                 TrackKind.VIDEO -> videoFile = openable
-                                                else -> textFile = openable
+                                                else -> TextViewerState.open(openable)
                                             }
                                         }
                                     }
@@ -368,7 +423,7 @@ fun DetailScreen(
                 }
             }
 
-            // 悬浮玻璃顶栏：返回 + 标题 + 右侧的「标记 / 收藏夹」动作胶囊
+            // 悬浮玻璃顶栏：返回 + 标题 + 右侧的「标记 / 收藏夹 / 下载」动作胶囊
             GlassTopBar(
                 title = work.sourceId ?: work.title,
                 subtitle = work.title.takeIf { work.sourceId != null },
@@ -377,20 +432,69 @@ fun DetailScreen(
                 actions = {
                     DetailTopActions(
                         status = work.collectionStatus,
-                        // 收藏夹状态：进入页面时未知，由弹窗里的成员检查给出准确状态
-                        collected = pickerState.workInside && pickerState.selectedId.isNotBlank(),
+                        // 标记过 = 有状态，或者至少打过星（快捷标记只写星级、不写状态）
+                        marked = work.collectionStatus != null || work.userRating != null,
+                        // 收藏夹状态：只认本地缓存给出的答案；本地没有该收藏夹的内容时
+                        // 是 null（未知），按未收藏画 —— 不为一个图标去联网。
+                        collected = quickCollect.inside == true,
                         backdrop = backdrop,
+                        // 下载入口原先在「文件」标题行右侧，是一段纯文字按钮；
+                        // 详情页的动作统一收进顶栏胶囊后，这里只剩图标。
+                        downloaded = state.isDownloaded,
+                        downloadEnabled = state.pickerTree.isNotEmpty(),
+                        onDownload = { downloadOpen = true },
                         onOpenCollection = {
                             if (authState.isLoggedIn) {
-                                collectionDialogOpen = true
+                                // 已标记过（有状态或打过星）→ 打开弹窗让他改分数/状态，
+                                // 不再"再点一下就取消"：标记这东西一旦有了，误触清掉很难恢复。
+                                if (work.collectionStatus != null || work.userRating != null) {
+                                    collectionDialogFromQuick = false
+                                    collectionDialogOpen = true
+                                } else {
+                                    // 没标记过 → 点一下直接记 5 星、**不动状态**（见 DetailViewModel.quickRate）；
+                                    // 想改分数或状态就点提示里的「修改」，与旁边那枚收藏按钮同一套节奏：
+                                    // 先落地、再给一个反悔入口。
+                                    viewModel.quickRate()
+                                    viewModel.pendingQuickRate()?.let { request ->
+                                        PendingSync.hold(QUICK_RATE_KEY) {
+                                            viewModel.sendQuickRate(request)
+                                        }
+                                        // 固定等待：点完 6 秒后才发（提示 4 秒 + 1 秒反应 + 1 秒缓冲）。
+                                        // 不跟提示的动画/消失事件绑定 —— 用户提前退出详情页也照样发得出去。
+                                        PendingSync.schedule(QUICK_RATE_KEY, QUICK_SEND_DELAY_MS)
+                                    }
+                                    toastState.show("已评分 5 星", actionLabel = "修改") {
+                                        // 用户要改分数/状态：先别发，等他在弹窗里选
+                                        PendingSync.pause(QUICK_RATE_KEY)
+                                        collectionDialogFromQuick = true
+                                        collectionDialogOpen = true
+                                    }
+                                }
                             } else {
                                 viewModel.setCollectionStatus(null)
                             }
                         },
                         onToggleFavorite = {
                             if (authState.isLoggedIn) {
-                                pickerOpen = true
-                                pickerViewModel.open(work)
+                                if (quickCollect.inside == true) {
+                                    // 已在某个收藏夹里 → 打开多选弹窗让他增删，
+                                    // 不直接"取消收藏"（那可能把他放在别的收藏夹里的同一作品也弄没）
+                                    pickerFromQuick = false
+                                    pickerOpen = true
+                                    pickerViewModel.open(work)
+                                } else {
+                                    // 第一次收藏 → 直接写进默认收藏夹（上次选的 / 「我喜欢的」），
+                                    // 不弹窗；想换收藏夹点提示里的「修改」。
+                                    pickerViewModel.quickCollect(work)
+                                    pickerViewModel.pendingQuickCollect()?.let { request ->
+                                        PendingSync.hold(QUICK_COLLECT_KEY) {
+                                            pickerViewModel.sendQuickCollect(request)
+                                        }
+                                        // 固定等待：点完 6 秒后才发（提示 4 秒 + 1 秒反应 + 1 秒缓冲）——
+                                        // 不跟提示的动画/消失事件绑定，提前退出详情页也照样发得出去
+                                        PendingSync.schedule(QUICK_COLLECT_KEY, QUICK_SEND_DELAY_MS)
+                                    }
+                                }
                             } else {
                                 toastState.show("请先到「设置 → 账号」登录后再收藏")
                             }
@@ -414,14 +518,9 @@ fun DetailScreen(
     videoFile?.let { file ->
         VideoPlayerDialog(
             url = file.url,
-            title = file.title,
             onDismiss = { videoFile = null }
         )
     }
-    textFile?.let { file ->
-        TextViewerDialog(file = file, onDismiss = { textFile = null })
-    }
-
     // PDF 下载中：给它一个明确的进度反馈。
     // 实测 PDF 最大 17MB，若不给反馈用户会以为点了没反应而反复点。
     if (downloadingPdf) {
@@ -458,42 +557,90 @@ fun DetailScreen(
     if (collectionDialogOpen && work != null) {
         CollectionStatusDialog(
             title = "收藏状态",
+            workTitle = work.title,
             currentStatus = work.collectionStatus,
             currentRating = work.userRating,
+            // 只有"打开之前就已经标记过"才有东西可删；快捷评分打开时
+            // 「取消」本身就是撤销，不需要再给一个「删除」。
+            canRemove = !collectionDialogFromQuick,
+            onRemove = {
+                collectionDialogOpen = false
+                // 删除 = 评分与状态整条移除（本地先行，网络后台补）
+                PendingSync.clear(QUICK_RATE_KEY)
+                viewModel.dropPendingQuickRate()
+                viewModel.setCollectionStatusRemove()
+                toastState.show("已移除标记")
+            },
             onConfirm = { status, rating ->
                 collectionDialogOpen = false
+                // 以弹窗的选择为准：刚才那笔"快捷 5 星"作废（这次 setCollectionStatus 会自己发请求）
+                PendingSync.clear(QUICK_RATE_KEY)
+                viewModel.dropPendingQuickRate()
                 if (status == null && rating == null) {
-                    // 弹窗里的「移除」：清掉整条标记（评分也一起清）
+                    // 弹窗里的「删除」：清掉整条标记（评分也一起清）
                     viewModel.setCollectionStatusRemove()
+                    toastState.show("已移除标记")
                 } else {
                     // ⚠️ 这里必须把 rating 一起传下去。
                     // 之前写成 `{ status, _ -> ... }`，用户选的星级被直接丢弃，
                     // 详情页只会回落到 work.userRating（而它往往来自列表页的缓存、
                     // 根本没有这个字段）→ 结果「选了 5 星但云端收不到评分」。
                     viewModel.setCollectionStatus(status, rating)
+                    toastState.show("已更新标记")
                 }
             },
-            onDismiss = { collectionDialogOpen = false }
+            onDismiss = {
+                collectionDialogOpen = false
+                if (collectionDialogFromQuick) {
+                    // 取消 = 什么都不做：刚才那次快捷评分整条撤销，也不发请求
+                    PendingSync.clear(QUICK_RATE_KEY)
+                    viewModel.pendingQuickRate()?.let { viewModel.revertQuickRate(it) }
+                    viewModel.dropPendingQuickRate()
+                    toastState.show("已撤销这次标记")
+                }
+            }
         )
     }
 
-    // 「加入收藏夹」弹窗（收藏按钮）
+    // 「加入收藏夹」弹窗：只有点提示里的「修改」才打开（收藏本身不再弹窗）
     if (pickerOpen) {
         PlaylistPickerDialog(
             workTitle = work?.title.orEmpty(),
             state = pickerState,
-            onSelect = { pickerViewModel.select(it) },
-            onConfirm = { pickerViewModel.confirm() },
+            // 只有"打开之前就已经收藏过"才显示「删除」：快捷收藏打开的弹窗里
+            // 「取消」就是撤销那次收藏。
+            canRemove = !pickerFromQuick,
+            onToggle = { pickerViewModel.toggle(it.id) },
+            onConfirm = {
+                // 以弹窗的选择为准：快捷收藏那笔作废（confirm 会自己发写请求）
+                PendingSync.clear(QUICK_COLLECT_KEY)
+                pickerViewModel.dropPendingQuickCollect()
+                pickerViewModel.confirm()
+            },
+            onRemove = {
+                // 删除 = 从所有收藏夹移出（作品与收藏夹是多对多）
+                PendingSync.clear(QUICK_COLLECT_KEY)
+                pickerViewModel.dropPendingQuickCollect()
+                pickerViewModel.removeFromAllPlaylists()
+            },
             onStartCreate = { pickerViewModel.startCreate() },
             onNewNameChange = { pickerViewModel.onNewNameChange(it) },
-            onCreateConfirm = { pickerViewModel.createAndAdd() },
-            onCancelCreate = { pickerViewModel.cancelCreate() },
-            onDeletePlaylist = { playlist ->
-                // 弹窗里的删除直接执行（系统收藏夹在弹窗里根本没有删除按钮，
-                // PlaylistPickerViewModel 与仓库层还会各拦一次）
-                pickerViewModel.deletePlaylist(playlist)
+            onCreateConfirm = {
+                PendingSync.clear(QUICK_COLLECT_KEY)
+                pickerViewModel.dropPendingQuickCollect()
+                pickerViewModel.createAndAdd()
             },
-            onDismiss = { pickerOpen = false }
+            onCancelCreate = { pickerViewModel.cancelCreate() },
+            onDismiss = {
+                pickerOpen = false
+                if (pickerFromQuick) {
+                    // 取消 = 什么都不做：撤销刚才那次快捷收藏，也不发请求
+                    PendingSync.clear(QUICK_COLLECT_KEY)
+                    pickerViewModel.pendingQuickCollect()?.let { pickerViewModel.revertQuickCollect(it) }
+                    pickerViewModel.dropPendingQuickCollect()
+                    toastState.show("已撤销这次收藏")
+                }
+            }
         )
     }
 
@@ -501,7 +648,8 @@ fun DetailScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         ToastHost(
             state = toastState,
-            toastOffset = 120.dp,
+            // 固定位置，不随迷你播放器出现/消失而跳动（见 Liquid.TOAST_OFFSET）
+            toastOffset = Liquid.TOAST_OFFSET,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
@@ -535,6 +683,14 @@ private val SectionGap = 20.dp
  * 恒小于 [SectionGap] —— 内紧外松，视觉上才能既"成组"又"分区"。
  */
 private val InnerGap = 10.dp
+
+/**
+ * 信息项之间的**横向**间距（评分 / 销量 / 价格 / 时长 之间，以及 社团 / 声优 之间）。
+ *
+ * 20dp 时一行空得太散，四个数据项被推得满屏都是；14dp 既把它们收拢成"一组数据"，
+ * 又不会糊在一起（标签是小字，靠间距分项）。两行共用这一个值，节奏才一致。
+ */
+private val MetaItemGap = 14.dp
 
 /**
  * ① 头图。
@@ -680,24 +836,58 @@ private fun LanguageEditionText(
 }
 
 /**
- * 顶栏右侧的「标记 / 收藏夹」动作组 —— **同一个液态玻璃胶囊内**并排放两个图标按钮。
+ * 快捷评分 / 收藏在 [PendingSync] 里的键。
  *
- * 为什么把两个动作都收进顶栏、且共用一个玻璃容器：
+ * 两个 key 分开：用户可能先标记再收藏，两条提示会先后出现，
+ * 各自的倒计时不能被对方顶掉。
+ */
+private const val QUICK_RATE_KEY = "detail-quick-rate"
+
+/** 快捷收藏在 [PendingSync] 里的键 */
+private const val QUICK_COLLECT_KEY = "detail-quick-collect"
+
+/**
+ * 快捷操作的请求延迟：点完 [ACTION_TOAST_DURATION_MS]（4 秒提示）
+ * + 1 秒反应时间 + 1 秒缓冲，一共 6 秒。
+ *
+ * 计时从点击那一刻起算，**不跟提示的动画/消失事件绑定** ——
+ * 提示是界面的东西，用户可能在它还在的时候就把页面退了，
+ * 那时不该因为"没等到消失"而把这次收藏/标记永远留在本地。
+ */
+private const val QUICK_SEND_DELAY_MS = ACTION_TOAST_DURATION_MS + 2_000L
+
+/**
+ * 顶栏右侧的「标记 / 收藏夹 / 下载」动作组 —— **同一个液态玻璃胶囊内**并排三个图标按钮。
+ *
+ * 为什么把动作都收进顶栏、且共用一个玻璃容器：
  *  - 详情页的正文是"作品信息"，动作若压在标题下方会打断阅读节奏；
  *    顶栏是系统层，动作放在这里与页面内容彻底分开；
- *  - 两个动作共用一个胶囊（而不是两个独立玻璃圆钮）：
- *    它们属于同一类操作（对这部作品做点什么），一个容器 + 一条细分隔线
- *    能表达"同一组"，也避免右上方叠两个玻璃块显得碎。
+ *  - 三个动作共用一个胶囊（而不是三个独立玻璃圆钮）：
+ *    它们属于同一类操作（对这部作品做点什么），一个容器就能表达"同一组"，
+ *    也避免右上方叠三块玻璃显得碎；
+ *  - 按钮之间**不留空隙**：36dp 的触摸框已经在图标两侧各留了 8dp，
+ *    再叠 Spacer 会显得松散，三个图标就不像一组了。
  *
  * 图标含义：
- *  - 书签 = 我的标记（想听 / 在听 / …）；已标记时用状态自己的图标 + 主色；
- *  - 文件夹 = 加入收藏夹；已加入时换成"带对勾"的图标 + 主色。
+ *  - 书签 = 我的标记（想听 / 在听 / …）；已标记时用状态自己的图标 + 主色，
+ *    只有星级没有状态时换成**实心书签**（ic_bookmark_filled_fluent）+ 主色 ——
+ *    线框/实心与颜色一起表达"这条已经标记过了"，和收藏夹按钮的对勾同一套语言；
+ *  - 文件夹 = 加入收藏夹；已加入时换成"带对勾"的图标 + 主色；
+ *  - 箭头落盘 = 下载（原「文件」标题行右侧的文字按钮搬到这里）；已下载时用主色，
+ *    文件树还没到时置灰但保留位置。
  */
 @Composable
 private fun DetailTopActions(
     status: CollectionStatus?,
+    /** 标记过（有状态或打过星）—— 书签显示为实心 + 主色 */
+    marked: Boolean,
     collected: Boolean,
     backdrop: Backdrop?,
+    /** 已经下过（含下了一部分）—— 下载图标转主色，语义变成「继续下载」 */
+    downloaded: Boolean,
+    /** 文件树到了才允许点：没树的时候选择器是空的，点了只会让人困惑 */
+    downloadEnabled: Boolean,
+    onDownload: () -> Unit,
     onOpenCollection: () -> Unit,
     onToggleFavorite: () -> Unit
 ) {
@@ -710,15 +900,18 @@ private fun DetailTopActions(
         verticalAlignment = Alignment.CenterVertically
     ) {
         TopBarMiniAction(
-            iconRes = status?.iconRes ?: R.drawable.ic_bookmark_outline_fluent,
-            contentDescription = status?.label ?: "标记",
-            tint = if (status != null) cs.primary else cs.onSurfaceVariant,
+            // 有状态时用状态自己的图标；只有星级（快捷标记）时用实心书签，
+            // 一眼能看出"已经标记过"，不必点开弹窗确认。
+            iconRes = status?.iconRes
+                ?: if (marked) R.drawable.ic_bookmark_filled_fluent
+                else R.drawable.ic_bookmark_outline_fluent,
+            contentDescription = status?.label ?: if (marked) "已标记" else "标记",
+            tint = if (status != null || marked) cs.primary else cs.onSurfaceVariant,
             onClick = onOpenCollection
         )
 
-        // 不画分隔线：两个图标同属一组，留一点空隙即可（也避免多一道竖线）
-        Spacer(Modifier.width(2.dp))
-
+        // 图标之间不放 Spacer：36dp 的触摸框在图标两侧各留了 8dp，
+        // 视觉间距已经够（约 16dp）；再叠空隙三个图标就不像一组了。
         TopBarMiniAction(
             iconRes = if (collected) R.drawable.ic_folder_check_fluent
             else R.drawable.ic_folder_add_fluent,
@@ -726,22 +919,35 @@ private fun DetailTopActions(
             tint = if (collected) cs.primary else cs.onSurfaceVariant,
             onClick = onToggleFavorite
         )
+
+        TopBarMiniAction(
+            iconRes = R.drawable.ic_arrow_download_fluent,
+            contentDescription = if (downloaded) "继续下载" else "下载",
+            tint = when {
+                downloaded -> cs.primary
+                downloadEnabled -> cs.onSurfaceVariant
+                else -> cs.onSurfaceVariant.copy(alpha = 0.38f)
+            },
+            enabled = downloadEnabled,
+            onClick = onDownload
+        )
     }
 }
 
-/** 顶栏玻璃胶囊里的单个图标按钮（40dp，玻璃胶囊内不再叠第二层玻璃） */
+/** 顶栏玻璃胶囊里的单个图标按钮（36dp 触摸框，玻璃胶囊内不再叠第二层玻璃） */
 @Composable
 private fun TopBarMiniAction(
     @DrawableRes iconRes: Int,
     contentDescription: String,
     tint: Color,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(36.dp)
             .clip(CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -758,8 +964,10 @@ private fun TopBarMiniAction(
  *
  * 关键点（之前做成了等宽分列，显得过于工整、留白也多，这里改掉）：
  *  - 每一项都**按内容取自然宽度**，不设 `weight` —— 所以左右不会对齐成一列列的格子；
- *  - 一行放不下时用 `FlowRow` 自然换行，项与项之间只留固定间距；
- *  - 组与组之间（数据 ↔ 社团/声优）留 16dp，靠间距在视觉上分成两组，不用容器。
+ *  - 一行放不下时用 `FlowRow` 自然换行，项与项之间统一留 [MetaItemGap]；
+ *  - 组与组之间（数据 ↔ 社团/声优）留 [InnerGap]，靠间距在视觉上分成两组，不用容器；
+ *  - 两行**共用一套基线**（见 [MetaItem]）：一行里可能同时有拉丁字母和中日文，
+ *    字体度量不同，不统一基线的话名字会一高一低。
  *
  * 数据项（**单行**）：评分 / 销量 / 价格 / 时长。
  * （「评论数」已移除；「发行时间」改为 RJ 号那一行的日期标签。）
@@ -776,7 +984,7 @@ private fun StatsBlock(
         // 数据行：评分 / 销量 / 价格 / 时长
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            horizontalArrangement = Arrangement.spacedBy(MetaItemGap),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             MetaItem(
@@ -795,25 +1003,12 @@ private fun StatsBlock(
         //
         // 为什么用下划线而不是只靠颜色：颜色在很多主题下与正文差别不大，
         // 而"能点"这件事必须一眼看出来 —— 用户不会去试每一个字。
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            MetaItem(
-                label = "社团",
-                value = work.circleName ?: "—",
-                link = work.circleId != null,
-                onClick = work.circleId?.let { id -> { onOpenCircle(id, work.circleName.orEmpty()) } }
-            )
-            MetaItem(
-                label = "声优",
-                // 多位声优时逐个做成链接 —— 合成一整串再整体可点的话，
-                // 点进去只能猜是哪一位（之前就是那样）
-                links = work.vas.map { va -> va.name to { onOpenVoiceActor(va.id, va.name) } },
-                fallback = "—"
-            )
-        }
+        CreditsRow(
+            circleName = work.circleName,
+            circleId = work.circleId,
+            onOpenCircle = onOpenCircle,
+            voiceActors = work.vas.map { va -> va.name to { onOpenVoiceActor(va.id, va.name) } }
+        )
     }
 }
 
@@ -821,33 +1016,35 @@ private fun StatsBlock(
 private fun Int.grouped(): String = "%,d".format(java.util.Locale.US, this)
 
 /**
- * 信息项（与 comicApp 详情页的信息项同一套写法）：
- * 上标签用次要色小字、下数值用正文小字 + Medium 字重。
+ * 数据项：上标签用次要色小字、下数值用正文小字 + Medium 字重。
  * [starIcon] = true 时在数值前加一枚琥珀色星标（评分用）。
  *
- * ## 两种用法
+ * 只服务「评分 / 销量 / 价格 / 时长」这一行 —— 社团 / 声优要链接、要跨字体对齐基线，
+ * 走的是 [CreditsRow]。
  *
- *  - [value] + [link]：单个值；[link] 为 true 时渲染成**链接样式**（主色 + 下划线）
- *  - [links]：多个值，每个各自可点（如多位声优）——每个之间用 ` / ` 分隔
+ * ## 基线
  *
- * 之所以提供 [links] 而不是让调用方把多个名字拼成一串：拼成一串之后
- * **整串只能跳一个目标**，多位声优时就不知道该跳哪一位。
- * 拆成逐个链接之后，点谁就是谁。
+ * 这一行里偶尔也会混进中日文（`免费`、占位 `—`），它与数字走的是两套 fallback 字体
+ * （Noto Sans CJK vs Roboto），顶对齐时会低 2~3dp。所以用 [TextMeasurer] 量出两者的
+ * 第一行基线差，给矮的那个补上顶部留白，让同一行的数值落在同一条基线上。
  */
 @Composable
 private fun MetaItem(
     label: String,
-    value: String = "",
+    value: String,
     modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null,
-    /** 单个值是否显示成链接样式 */
-    link: Boolean = false,
-    /** 多个各自可点的值；非空时忽略 [value] */
-    links: List<Pair<String, () -> Unit>> = emptyList(),
-    /** [links] 为空时显示的占位文本 */
-    fallback: String = "—",
     starIcon: Boolean = false
 ) {
+    val valueStyle = MaterialTheme.typography.bodySmall
+    val measurer = rememberTextMeasurer()
+    // 基准取中日文的基线：fallback 字体里它的 ascent 最大，其余字体只会更矮
+    val baselinePad = with(LocalDensity.current) {
+        (
+            rememberMetaBaseline(measurer, valueStyle, "声") -
+                rememberMetaBaseline(measurer, valueStyle, value)
+            ).coerceAtLeast(0f).toDp()
+    }
+
     Column(modifier = modifier) {
         Text(
             text = label,
@@ -857,40 +1054,21 @@ private fun MetaItem(
         )
         Spacer(Modifier.height(2.dp))
 
-        if (links.isNotEmpty()) {
-            // 多值：`甲 / 乙`，其中每个名字自己是链接
+        // 按实测基线补齐顶部留白 —— 见上面的「基线」
+        Box(modifier = Modifier.padding(top = baselinePad)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                links.forEachIndexed { index, (text, action) ->
-                    if (index > 0) {
-                        Text(
-                            text = " / ",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    LinkText(text = text, onClick = action)
+                if (starIcon) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_star_fluent),
+                        contentDescription = null,
+                        tint = RatingStar,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Spacer(Modifier.width(3.dp))
                 }
-            }
-            return@Column
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (starIcon) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_star_fluent),
-                    contentDescription = null,
-                    tint = RatingStar,
-                    modifier = Modifier.size(11.dp)
-                )
-                Spacer(Modifier.width(3.dp))
-            }
-            val shown = value.ifBlank { fallback }
-            if (link && onClick != null) {
-                LinkText(text = shown, onClick = onClick)
-            } else {
                 Text(
-                    text = shown,
-                    style = MaterialTheme.typography.bodySmall,
+                    text = value,
+                    style = valueStyle,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onBackground,
                     maxLines = 2,
@@ -902,32 +1080,167 @@ private fun MetaItem(
 }
 
 /**
- * 链接样式的文字：主色 + 下划线 + 小幅放大触摸区。
+ * 社团 / 声优：两列「上标签、下名字」，两列的名字**落在同一条基线上**。
  *
- * 下划线是必须的 —— 只靠颜色的话，在不少主题里与正文差别很小，
- * "这里能点"这件事就传达不出去。
+ * ## 为什么必须自己排（这里前后改了三版）
  *
- * ⚠️ 这里**不能**用 `heightIn(min = 48.dp)` 撑触控高度：
- * 文字是顶对齐的，多出来的 28dp 会全部落在文字下方 ——
- * 而「社团 / 声优」这一行正好是信息区的最后一行，
- * 于是标签区上方凭空多出一大块空白（截图里那段明显的空隙）。
- * 现在改为只加 2dp 内边距（触摸高度约 24dp），布局高度回到文字本来的行高。
+ * 两个名字的字体常常不是同一套：`Tower of Babel` 走 Roboto、
+ * `兎月りりむ。` 走 Noto Sans CJK。两者 ascent 相差 0.2em 以上、行盒高度不同，
+ * 顶部对齐之后字形基线就错开 2~3dp —— 看起来是「声优的名字比社团的低了一截」，
+ * 反过来（社团是中日文、声优是拉丁）则反着低。
+ *
+ * 试过三种"绕过字体度量"的写法，都只能把误差压到 1dp 左右，肉眼仍然看得出来：
+ * ① 同高盒子居中；② 同高盒子贴底；③ 用 [TextMeasurer] 量出偏移补顶部留白。
+ * 所以这里换成**自定义布局**：直接读两段文字**真实排版**出来的
+ * `firstBaseline`，取较大者作共同基线，把矮的那个整体下移差值。
+ * 剩下的误差只来自像素取整，与字体、字号、系统字体缩放都无关。
+ *
+ * ## 点击
+ *
+ * 值里可能不止一个名字（多位声优），每个名字都要能单独跳转 —— 所以用
+ * `AnnotatedString` + [LinkAnnotation]，而不是把整串做成一个可点区域。
  */
 @Composable
-private fun LinkText(text: String, onClick: () -> Unit) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodySmall,
-        fontWeight = FontWeight.Medium,
-        color = MaterialTheme.colorScheme.primary,
-        textDecoration = TextDecoration.Underline,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier
-            .clickable(onClick = onClick)
-            .padding(horizontal = 2.dp, vertical = 2.dp)
+private fun CreditsRow(
+    circleName: String?,
+    circleId: Int?,
+    onOpenCircle: (id: Int, name: String) -> Unit,
+    voiceActors: List<Pair<String, () -> Unit>>
+) {
+    val linkStyles = TextLinkStyles(
+        style = SpanStyle(
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Medium,
+            textDecoration = TextDecoration.Underline
+        )
     )
+
+    val circleText = buildAnnotatedString {
+        val name = circleName ?: "—"
+        if (circleId == null) {
+            append(name)
+        } else {
+            withLink(
+                LinkAnnotation.Clickable(
+                    tag = "circle",
+                    styles = linkStyles,
+                    linkInteractionListener = LinkInteractionListener { onOpenCircle(circleId, name) }
+                )
+            ) { append(name) }
+        }
+    }
+
+    val vaText = buildAnnotatedString {
+        if (voiceActors.isEmpty()) {
+            append("—")
+        } else {
+            voiceActors.forEachIndexed { index, (name, action) ->
+                if (index > 0) append(" / ")
+                withLink(
+                    LinkAnnotation.Clickable(
+                        tag = "va$index",
+                        styles = linkStyles,
+                        linkInteractionListener = LinkInteractionListener { action() }
+                    )
+                ) { append(name) }
+            }
+        }
+    }
+
+    val labelStyle = MaterialTheme.typography.labelSmall
+    val valueStyle = MaterialTheme.typography.bodySmall
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val valueColor = MaterialTheme.colorScheme.onBackground
+
+    Layout(
+        modifier = Modifier.fillMaxWidth(),
+        content = {
+            Text("社团", style = labelStyle, color = labelColor, maxLines = 1)
+            Text(
+                text = circleText,
+                style = valueStyle,
+                color = valueColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text("声优", style = labelStyle, color = labelColor, maxLines = 1)
+            Text(
+                text = vaText,
+                style = valueStyle,
+                color = valueColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    ) { measurables, constraints ->
+        val gapPx = MetaItemGap.roundToPx()
+        val labelGapPx = 2.dp.roundToPx()
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val label1 = measurables[0].measure(loose)
+        val label2 = measurables[2].measure(loose)
+        // 先估一下社团"想多宽"再决定怎么分：社团名可能很长（带特典后缀那种），
+        // 但必须给声优留出至少 1/4 宽，否则声优那列会被挤成一个字、两行省略号。
+        //
+        // ⚠️ 这里只能用 maxIntrinsicWidth()，**不能**先 measure 一遍再按结果重 measure ——
+        // Compose 规定同一个 Measurable 每次测量只能 measure 一次，否则直接抛
+        // `measure() may not be called multiple times on the same Measurable`（真机闪退就踩的这个）。
+        val natural1 = measurables[1].maxIntrinsicWidth(constraints.maxHeight)
+            .coerceAtMost(constraints.maxWidth)
+        val minSecond = maxOf(label2.width, constraints.maxWidth / 4)
+        val col1 = maxOf(
+            label1.width,
+            minOf(natural1, constraints.maxWidth - gapPx - minSecond)
+        ).coerceAtLeast(label1.width)
+        val x2 = col1 + gapPx
+        val value1 = measurables[1].measure(Constraints(maxWidth = col1))
+        val value2 = measurables[3].measure(
+            Constraints(maxWidth = (constraints.maxWidth - x2).coerceAtLeast(1))
+        )
+
+        val labelHeight = maxOf(label1.height, label2.height)
+        val valueTop = labelHeight + labelGapPx
+        val baseline1 = value1.usableFirstBaseline()
+        val baseline2 = value2.usableFirstBaseline()
+        // 共同基线 = 两者里更靠下的那条，矮的那个整体下移差值
+        val target = maxOf(baseline1, baseline2)
+        val height = valueTop + maxOf(
+            target - baseline1 + value1.height,
+            target - baseline2 + value2.height
+        )
+        val width = maxOf(col1, x2 + maxOf(label2.width, value2.width))
+            .coerceAtMost(constraints.maxWidth)
+            .coerceAtLeast(constraints.minWidth)
+
+        layout(width, height) {
+            label1.place(0, 0)
+            label2.place(x2, 0)
+            value1.place(0, valueTop + (target - baseline1))
+            value2.place(x2, valueTop + (target - baseline2))
+        }
+    }
 }
+
+/**
+ * 取真实排版的第一行基线；极少数不暴露基线的节点（比如将来有人把值换成容器）
+ * 用一个按行高估算的兜底值，至少不会把布局算崩。
+ */
+private fun Placeable.usableFirstBaseline(): Int {
+    val baseline = get(FirstBaseline)
+    return if (baseline >= 0) baseline else (height * 0.8f).toInt()
+}
+
+/**
+ * 量出 [text] 在 [style] 下的**第一行**基线（px），用于给同一行里"更矮的字体"补顶部留白。
+ *
+ * 用 [TextMeasurer] 而不是布局结果里的 `firstBaseline`：这里量的时候是同一个 style、
+ * 同一套字体回退，量出来的基线与真正渲染时完全一致；而布局结果只在
+ * [CreditsRow] 那种自己 measure 的地方才拿得到。
+ */
+@Composable
+private fun rememberMetaBaseline(measurer: TextMeasurer, style: TextStyle, text: String): Float =
+    remember(measurer, style, text) {
+        measurer.measure(AnnotatedString(text), style = style).firstBaseline
+    }
 
 /** ④ 标签墙（优先显示官方中文名） */
 @OptIn(ExperimentalLayoutApi::class)
@@ -959,56 +1272,36 @@ private fun TagsBlock(work: Work, onTagClick: (id: Int, name: String) -> Unit = 
 /**
  * ⑥ 文件区表头：只有「文件」小标题 + 一行统计摘要。
  *
- * 「展开全部 / 折叠」按钮、「音质分支切换」标签，以及右下角悬浮的
- * 「开始播放」胶囊均已按需求移除 —— 现在靠**点击文件树里的文件夹行**展开/折叠，
- * 点音频行即开始播放并进入播放器。
+ * 「展开全部 / 折叠」按钮、「音质分支切换」标签、右下角悬浮的「开始播放」胶囊、
+ * 以及原先放在这一行的**文字下载按钮**均已移除 ——
+ * 下载入口和「标记 / 收藏夹」一起收进了顶栏胶囊（见 [DetailTopActions]），
+ * 这样详情页的动作只有一个去处，文件区标题行也不会被按钮挤成两行。
  */
 @Composable
 private fun TrackTreeHeader(
     state: DetailUiState,
-    onRetry: () -> Unit,
-    onDownload: () -> Unit
+    onRetry: () -> Unit
 ) {
     Column(modifier = Modifier.padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(SectionGap))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "文件",
-                    // 与「标签」小标题**统一**同一套样式（labelLarge 14sp / onBackground）
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    // 下载过的作品只显示本地内容，这时摘要要说清楚"这是本地的那部分"，
-                    // 否则用户会以为文件丢了
-                    text = if (state.isDownloaded) {
-                        "已下载 ${state.downloadedPaths.size} 个文件 · ${trackTreeSummary(state.tracks)}"
-                    } else {
-                        trackTreeSummary(state.tracks)
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            // 下载入口：文字按钮（先不做图标）。树还没到时也允许点 ——
-            // 选择器会用空树提示，而不是让按钮"看起来能点却什么也不做"
-            TextButton(
-                onClick = onDownload,
-                enabled = state.pickerTree.isNotEmpty()
-            ) {
-                Text(
-                    text = if (state.isDownloaded) "继续下载" else "下载",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (state.pickerTree.isEmpty()) {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    }
-                )
-            }
-        }
+        Text(
+            text = "文件",
+            // 与「标签」小标题**统一**同一套样式（labelLarge 14sp / onBackground）
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            // 下载过的作品只显示本地内容，这时摘要要说清楚"这是本地的那部分"，
+            // 否则用户会以为文件丢了
+            text = if (state.isDownloaded) {
+                "已下载 ${state.downloadedPaths.size} 个文件 · ${trackTreeSummary(state.tracks)}"
+            } else {
+                trackTreeSummary(state.tracks)
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         // 树加载中 / 加载失败
         when {

@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "asmrOneApp"
+rootProject.name = "ToAsmr"
 include(":app")

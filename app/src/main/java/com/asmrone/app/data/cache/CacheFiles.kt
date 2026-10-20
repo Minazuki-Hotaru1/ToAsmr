@@ -1,6 +1,7 @@
 package com.asmrone.app.data.cache
 
 import android.content.Context
+import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
@@ -80,6 +81,34 @@ internal object CacheFiles {
     fun sizeBytes(context: Context): Long = runCatching {
         dir(context).listFiles()?.sumOf { it.length() } ?: 0L
     }.getOrDefault(0L)
+
+    /** 目录里的一个文件，以及从内容里读出来的逻辑 key */
+    class CachedFile(val key: String, val file: File) {
+        val bytes: Long get() = file.length()
+    }
+
+    /**
+     * 列出缓存目录里的全部文件，并读回各自的逻辑 key。
+     *
+     * ## 为什么要读内容而不是看文件名
+     *
+     * 文件名是 SHA-256（见 [fileNameFor]），从名字上看不出这一份是收藏镜像、
+     * 搜索字典，还是**「用户已表达、云端还没收到」的待补写**。
+     * 三者存在同一个目录里，而清缓存时**最后一种绝对不能删** ——
+     * 删掉就等于用户的操作凭空消失。所以清理前必须先知道 key。
+     *
+     * key 写在文件内容的 `"key"` 字段里（见 `SyncCacheStore.write`），
+     * 解析失败（坏文件、`.tmp` 残留）时 key 为空串，调用方按"可删"处理即可。
+     */
+    fun entries(context: Context): List<CachedFile> = runCatching {
+        dir(context).listFiles()?.mapNotNull { file ->
+            if (!file.isFile) return@mapNotNull null
+            val key = runCatching {
+                JSONObject(file.readText(Charsets.UTF_8)).optString("key")
+            }.getOrDefault("")
+            CachedFile(key, file)
+        }.orEmpty()
+    }.getOrDefault(emptyList())
 
     // ───────────────────────── 结构版本与迁移 ─────────────────────────
 
@@ -195,4 +224,11 @@ internal object ExternalOpenFiles {
     fun sizeBytes(context: Context): Long = runCatching {
         dir(context).listFiles()?.sumOf { it.length() } ?: 0L
     }.getOrDefault(0L)
+
+    /** 清空临时文件目录；返回删除的文件数 */
+    fun clearAll(context: Context): Int = runCatching {
+        var removed = 0
+        dir(context).listFiles()?.forEach { if (it.delete()) removed++ }
+        removed
+    }.getOrDefault(0)
 }

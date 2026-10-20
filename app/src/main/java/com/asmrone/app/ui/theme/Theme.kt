@@ -55,7 +55,7 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 /**
- * AsmrOne 主题（沿用 comicApp 的 `ComicAppTheme` 结构）
+ * ToAsmr 主题（沿用 comicApp 的 `ComicAppTheme` 结构）
  *
  * @param darkTheme 暗色模式，默认跟随系统设置
  * @param dynamicColor 是否使用 Material You 动态取色，默认关闭（使用自定义配色）

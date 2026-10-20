@@ -8,6 +8,8 @@ import com.asmrone.app.data.model.AudioFormatPreference
 import com.asmrone.app.data.cache.ExternalOpenFiles
 import com.asmrone.app.data.cache.FolderStateStore
 import com.asmrone.app.data.download.DownloadManager
+import com.asmrone.app.data.download.DownloadSources
+import com.asmrone.app.data.download.DownloadStorage
 import com.asmrone.app.data.download.DownloadStore
 import com.asmrone.app.data.download.filterTreeTo
 import com.asmrone.app.data.model.CollectionStatus
@@ -28,6 +30,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+
+/** 详情页「标记」按钮一点即给的默认星级（满分即 5 星） */
+private const val QUICK_RATE_STARS = 5
 
 /**
  * 详情页状态。
@@ -106,6 +111,9 @@ class DetailViewModel : ViewModel() {
     /** 上一次标记尝试的完整意图（含两层"清空"语义），供失败后「重试」用 */
     private var lastAttempt: CollectionAttempt? = null
 
+    /** 已经落本地、但网络还没发出去的快捷评分（见 [sendQuickRate]） */
+    private var pendingQuickRate: QuickRateRequest? = null
+
     /** 监听下载完成的协程（每个 ViewModel 只挂一个） */
     private var downloadObserverJob: Job? = null
 
@@ -116,7 +124,7 @@ class DetailViewModel : ViewModel() {
 
         // 已下载的作品只显示本地已有的内容。这里用同步的 cached 读数：
         // 启动时 DownloadManager 会预热，命中时第一帧就是过滤后的树，不会先闪一下全量。
-        val cachedDownloaded = DownloadStore.cached(workId)?.paths.orEmpty()
+        val cachedDownloaded = DownloadSources.cachedPaths(workId)
         val peeked = AsmrRepository.peekWork(workId)
         val peekedTracks = AsmrRepository.peekTracks(workId)
         val peekedVisible = filterDownloaded(peekedTracks ?: emptyList(), cachedDownloaded)
@@ -137,7 +145,7 @@ class DetailViewModel : ViewModel() {
             // 上次展开过哪些文件夹。和树一起用 —— 只有树到了才知道这些路径还有没有效
             val remembered = FolderStateStore.load(workId)
             // 清单可能还没预热到，这里补一次（已缓存的直接返回内存里的那份）
-            val downloaded = DownloadStore.load(workId)?.paths.orEmpty()
+            val downloaded = DownloadSources.paths(workId)
 
             // 内存里没有（冷启动直接从收藏页点进来）→ 先用**磁盘那份**铺界面。
             // 仍然不发请求：真正要不要联网由 getWorkDetail 里的保鲜期决定
@@ -199,7 +207,7 @@ class DetailViewModel : ViewModel() {
     private suspend fun applyDownloadedState() {
         val workId = loadedId
         if (workId == 0) return
-        val downloaded = DownloadStore.load(workId)?.paths.orEmpty()
+        val downloaded = DownloadSources.paths(workId)
         val full = _state.value.downloadTree
         if (full.isEmpty()) return
         val visible = filterDownloaded(full, downloaded)
@@ -240,9 +248,12 @@ class DetailViewModel : ViewModel() {
         val work = _state.value.work ?: return
         val tree = _state.value.pickerTree
         if (paths.isEmpty() || tree.isEmpty()) return
-        DownloadManager.enqueue(work, tree, paths)
+        // 存哪儿由「下载」页那个开关决定（默认 App 内，也能切成公共目录）
+        val storage = AppPrefs.downloadStorage.value
+        DownloadManager.enqueue(work, tree, paths, storage)
         val count = paths.size
-        notify("已加入下载队列（$count 个文件），可在「下载」页查看进度")
+        val where = if (storage == DownloadStorage.LOCAL) "本地文件夹" else "App 内"
+        notify("已加入下载队列（$count 个文件，保存到$where），可在「下载」页查看进度")
     }
 
     // ─────────────────────────── 我的收藏（云端状态）───────────────────────────
@@ -285,9 +296,105 @@ class DetailViewModel : ViewModel() {
             rating = attempt.rating,
             remove = attempt.remove,
             clearStatusOverride = attempt.clearStatus,
-            clearRatingOverride = attempt.clearRating
+            clearRatingOverride = attempt.clearRating,
+            keepStatus = attempt.keepStatus
         )
     }
+
+    /**
+     * 详情页「标记」按钮的快捷评分：直接给 5 星，**不改状态**。
+     *
+     * 为什么不直接用 `setCollectionStatus(null, rating)`：
+     * 它默认会把"状态为 null"推断成"清掉状态"（只要本地原本有状态），
+     * 快捷评分于是会顺手抹掉用户原来的「想听/在听」。这里显式
+     * `clearStatusOverride = false` + `keepStatus = true`，只写星级。
+     *
+     * 再点一次仍是 5 星（幂等）；要改分数或状态走提示里的「修改」。
+     */
+    fun quickRate(stars: Int = QUICK_RATE_STARS) {
+        val work = _state.value.work ?: return
+        pendingQuickRate = QuickRateRequest(
+            workId = work.id,
+            stars = stars,
+            // 记下点之前的样子：「取消」要把这一笔原样还回去
+            previousRating = work.userRating,
+            previousStatus = work.collectionStatus
+        )
+        performCollectionWrite(
+            status = null,
+            rating = stars,
+            remove = false,
+            clearStatusOverride = false,
+            clearRatingOverride = false,
+            keepStatus = true,
+            // 只落本地：网络那半等 6 秒反悔窗口结束后由界面调 [sendQuickRate]
+            deferNetwork = true
+        )
+    }
+
+    /**
+     * 反悔窗口结束后才有意义：把刚才那次快捷评分的**网络那一半**发出去。
+     *
+     * 不碰界面状态（可能已经离开详情页了），本地内容在 [quickRate] 时就落好了；
+     * 失败会由仓库记进待补写队列，下一次对齐自动补上。
+     */
+    suspend fun sendQuickRate(request: QuickRateRequest) {
+        runCatching {
+            AsmrRepository.sendDeferredCollectionUpdate(
+                workId = request.workId,
+                status = null,
+                rating = request.stars,
+                remove = false,
+                work = null,
+                clearStatus = false,
+                clearRating = false,
+                keepStatus = true
+            )
+        }
+        if (pendingQuickRate == request) pendingQuickRate = null
+    }
+
+    /** 还没发出去的那次快捷评分（界面拿来登记反悔窗口） */
+    fun pendingQuickRate(): QuickRateRequest? = pendingQuickRate
+
+    /** 弹窗确认了别的选择：这次快捷评分作废 */
+    fun dropPendingQuickRate() {
+        pendingQuickRate = null
+    }
+
+    /**
+     * 弹窗点了「取消」：把这次快捷评分**原样还回去**，等于什么都没发生。
+     *
+     * 只写本地、不发网络 —— 那笔网络请求还在 6 秒反悔窗口里，从来没发出去过；
+     * 这里把本地缓存改回点之前的样子（状态与星级都按快照还原）。
+     */
+    fun revertQuickRate(request: QuickRateRequest) {
+        if (pendingQuickRate == request) pendingQuickRate = null
+        viewModelScope.launch {
+            runCatching {
+                AsmrRepository.updateCollection(
+                    workId = request.workId,
+                    status = request.previousStatus,
+                    rating = request.previousRating,
+                    remove = false,
+                    work = _state.value.work,
+                    // 点之前没有的东西要显式清掉（部分更新不传等于"别动"）
+                    clearStatus = request.previousStatus == null,
+                    clearRating = request.previousRating == null,
+                    deferNetwork = true
+                )
+            }
+        }
+    }
+
+    /** 一次快捷评分要发的全部内容（只带 id/星级：离开页面后也能发） */
+    data class QuickRateRequest(
+        val workId: Int,
+        val stars: Int,
+        /** 点之前的样子：弹窗「取消」时按它回滚 */
+        val previousRating: Int? = null,
+        val previousStatus: CollectionStatus? = null
+    )
 
     /** 一次标记尝试的完整意图（含两层"清空"语义），供重试原样复用 */
     private data class CollectionAttempt(
@@ -295,7 +402,8 @@ class DetailViewModel : ViewModel() {
         val rating: Int?,
         val remove: Boolean,
         val clearStatus: Boolean,
-        val clearRating: Boolean
+        val clearRating: Boolean,
+        val keepStatus: Boolean = false
     )
 
     private fun performCollectionWrite(
@@ -303,7 +411,9 @@ class DetailViewModel : ViewModel() {
         rating: Int?,
         remove: Boolean,
         clearStatusOverride: Boolean? = null,
-        clearRatingOverride: Boolean? = null
+        clearRatingOverride: Boolean? = null,
+        keepStatus: Boolean = false,
+        deferNetwork: Boolean = false
     ) {
         val work = _state.value.work ?: return
         if (!AuthManager.state.value.isLoggedIn) {
@@ -327,14 +437,22 @@ class DetailViewModel : ViewModel() {
             ?: (!remove && targetStatus == null && previous.progress != null)
         val clearRating = clearRatingOverride
             ?: (!remove && targetRating == null && previous.userRating != null)
-        lastAttempt = CollectionAttempt(targetStatus, targetRating, remove, clearStatus, clearRating)
+        lastAttempt = CollectionAttempt(
+            status = targetStatus,
+            rating = targetRating,
+            remove = remove,
+            clearStatus = clearStatus,
+            clearRating = clearRating,
+            keepStatus = keepStatus
+        )
 
         // 乐观更新：状态与评分一起改，界面立刻反映。
         // ⚠️ 评分这里**不能**写成 `targetRating ?: work.userRating`：
         // 那样"清空评分"会被回填成旧值，星星跳回来，用户以为没生效。
+        // keepStatus 时状态原样留着（快捷评分只动星级）。
         _state.value = _state.value.copy(
             work = work.copy(
-                progress = targetStatus?.apiValue,
+                progress = if (keepStatus) previous.progress else targetStatus?.apiValue,
                 userRating = targetRating
             ),
             collectionBusy = true,
@@ -342,6 +460,24 @@ class DetailViewModel : ViewModel() {
         )
 
         viewModelScope.launch {
+            if (deferNetwork) {
+                // 只落本地：网络那半由界面在「反悔窗口」结束后调 [sendQuickRate]
+                runCatching {
+                    AsmrRepository.updateCollectionOrThrow(
+                        workId = work.id,
+                        status = targetStatus,
+                        rating = targetRating,
+                        remove = remove,
+                        work = work,
+                        clearStatus = clearStatus,
+                        clearRating = clearRating,
+                        keepStatus = keepStatus,
+                        deferNetwork = true
+                    )
+                }
+                _state.value = _state.value.copy(collectionBusy = false)
+                return@launch
+            }
             // 用 Result 拿到**原始异常**，才能按类型分类出真正的原因
             val result = runCatching {
                 AsmrRepository.updateCollectionOrThrow(
@@ -357,7 +493,9 @@ class DetailViewModel : ViewModel() {
                     // 必须显式告诉服务端 —— 不然 PUT 是部分更新，云端会原样留着旧状态
                     clearStatus = clearStatus,
                     // 同理：星级被点掉 = 清空评分（保留状态）
-                    clearRating = clearRating
+                    clearRating = clearRating,
+                    // 快捷评分只写星级：本地与云端的状态都保持原样
+                    keepStatus = keepStatus
                 )
             }
             _state.value = if (result.isSuccess) {

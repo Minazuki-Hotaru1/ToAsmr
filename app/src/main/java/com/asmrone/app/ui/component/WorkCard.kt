@@ -57,11 +57,10 @@ import com.asmrone.app.ui.theme.Sizes
  *   样式统一为浅色底 + 同色系文字（见 [ImageBadge]）；
  * - 信息区**只保留四项**：标题、社团、声优、标签
  *   （不再显示评分、价格、销量、时长）；
- * - 图片底部保留收听进度线；
+ * - 图片底部**不再画收听进度线**（2026-10-21 按需求去掉，进度只在播放页看）；
  * - 按压时轻微缩放（`0.96`，spring）+ 主色涟漪。
  *
  * @param host API 主机，用于在作品没有封面字段时回退到 `/api/cover/{id}`
- * @param progress 0f..1f 的收听进度；null 表示没听过
  * @param showAgeBadge 是否显示左上角「全年龄」角标。收藏页数据来自精简缓存、
  *   没有可靠的年龄分级，那边传 false（否则整个收藏夹都会被标成"全年龄"）。
  * @param showTags 是否显示信息区底部的标签。收藏页只显示社团与声优，那边传 false。
@@ -75,7 +74,6 @@ fun WorkCard(
     host: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    progress: Float? = null,
     onLongClick: (() -> Unit)? = null,
     showAgeBadge: Boolean = true,
     showTags: Boolean = true,
@@ -147,26 +145,8 @@ fun WorkCard(
                     }
                 }
 
-                // 收听进度线
-                if (progress != null && progress > 0f) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth()
-                            .height(3.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(progress.coerceIn(0f, 1f))
-                                .height(3.dp)
-                                .background(MaterialTheme.colorScheme.primary)
-                        )
-                    }
-                }
-
                 // 自定义叠加内容（收藏页用来叠「听歌状态 / 待同步 / 我的评分」）。
-                // 放在进度线之后 → 层级在它之上；内部可点，不会把整卡的点击吞掉。
+                // 内部可点，不会把整卡的点击吞掉。
                 if (badge != null) {
                     badge()
                 }
@@ -247,7 +227,6 @@ fun WorkRowCard(
     host: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    progress: Float? = null,
     trailing: (@Composable () -> Unit)? = null
 ) {
     val shape = RoundedCornerShape(12.dp)
@@ -280,22 +259,6 @@ fun WorkRowCard(
                     contentScale = ContentScale.Crop,
                     showBackdrop = false
                 )
-                if (progress != null && progress > 0f) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .width(Sizes.ROW_THUMB_WIDTH)
-                            .height(3.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(progress.coerceIn(0f, 1f))
-                                .height(3.dp)
-                                .background(MaterialTheme.colorScheme.primary)
-                        )
-                    }
-                }
             }
 
             Spacer(Modifier.width(12.dp))

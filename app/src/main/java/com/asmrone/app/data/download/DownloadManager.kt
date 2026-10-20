@@ -5,6 +5,7 @@ import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.player.AudioController
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,7 +63,9 @@ object DownloadManager {
         val bytesTotal: Long = 0L,
         val bytesDone: Long = 0L,
         val status: Status = Status.QUEUED,
-        val error: String? = null
+        val error: String? = null,
+        /** 这一批存到哪儿（排队时定下来，中途改全局开关不影响它） */
+        val storage: DownloadStorage = DownloadStorage.APP
     ) {
         /** 0f..1f；总量未知时按文件数估 */
         val progress: Float
@@ -81,8 +84,12 @@ object DownloadManager {
         val host: String,
         val fileCount: Int,
         val bytes: Long,
-        val savedAt: Long
-    )
+        val savedAt: Long,
+        val storage: DownloadStorage = DownloadStorage.APP
+    ) {
+        /** 同一部作品在两个目录各有一份时，列表里是两张卡，key 不能只用 id */
+        val key: String get() = "${storage.name}:${work.id}"
+    }
 
     private const val PROGRESS_INTERVAL_MS = 200L
 
@@ -93,16 +100,37 @@ object DownloadManager {
 
     private val _library = MutableStateFlow<List<DownloadedWork>>(emptyList())
 
-    /** 已下载作品（下载页卡片网格，按保存时间倒序） */
+    /** 已下载作品（下载页卡片网格，按保存时间倒序；App 内与本地两份都列出来） */
     val library: StateFlow<List<DownloadedWork>> = _library.asStateFlow()
+
+    /** 一次性提示（"已保存到本地/保存失败"），界面消费后 [clearMessage] */
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message.asStateFlow()
+
+    fun clearMessage() {
+        _message.value = null
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val gate = Mutex()
     private val jobs = HashMap<Int, Job>()
 
+    /** 只用来判断「所有文件访问权限」，不要拿它做别的事 */
+    private var appContext: Context? = null
+
     fun init(context: Context) {
+        appContext = context.applicationContext
         DownloadStore.init(context)
-        scope.launch { refreshLibrary() }
+        scope.launch {
+            LocalDownloadStore.rescan()
+            refreshLibrary()
+        }
+    }
+
+    /** 本地保存权限（界面在切换模式时也会问一次，避免下到一半才失败） */
+    fun canWriteLocal(): Boolean {
+        val ctx = appContext ?: return false
+        return LocalDownloadStore.hasAccess(ctx)
     }
 
     /**
@@ -111,8 +139,14 @@ object DownloadManager {
      * 已存在的文件不会重下；已下载的文件在清单里累加，不会丢掉上次下的内容。
      *
      * @param paths 只接受**叶子文件**路径（文件夹由调用方展开成叶子）
+     * @param storage 落到 App 私有目录还是公共目录；排队后不再变化
      */
-    fun enqueue(work: Work, tree: List<Track>, paths: Collection<String>) {
+    fun enqueue(
+        work: Work,
+        tree: List<Track>,
+        paths: Collection<String>,
+        storage: DownloadStorage = DownloadStorage.APP
+    ) {
         val wanted = paths.toSet()
         if (wanted.isEmpty()) return
         val leaves = tree.flattenLeaves().filter { it.path in wanted }
@@ -130,12 +164,28 @@ object DownloadManager {
                 coverUrl = work.coverUrl(AsmrRepository.host),
                 totalFiles = leaves.size,
                 bytesTotal = leaves.sumOf { it.size ?: 0L },
-                status = Status.QUEUED
+                status = Status.QUEUED,
+                storage = storage
             ))
         }
 
+        if (storage == DownloadStorage.LOCAL) {
+            // 写公共目录前必须拿到「所有文件访问权限」，没有就直接标失败，
+            // 让界面去引导授权，而不是下到一半才发现写不进去
+            if (!canWriteLocal()) {
+                setStatus(work.id) {
+                    it.copy(
+                        status = Status.FAILED,
+                        error = "没有存储权限，无法保存到本地文件夹"
+                    )
+                }
+                return
+            }
+            scope.launch { LocalDownloadStore.prewarm() }
+        }
+
         val job = scope.launch {
-            gate.withLock { runDownload(work, tree, leaves) }
+            gate.withLock { runDownload(work, tree, leaves, storage) }
         }
         synchronized(jobs) { jobs[work.id] = job }
         job.invokeOnCompletion { synchronized(jobs) { jobs.remove(work.id) } }
@@ -146,40 +196,89 @@ object DownloadManager {
         job.cancel(CancellationException("已取消下载"))
     }
 
-    /** 删除已下载的作品（含磁盘文件） */
-    fun remove(workId: Int) {
+    /** 删除某一份下载（App 内那份与公共目录那份各自独立） */
+    fun remove(workId: Int, storage: DownloadStorage) {
         cancel(workId)
         scope.launch {
-            DownloadStore.remove(workId)
+            if (storage == DownloadStorage.LOCAL) {
+                LocalDownloadStore.remove(workId)
+            } else {
+                DownloadStore.remove(workId)
+            }
             _tasks.update { it - workId }
             refreshLibrary()
         }
     }
 
-    /** 重新扫描磁盘，刷新下载页列表 */
+    /**
+     * 把 App 内那份下载复制到公共目录（「另存到本地」）。
+     *
+     * 复制而不是移动：App 内那份可能正在播放，也可能被"离线详情"依赖；
+     * 用户只是想同时在文件管理器里有一份。
+     */
+    fun copyToLocal(workId: Int) {
+        scope.launch {
+            val ok = LocalDownloadStore.copyFromApp(workId)
+            _message.value = if (ok) "已保存到本地文件夹" else "保存失败，请检查本地文件夹与存储权限"
+            if (ok) refreshLibrary()
+        }
+    }
+
+    /**
+     * 重新扫描磁盘，刷新下载页列表。
+     *
+     * 两套目录都列：都是从本 App 下出去的，用户理应在这儿看到并管理它们
+     * （卡片角标与删除动作按 [DownloadedWork.storage] 区分）。
+     */
     fun refreshLibrary() {
         scope.launch {
-            val items = DownloadStore.loadAll().mapNotNull { manifest ->
-                val json = manifest.workJson ?: return@mapNotNull null
-                val work = runCatching { Work.fromJson(JSONObject(json), manifest.host) }.getOrNull()
-                    ?: return@mapNotNull null
-                DownloadedWork(
-                    work = work,
-                    host = manifest.host,
-                    fileCount = manifest.fileCount,
-                    bytes = manifest.totalBytes,
-                    savedAt = manifest.savedAt
-                )
-            }.sortedByDescending { it.savedAt }
-            _library.value = items
+            val appLocal = DownloadStore.loadAll().mapNotNull { manifest -> toDownloaded(manifest) }
+            val publicDir = LocalDownloadStore.loadAll().mapNotNull { manifest -> toDownloaded(manifest) }
+            _library.value = (appLocal + publicDir).sortedByDescending { it.savedAt }
         }
+    }
+
+    private fun toDownloaded(manifest: DownloadManifest): DownloadedWork? {
+        val json = manifest.workJson ?: return null
+        val work = runCatching { Work.fromJson(JSONObject(json), manifest.host) }.getOrNull()
+            ?: return null
+        return DownloadedWork(
+            work = work,
+            host = manifest.host,
+            fileCount = manifest.fileCount,
+            bytes = manifest.totalBytes,
+            savedAt = manifest.savedAt,
+            storage = manifest.storage
+        )
     }
 
     // ─────────────────────────── 实际下载 ───────────────────────────
 
-    private suspend fun runDownload(work: Work, tree: List<Track>, leaves: List<Track>) {
-        var manifest = DownloadStore.load(work.id)
-            ?: DownloadManifest.empty(work.id, AsmrRepository.host, null, tree)
+    private suspend fun runDownload(
+        work: Work,
+        tree: List<Track>,
+        leaves: List<Track>,
+        storage: DownloadStorage
+    ) {
+        // 两套目录的 API 形状不一样（App 内用哈希文件名、本地用原目录结构），
+        // 这里收成四个函数，下面的下载主循环就不用到处 if
+        val local = storage == DownloadStorage.LOCAL
+        suspend fun loadManifest(): DownloadManifest? =
+            if (local) LocalDownloadStore.load(work.id) else DownloadStore.load(work.id)
+        suspend fun saveManifest(m: DownloadManifest) {
+            if (local) LocalDownloadStore.save(m, work.title, work.sourceId) else DownloadStore.save(m)
+        }
+        fun existingFile(path: String): File? =
+            if (local) LocalDownloadStore.localFileFor(work.id, path) else DownloadStore.localFileFor(work.id, path)
+        fun targetFile(path: String): File =
+            if (local) {
+                LocalDownloadStore.fileFor(work.id, work.title, path, work.sourceId)
+            } else {
+                DownloadStore.fileFor(work.id, path)
+            }
+
+        var manifest = loadManifest()
+            ?: DownloadManifest.empty(work.id, AsmrRepository.host, null, tree, storage)
 
         // 之前的清单里已经有作品 JSON 就沿用，避免为此多发一个请求
         if (manifest.workJson == null) {
@@ -201,7 +300,7 @@ object DownloadManager {
 
         try {
             leaves.forEach { node ->
-                val already = DownloadStore.localFileFor(work.id, node.path)
+                val already = existingFile(node.path)
                 if (already != null && already.length() > 0) {
                     // 上次已经下完：直接记账（清单可能落后于磁盘）
                     if (manifest.files[node.path] == null) {
@@ -219,7 +318,7 @@ object DownloadManager {
                     doneFiles += 1
                     return@forEach
                 }
-                val target = DownloadStore.fileFor(work.id, node.path)
+                val target = targetFile(node.path)
                 var lastEmit = 0L
                 val baseDone = bytesDone - (manifest.files[node.path]?.bytes ?: 0L)
                 val written = AsmrRepository.downloadToFile(node, target) { fileDone, _ ->
@@ -243,7 +342,7 @@ object DownloadManager {
                     DownloadedFile(path = node.path, fileName = target.name, bytes = written, durationSec = node.durationSec)
                 )
                 // 每个文件落定就写一次清单：进程被杀也不丢账
-                DownloadStore.save(manifest)
+                saveManifest(manifest)
                 setStatus(work.id) { task ->
                     task.copy(
                         doneFiles = doneFiles,
@@ -254,7 +353,7 @@ object DownloadManager {
                 }
             }
 
-            DownloadStore.save(manifest)
+            saveManifest(manifest)
             setStatus(work.id) {
                 it.copy(
                     status = Status.DONE,

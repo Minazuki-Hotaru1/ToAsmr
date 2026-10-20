@@ -3,7 +3,7 @@ package com.asmrone.app.ui.theme
 import androidx.compose.ui.unit.dp
 
 // ═══════════════════════════════════════════════════════
-// AsmrOne 设计 Token —— 间距 / 圆角 / 阴影 / 触控 / 动效 / 液态玻璃几何
+// ToAsmr 设计 Token —— 间距 / 圆角 / 阴影 / 触控 / 动效 / 液态玻璃几何
 //
 // 与 comicApp（ToComic）的 Token 表保持一致；差异只有两处：
 //  1. 玻璃的**材质参数**不在 Token 里，而是放在 `GlassStylePrefs`（可在设置里实时调）；
@@ -117,6 +117,7 @@ object Liquid {
      *
      * 16dp 是"再拉高一点"之后的值：内容离顶栏再远一些，首行不会贴着玻璃栏。
      */
+
     val CONTENT_TOP_GAP = 5 .dp
 
     /** 顶栏右侧动作按钮（图标 / 图标+文字）的高度 */
@@ -148,6 +149,19 @@ object Liquid {
      * 没有迷你播放器时多出的那段也只是列表末尾的空白，不会挡住内容。
      */
     val CONTENT_BOTTOM_INSET_WITH_PLAYER = 180.dp
+
+    /**
+     * **轻量提示（Toast）距屏幕底部的固定高度** —— 全应用共用一个值。
+     *
+     * 168dp 正好越过「导航栏 64 + 间距 + 迷你播放器 60」那一截；固定不动的理由：
+     *  - 提示的位置不应该随页面（详情 / 收藏 / 收藏夹详情）变来变去；
+     *  - 也不应该随迷你播放器出现/消失上下跳 —— 同一个动作，反馈总在同一个高度。
+     *
+     * 用法：`ToastHost(toastOffset = Liquid.TOAST_OFFSET, …)`，
+     * 组件内部按"距屏幕底部抬多高"处理（`offset(y = -toastOffset)`），
+     * 所以**数值变大＝往上移**。
+     */
+    val TOAST_OFFSET = 100.dp
 }
 
 // ── 封面与播放器尺寸 ──────────────────────────────────

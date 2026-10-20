@@ -6,6 +6,7 @@ import com.asmrone.app.data.prefs.PlaybackSessionStore
 import com.asmrone.app.data.audio.LocalAudioProxy
 import com.asmrone.app.data.audio.TrackCacheLedger
 import com.asmrone.app.data.audio.AudioCacheStore
+import com.asmrone.app.data.download.DownloadSources
 import com.asmrone.app.data.download.DownloadStore
 import android.content.Context
 import android.media.AudioAttributes
@@ -518,7 +519,7 @@ object AudioController {
         // 两条好处：① 断网、退号、换主机之后照样能放；② 绕开代理意味着不会
         // 再为这一轨的每个字节做一次"缓存命中"记账 —— 已经完整躺在磁盘上了，
         // 再记一遍只会把单曲缓存额度算成超限。
-        val localFile = runCatching { DownloadStore.localFileFor(s.workId, track.path) }.getOrNull()
+        val localFile = runCatching { DownloadSources.localFileFor(s.workId, track.path) }.getOrNull()
 
         if (localFile == null && url.isNullOrBlank()) {
             _state.value = s.copy(

@@ -2,6 +2,7 @@ package com.asmrone.app.ui.screen.download
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,8 +12,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
@@ -20,11 +23,13 @@ import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -37,19 +42,34 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
+import com.asmrone.app.R
 import com.asmrone.app.data.download.DownloadManager
+import com.asmrone.app.data.download.DownloadStorage
+import com.asmrone.app.data.download.LocalDownloadStore
+import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
+import com.asmrone.app.ui.component.DownloadStorageButton
 import com.asmrone.app.ui.component.EmptyHint
+import com.asmrone.app.ui.component.LiquidCapsule
 import com.asmrone.app.ui.component.TabTopBar
+import com.asmrone.app.ui.component.ToastHost
+import com.asmrone.app.ui.component.TopBarAction
 import com.asmrone.app.ui.component.WorkCard
 import com.asmrone.app.ui.component.animateCardEntrance
 import com.asmrone.app.ui.component.cardEntrance
+import com.asmrone.app.ui.component.rememberLocalStorageRequester
 import com.asmrone.app.ui.component.rememberStatusBarTopDp
+import com.asmrone.app.ui.component.rememberToastState
 import com.asmrone.app.ui.theme.Liquid
 import com.asmrone.app.ui.theme.Sizes
 import kotlin.math.roundToInt
@@ -70,6 +90,28 @@ fun DownloadsScreen(
 ) {
     val tasks by DownloadManager.tasks.collectAsState()
     val library by DownloadManager.library.collectAsState()
+    val storage by AppPrefs.downloadStorage.collectAsState()
+    val localDir by AppPrefs.localDownloadDir.collectAsState()
+    val message by DownloadManager.message.collectAsState()
+    val context = LocalContext.current
+    val toast = rememberToastState()
+
+    // 申请公共目录写权限：授权成功后顺手把存储模式切成"本地"，省得用户再点一次开关
+    val requestLocalAccess = rememberLocalStorageRequester { granted ->
+        if (granted) {
+            AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
+            toast.show("之后的下载保存到本地文件夹")
+        } else {
+            toast.show("没有存储权限，仍保存到 App 内")
+        }
+    }
+
+    LaunchedEffect(message) {
+        message?.let {
+            toast.show(it)
+            DownloadManager.clearMessage()
+        }
+    }
 
     val density = LocalDensity.current
     val statusTopDp = rememberStatusBarTopDp()
@@ -92,8 +134,8 @@ fun DownloadsScreen(
     val activeTasks = remember(tasks) {
         tasks.values.filter { it.isActive }.sortedBy { it.title }
     }
-    val animatedKeys = remember { mutableSetOf<Int>() }
-    var pendingDelete by remember { mutableStateOf<DownloadManager.DownloadedWork?>(null) }
+    val animatedKeys = remember { mutableSetOf<String>() }
+    var pendingActions by remember { mutableStateOf<DownloadManager.DownloadedWork?>(null) }
 
     // 首次进入时把磁盘上的清单读出来（进程重启、或直接从通知点进来时 library 还可能是空的）
     LaunchedEffect(Unit) {
@@ -133,14 +175,14 @@ fun DownloadsScreen(
                     }
                 }
 
-                items(library, key = { it.work.id }) { item ->
-                    val alpha = remember(item.work.id) {
-                        Animatable(if (item.work.id in animatedKeys) 1f else 0f)
+                items(library, key = { it.key }) { item ->
+                    val alpha = remember(item.key) {
+                        Animatable(if (item.key in animatedKeys) 1f else 0f)
                     }
-                    LaunchedEffect(item.work.id) {
-                        if (item.work.id !in animatedKeys) {
-                            animatedKeys.add(item.work.id)
-                            val index = library.indexOfFirst { it.work.id == item.work.id }
+                    LaunchedEffect(item.key) {
+                        if (item.key !in animatedKeys) {
+                            animatedKeys.add(item.key)
+                            val index = library.indexOfFirst { it.key == item.key }
                             alpha.animateCardEntrance(if (index < 0) 0 else index)
                         }
                     }
@@ -149,9 +191,15 @@ fun DownloadsScreen(
                             work = item.work,
                             host = item.host,
                             onClick = { onWorkClick(item.work.id) },
-                            onLongClick = { pendingDelete = item },
+                            onLongClick = { pendingActions = item },
                             // 与收藏页一致：不显示标签（标签在手机上一行放不下、信息价值低）
-                            showTags = false
+                            showTags = false,
+                            // 存在公共目录里的那份标一下，否则同一部作品的两张卡看起来一样
+                            badge = if (item.storage == DownloadStorage.LOCAL) {
+                                { StorageBadge(text = "本地") }
+                            } else {
+                                null
+                            }
                         )
                     }
                 }
@@ -175,27 +223,83 @@ fun DownloadsScreen(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.width(8.dp))
             }
+            DownloadStorageButton(
+                storage = storage,                onClick = {
+                    if (storage == DownloadStorage.LOCAL) {
+                        AppPrefs.setDownloadStorage(DownloadStorage.APP)
+                        toast.show("之后的下载保存到 App 内")
+                    } else if (LocalDownloadStore.hasAccess(context)) {
+                        AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
+                        toast.show("之后的下载保存到本地文件夹")
+                    } else {
+                        toast.show("需要存储权限才能保存到本地文件夹")
+                        requestLocalAccess()
+                    }
+                }
+            )
         }
+        ToastHost(
+            state = toast,
+            toastOffset = Liquid.TOAST_OFFSET,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 
-    pendingDelete?.let { target ->
+    pendingActions?.let { target ->
         AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("删除下载") },
+            onDismissRequest = { pendingActions = null },
+            title = { Text(target.work.title, maxLines = 2) },
             text = {
-                Text("将删除《${target.work.title}》在本地已下载的 ${target.fileCount} 个文件（${formatBytes(target.bytes)}）。此操作不会影响云端内容。")
+                Column {
+                    Text(
+                        "${target.fileCount} 个文件 · ${formatBytes(target.bytes)} · " +
+                            if (target.storage == DownloadStorage.LOCAL) "本地文件夹" else "App 内"
+                    )
+                    if (target.storage == DownloadStorage.APP) {
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(onClick = {
+                            pendingActions = null
+                            DownloadManager.copyToLocal(target.work.id)
+                        }) {
+                            Text("另存到本地文件夹")
+                        }
+                        Text(
+                            text = localDir,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
+                    } else {
+                        // 公共目录那份是真的文件，删之前说清楚
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = localDir,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "删除会把这些文件从本地文件夹里真正删掉",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    pendingDelete = null
-                    DownloadManager.remove(target.work.id)
+                    val storage = target.storage
+                    pendingActions = null
+                    DownloadManager.remove(target.work.id, storage)
                 }) {
                     Text("删除", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+                TextButton(onClick = { pendingActions = null }) { Text("取消") }
             }
         )
     }
@@ -265,6 +369,25 @@ private fun ActiveDownloadRow(
                 Text("取消", style = MaterialTheme.typography.labelMedium)
             }
         }
+    }
+}
+
+/** 卡片角标：标出这份存在公共目录里（同一作品可能有 App 内 / 本地两张卡） */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.StorageBadge(text: String) {
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(6.dp)
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.92f))
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimary
+        )
     }
 }
 

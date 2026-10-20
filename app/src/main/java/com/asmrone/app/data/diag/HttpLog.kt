@@ -56,7 +56,7 @@ object HttpLog {
         val entries = snapshot()
         if (entries.isEmpty()) return "（暂无网络请求记录）"
         return buildString {
-            appendLine("AsmrOne 网络日志（${entries.size} 条）")
+            appendLine("ToAsmr 网络日志（${entries.size} 条）")
             appendLine("时间        级别   内容")
             appendLine("-".repeat(60))
             entries.forEach { e ->

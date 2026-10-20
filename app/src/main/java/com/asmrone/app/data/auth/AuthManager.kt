@@ -515,7 +515,7 @@ object AuthManager {
                 .openConnection() as java.net.HttpURLConnection
             conn.connectTimeout = 5_000
             conn.readTimeout = 5_000
-            conn.setRequestProperty("User-Agent", "AsmrOne")
+            conn.setRequestProperty("User-Agent", "ToAsmr")
             if (cookie.isNotBlank()) conn.setRequestProperty("Cookie", cookie)
             try {
                 // 只要有响应就算连通（部分自建服务端没有 /api/health，会返回 404）

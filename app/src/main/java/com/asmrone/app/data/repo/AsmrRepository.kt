@@ -35,6 +35,7 @@ import com.asmrone.app.data.cache.SyncTrigger
 import com.asmrone.app.data.cache.TrackTreeStore
 import com.asmrone.app.data.cache.WorkMetaStore
 import com.asmrone.app.data.cache.WorkPageCodec
+import com.asmrone.app.data.download.DownloadSources
 import com.asmrone.app.data.download.DownloadStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.remote.ApiConfig
@@ -181,6 +182,15 @@ object AsmrRepository {
     }
 
     /**
+     * 落盘 JSON 是否是**详情页可用的完整响应**。
+     *
+     * `/api/work/{id}?v=2` 才会带 `vas`（声优）与 `tags` 两个数组；早期版本或
+     * `v=1` 的响应没有这两个键，那份副本只够画收藏/标记列表的卡片。用它铺详情页
+     * 会缺声优、缺标签 —— 而且它还会被 7 天保鲜期挡住，永远补不回来。
+     */
+    private fun JSONObject.hasFullWorkFields(): Boolean = has("vas") && has("tags")
+
+    /**
      * 作品元数据（不含文件树）。
      *
      * 三级来源，与 [getTracks] 对称：
@@ -200,7 +210,8 @@ object AsmrRepository {
         // 下载的语义就是"这部作品已经完整地在本地了"，点进去还要先联网等一圈是不合理的，
         // 而且用户常常就是在没网的时候才想听下载好的内容。
         // 这一级刻意不看 forceRefresh：本地的就是权威，刷新没有意义。
-        DownloadStore.load(id)?.workJson?.let { raw ->
+        // 两个目录都算（App 内 / 本地）
+        DownloadSources.manifest(id)?.workJson?.let { raw ->
             runCatching { Work.fromJson(JSONObject(raw), host) }.getOrNull()?.let { work ->
                 val merged = work.copy(tracks = trackCache[id] ?: work.tracks)
                 workCache[id] = merged
@@ -213,7 +224,12 @@ object AsmrRepository {
                 val work = runCatching { Work.fromJson(cached.json, host) }.getOrNull()
                 if (work != null) {
                     val merged = work.copy(tracks = trackCache[id] ?: emptyList())
-                    if (System.currentTimeMillis() - cached.savedAt < META_TTL_MS) {
+                    // 副本必须是**完整响应**才可以直接用：早期版本（或 `v=1`）的
+                    // `/api/work` 里没有 `vas` / `tags`，那份副本只够画收藏卡片。
+                    // 拿它铺详情页会少掉声优、标签，而且被判成"新鲜"后 7 天内
+                    // 不再联网 —— 缺的字段永远补不回来。不全就当作过期：联网补一次。
+                    val fresh = System.currentTimeMillis() - cached.savedAt < META_TTL_MS
+                    if (fresh && cached.json.hasFullWorkFields()) {
                         workCache[id] = merged
                         return merged
                     }
@@ -272,7 +288,7 @@ object AsmrRepository {
     ): List<Track> {
         val knownSourceId = sourceId ?: workCache[id]?.sourceId
         // 第 0 级：已下载作品的树存在清单里（原始完整树），读它即可，不联网
-        DownloadStore.load(id)?.tree?.takeIf { it.isNotEmpty() }?.let { local ->
+        DownloadSources.manifest(id)?.tree?.takeIf { it.isNotEmpty() }?.let { local ->
             trackCache[id] = local
             workCache[id]?.let { workCache[id] = it.copy(tracks = local) }
             return local
@@ -339,6 +355,9 @@ object AsmrRepository {
     suspend fun cachedWorkMeta(id: Int): Work? {
         if (id <= 0) return null
         val entry = WorkMetaStore.load(id, host) ?: return null
+        // 只有卡片数据的旧副本不要拿来铺详情页：先闪一版"缺声优/缺标签"的界面，
+        // 再被网络结果替换，比多等半秒更难看。
+        if (!entry.json.hasFullWorkFields()) return null
         val work = runCatching { Work.fromJson(entry.json, host) }.getOrNull() ?: return null
         return work.copy(tracks = trackCache[id] ?: emptyList())
     }
@@ -424,7 +443,7 @@ object AsmrRepository {
         count: Int = com.asmrone.app.data.lyrics.AudioTagReader.HEAD_BYTES
     ): ByteArray? {
         if (count <= 0) return null
-        val local = runCatching { DownloadStore.localFileFor(workId, track.path) }.getOrNull()
+        val local = runCatching { DownloadSources.localFileFor(workId, track.path) }.getOrNull()
         if (local != null) {
             return runCatching {
                 java.io.RandomAccessFile(local, "r").use { file ->
@@ -901,10 +920,14 @@ object AsmrRepository {
         remove: Boolean = false,
         work: Work? = null,
         clearStatus: Boolean = false,
-        clearRating: Boolean = false
+        clearRating: Boolean = false,
+        deferNetwork: Boolean = false
     ): String? {
         val result: Result<Unit> = runCatching {
-            updateCollectionOrThrow(workId, status, rating, remove, work, clearStatus, clearRating)
+            updateCollectionOrThrow(
+                workId, status, rating, remove, work, clearStatus, clearRating,
+                deferNetwork = deferNetwork
+            )
         }
         return result.exceptionOrNull()?.let { e -> e.message ?: "收藏操作失败" }
     }
@@ -943,7 +966,9 @@ object AsmrRepository {
         remove: Boolean = false,
         work: Work? = null,
         clearStatus: Boolean = false,
-        clearRating: Boolean = false
+        clearRating: Boolean = false,
+        keepStatus: Boolean = false,
+        deferNetwork: Boolean = false
     ) {
         if (!AuthManager.state.value.isLoggedIn) {
             throw AuthRejectedException("尚未登录", 401)
@@ -962,9 +987,69 @@ object AsmrRepository {
         // ① 本地先行 —— 网络成败都不影响它
         patchCollectionCache(
             targetWork, targetStatus, rating, remove,
-            clearRating = targetClearRating, markDirty = true
+            clearRating = targetClearRating,
+            // 快捷评分只写星级：本地那条记录的状态保持原样，不被 null 抹掉
+            keepStatus = keepStatus,
+            markDirty = true
         )
 
+        // 快捷操作会先把本地落好、网络那半等"反悔窗口"结束再发（见 DetailViewModel）
+        if (deferNetwork) return
+
+        sendCollectionUpdate(
+            workId = workId,
+            targetStatus = targetStatus,
+            rating = rating,
+            remove = remove,
+            targetWork = targetWork,
+            targetClear = targetClear,
+            targetClearRating = targetClearRating,
+            keepStatus = keepStatus
+        )
+    }
+
+    /**
+     * 只发**网络那一半**（延后发送时由调用方在窗口结束后调）。
+     *
+     * ⚠️ 这里绝不能再 `patchCollectionCache(markDirty = true)`：
+     * 本地内容在第一次调用时就落好了，重来一次会把件数/脏标记再动一遍。
+     */
+    suspend fun sendDeferredCollectionUpdate(
+        workId: Int,
+        status: CollectionStatus?,
+        rating: Int?,
+        remove: Boolean,
+        work: Work?,
+        clearStatus: Boolean,
+        clearRating: Boolean,
+        keepStatus: Boolean = false
+    ) {
+        val targetStatus = if (remove) null else status
+        val targetWork = work
+            ?: workCache[workId]
+            ?: Work(id = workId, title = "作品 $workId")
+        sendCollectionUpdate(
+            workId = workId,
+            targetStatus = targetStatus,
+            rating = rating,
+            remove = remove,
+            targetWork = targetWork,
+            targetClear = !remove && clearStatus,
+            targetClearRating = !remove && clearRating,
+            keepStatus = keepStatus
+        )
+    }
+
+    private suspend fun sendCollectionUpdate(
+        workId: Int,
+        targetStatus: CollectionStatus?,
+        rating: Int?,
+        remove: Boolean,
+        targetWork: Work,
+        targetClear: Boolean,
+        targetClearRating: Boolean,
+        keepStatus: Boolean
+    ) {
         try {
             if (remove) {
                 api.deleteCollection(workId)
@@ -1008,7 +1093,10 @@ object AsmrRepository {
         // 云端已确认 → 清掉 dirty（本地内容此刻与云端一致）
         patchCollectionCache(
             targetWork, targetStatus, rating, remove,
-            clearRating = targetClearRating, markDirty = false
+            clearRating = targetClearRating,
+            // 快捷评分同样要把状态留住，否则"确认成功"这一步反而把状态抹掉了
+            keepStatus = keepStatus,
+            markDirty = false
         )
         invalidateWorkMeta(workId)
     }
@@ -1177,6 +1265,7 @@ object AsmrRepository {
         rating: Int?,
         remove: Boolean,
         clearRating: Boolean,
+        keepStatus: Boolean = false,
         markDirty: Boolean
     ) {
         val state = AuthManager.state.value
@@ -1184,7 +1273,12 @@ object AsmrRepository {
 
         // 这次操作后作品应有的样子
         val target = work.copy(
-            progress = if (remove) null else status?.apiValue,
+            // keepStatus：只是点了一下星级，状态那一栏不该被清空
+            progress = when {
+                remove -> null
+                keepStatus -> work.progress
+                else -> status?.apiValue
+            },
             // ⚠️ 不能写成 `rating ?: work.userRating`：那样"清空评分"会被回填成旧值，
             // 界面上的星星跳回来、而云端其实已经清掉了 —— 两边不一致且用户无法复核。
             userRating = if (remove || clearRating) null else (rating ?: work.userRating)
@@ -1329,16 +1423,15 @@ object AsmrRepository {
     /**
      * 【默认收藏夹】的选取规则：
      *  1. 有上次选择且那个收藏夹还在 → 用它（用户上次的意图优先）；
-     *  2. 否则用「我标记的」（系统内置的第一个收藏夹）；
+     *  2. 否则用「我喜欢的」（系统内置的第二个收藏夹）——
+     *     需求："第一次收藏直接放进我喜欢的"；
      *  3. 再否则用列表里的第一个。
-     *
-     * 对应需求："默认选择上一次选择的收藏夹，第一次则选择我标记的"。
      */
     fun defaultPlaylist(playlists: List<Playlist>): Playlist? {
         if (playlists.isEmpty()) return null
         val lastId = AppPrefs.lastSelectedPlaylistId.value
         playlists.firstOrNull { it.id == lastId }?.let { return it }
-        playlists.firstOrNull { it.name == Playlist.SYS_MARKED }?.let { return it }
+        playlists.firstOrNull { it.name == Playlist.SYS_LIKED }?.let { return it }
         return playlists.first()
     }
 
@@ -1356,7 +1449,9 @@ object AsmrRepository {
     data class PlaylistWriteResult(
         val error: String? = null,
         /** 服务端是否真的改动了数据 */
-        val changed: Boolean = true
+        val changed: Boolean = true,
+        /** 本地已落好、网络请求被延后（不是失败，调用方要记得后续再发） */
+        val deferred: Boolean = false
     ) {
         val ok: Boolean get() = error == null
     }
@@ -1435,19 +1530,30 @@ object AsmrRepository {
             )
         }
 
-        // 收藏夹列表：只改件数，数组本身不动（见 patchPlaylistsWorksCount 的说明）
-        patchPlaylistsWorksCount(playlistId, delta = plan.countDelta, latestWorkId = work?.id)
+        // 收藏夹列表：件数与「最新作品」一起改。
+        //
+        // 封面也不只是列表里那个字段：服务端的 `mainCoverUrl` 本质就是
+        // `<host>/api/cover/<最新作品 id>.jpg?type=main`，所以本地增删之后
+        // 必须按新的"最新作品"重算，否则列表页要等下一次对齐才换封面。
+        // 移出时"最新"变成剩下的第一条（本地列表按加入时间倒序，见 PlaylistPatchOps）；
+        // 本地没有基线的那种移出算不出来，就保留旧封面，等对齐纠正。
+        val coverWorkId = if (plan.countDelta > 0) workId else plan.content?.items?.firstOrNull()?.id
+        patchPlaylistsWorksCount(playlistId, delta = plan.countDelta, latestWorkId = coverWorkId)
         notifyLibraryChanged()
     }
 
     /**
-     * 只改收藏夹列表里的 `worksCount`（与 `latestWorkId`），**不动数组本身**。
+     * 只改收藏夹列表里的 `worksCount`、`latestWorkId` 与 `mainCoverUrl`，**不动数组本身**。
      *
      * ⚠️ 为什么"不重建数组"：之前重建过一次，`latestWorkId` 等字段会因此
      * 丢失（被读成 0）。
      *
      * 用**增量**而不是布尔方向，是为了让调用方按"实际发生的改动"传值：
      * 拿不到作品快照、或作品本来就在里面时，增量为 0 就不会造成件数漂移。
+     *
+     * 封面跟着一起改的理由见 [patchPlaylistWorksCache]：服务端返回的
+     * `mainCoverUrl` 本来就是"最新作品封面"的绝对地址，本地改完内容却不改它，
+     * 就会出现"收藏夹里已经有新作品了，封面还是旧的"——要手动刷新才变。
      */
     private fun patchPlaylistsWorksCount(
         playlistId: String,
@@ -1460,11 +1566,22 @@ object AsmrRepository {
             playlistsSnapshot = null
             return
         }
+        val host = AuthManager.state.value.host.trimEnd('/')
         val patched = listEntry.value.items.map { p ->
             if (p.id != playlistId) return@map p
+            val count = (p.worksCount + delta).coerceAtLeast(0)
+            // 空了就不该再有"最新作品"，否则空收藏夹会残留上一件作品的封面
+            val latest = if (count == 0) null else (latestWorkId ?: p.latestWorkId)
             p.copy(
-                worksCount = (p.worksCount + delta).coerceAtLeast(0),
-                latestWorkId = if (delta > 0) (latestWorkId ?: p.latestWorkId) else p.latestWorkId
+                worksCount = count,
+                latestWorkId = latest,
+                // 与 `Playlist.coverUrl` 期望的形状一致（绝对地址，带 .jpg?type=main）；
+                // host 还没拿到时保留旧值，下次对齐会补上
+                mainCoverUrl = when {
+                    latest == null -> ""
+                    host.isBlank() -> p.mainCoverUrl
+                    else -> "$host/api/cover/$latest.jpg?type=main"
+                }
             )
         }
         SyncCacheStore.write(
@@ -1549,7 +1666,12 @@ object AsmrRepository {
      * **云端说"无操作"（`rowCount = 0`）也不算失败**：
      * 那说明这部作品本来就在里面，服务端内容与本地看到的一致。
      */
-    suspend fun addWorkToPlaylist(playlistId: String, workId: Int, work: Work? = null): PlaylistWriteResult {
+    suspend fun addWorkToPlaylist(
+        playlistId: String,
+        workId: Int,
+        work: Work? = null,
+        deferNetwork: Boolean = false
+    ): PlaylistWriteResult {
         if (!AuthManager.state.value.isLoggedIn) return PlaylistWriteResult(error = "未登录")
 
         val target = work ?: workCache[workId]
@@ -1563,6 +1685,61 @@ object AsmrRepository {
             markDirty = true
         )
 
+        // 快捷收藏：网络那半等"反悔窗口"结束再发（见 PlaylistPickerViewModel）
+        if (deferNetwork) return PlaylistWriteResult(deferred = true)
+
+        return sendPlaylistAdd(playlistId, workId, target)
+    }
+
+    /**
+     * **只写本地那一半**：把作品插进收藏夹缓存、顺手更新件数与封面，不发网络。
+     *
+     * 快捷收藏（详情页点一下就走）没有挂起上下文，却又必须在**第一帧**把内容
+     * 写进本地 —— 否则图标显示"已收藏"，收藏夹里却要等后台发完 + 下一次对齐
+     * 才看得到这部作品（还要刷新两次）。所以把本地半段单独开出来给它用。
+     *
+     * 网络那半仍由 [sendDeferredPlaylistAdd] 在后台补；失败会记待补写。
+     */
+    fun addWorkToPlaylistLocally(playlistId: String, workId: Int, work: Work? = null) {
+        if (!AuthManager.state.value.isLoggedIn) return
+        if (playlistId.isBlank() || workId <= 0) return
+        patchPlaylistWorksCache(
+            playlistId = playlistId,
+            workId = workId,
+            remove = false,
+            work = work ?: workCache[workId],
+            markDirty = true
+        )
+        // 先记一条待补写：反悔窗口（6 秒）是**进程内**的，进程要是被杀了，
+        // 这笔就只有待补写队列能救回来；网络那一半成功后会把它清掉。
+        // 在这之前收藏夹里它会显示「待同步」——那本来就是实情。
+        recordPending(PendingWrite.PlaylistAdd(playlistId, workId, createdAt = System.currentTimeMillis()))
+    }
+
+    /**
+     * 撤销一次「还没发出去的本地加入」。
+     *
+     * 用在用户点「修改」打开弹窗后又按了「取消」：那次快捷收藏本来就只是本地的一笔
+     * 待发意图，取消就是"什么都没发生"——既要撤掉本地那条，也要把待补写一起删掉，
+     * 否则下次对齐会把一条用户已经放弃的收藏补到云端。
+     */
+    fun revertLocalPlaylistAdd(playlistId: String, workId: Int) {
+        if (playlistId.isBlank() || workId <= 0) return
+        patchPlaylistWorksCache(playlistId, workId, remove = true, work = null, markDirty = true)
+        clearPending(PendingWrite.PlaylistAdd(playlistId, workId, createdAt = 0L))
+    }
+
+    /** 只发**网络那一半**（延后发送用；本地已经落好，不能再 patch） */
+    suspend fun sendDeferredPlaylistAdd(playlistId: String, workId: Int): PlaylistWriteResult {
+        if (!AuthManager.state.value.isLoggedIn) return PlaylistWriteResult(error = "未登录")
+        return sendPlaylistAdd(playlistId, workId, workCache[workId])
+    }
+
+    private suspend fun sendPlaylistAdd(
+        playlistId: String,
+        workId: Int,
+        target: Work?
+    ): PlaylistWriteResult {
         return runCatching {
             val changed = rowCountOf(api.addWorksToPlaylist(playlistId, listOf(workId)))
             // 成功 → 清掉反方向（用户可能先前在离线时移除过）与本次的待同步记录
@@ -1599,7 +1776,11 @@ object AsmrRepository {
      * **云端说"无操作"（`rowCount = 0`）说明它本来就不在里面**，
      * 那正是我们想要的结果，不算失败。
      */
-    suspend fun removeWorkFromPlaylist(playlistId: String, workId: Int): PlaylistWriteResult {
+    suspend fun removeWorkFromPlaylist(
+        playlistId: String,
+        workId: Int,
+        deferNetwork: Boolean = false
+    ): PlaylistWriteResult {
         if (!AuthManager.state.value.isLoggedIn) return PlaylistWriteResult(error = "未登录")
 
         // ① 本地先行 —— 用户立刻看到它消失了
@@ -1611,6 +1792,22 @@ object AsmrRepository {
             markDirty = true
         )
 
+        // 快捷收藏的"移出"同样延后发送
+        if (deferNetwork) return PlaylistWriteResult(deferred = true)
+
+        return sendPlaylistRemove(playlistId, workId)
+    }
+
+    /** 只发**网络那一半**（延后发送用；本地那次"先删掉"已经落好） */
+    suspend fun sendDeferredPlaylistRemove(playlistId: String, workId: Int): PlaylistWriteResult {
+        if (!AuthManager.state.value.isLoggedIn) return PlaylistWriteResult(error = "未登录")
+        return sendPlaylistRemove(playlistId, workId)
+    }
+
+    private suspend fun sendPlaylistRemove(
+        playlistId: String,
+        workId: Int
+    ): PlaylistWriteResult {
         return runCatching {
             val changed = rowCountOf(api.removeWorksFromPlaylist(playlistId, listOf(workId)))
             // 成功 → 清掉反方向与本次的待同步记录
@@ -1671,6 +1868,17 @@ object AsmrRepository {
             false
         }.getOrDefault(false)
     }
+
+    /**
+     * 只读本地的成员检查：`null` = 本地没有这个收藏夹的作品列表（**不代表作品不在里面**）。
+     *
+     * 详情页一进来就要决定收藏图标亮不亮，那时不能为了一个图标去翻页查服务端 ——
+     * 打开一次详情页就打一次接口，代价太大。所以这里只在本地有缓存时给答案，
+     * 没有就返回 null，界面按"未知"显示；用户真的点了收藏再走
+     * [isWorkInPlaylist]（本地优先、必要时联网）。
+     */
+    fun cachedIsWorkInPlaylist(playlistId: String, workId: Int): Boolean? =
+        cachedPlaylistWorks(playlistId)?.works?.any { it.id == workId }
 
     private fun currentPlaylistWorksKey(playlistId: String): String? {
         val state = AuthManager.state.value
@@ -1937,15 +2145,33 @@ object AsmrRepository {
         }
         return runCatching {
             api.deletePlaylist(playlist.id)
-            // 不再为这个收藏夹补写任何东西
-            val state = AuthManager.state.value
-            if (state.host.isNotBlank() && state.displayName.isNotBlank()) {
-                PendingWriteStore.removeAllForPlaylist(state.host, state.displayName, playlist.id)
-            }
-            currentPlaylistsKey()?.let { SyncCacheStore.delete(it) }
-            currentPlaylistWorksKey(playlist.id)?.let { SyncCacheStore.delete(it) }
-            playlistsSnapshot = null
+            deletePlaylistLocally(playlist)
         }
+    }
+
+    /**
+     * 只清**本地**痕迹（列表快照、收藏夹内容缓存、待补写）。
+     *
+     * 与 [deletePlaylistRemote] 配套：界面要求"本地先行"——点删除后收藏夹立刻从列表消失，
+     * 网络那半在后台补；失败再靠一次列表对齐把它读回来。
+     */
+    fun deletePlaylistLocally(playlist: Playlist) {
+        // 不再为这个收藏夹补写任何东西
+        val state = AuthManager.state.value
+        if (state.host.isNotBlank() && state.displayName.isNotBlank()) {
+            PendingWriteStore.removeAllForPlaylist(state.host, state.displayName, playlist.id)
+        }
+        currentPlaylistsKey()?.let { SyncCacheStore.delete(it) }
+        currentPlaylistWorksKey(playlist.id)?.let { SyncCacheStore.delete(it) }
+        playlistsSnapshot = null
+    }
+
+    /** 只发**网络那一半**的删除（本地痕迹已由 [deletePlaylistLocally] 清掉） */
+    suspend fun deletePlaylistRemote(playlist: Playlist): Result<Unit> {
+        if (playlist.isSystem) {
+            return Result.failure(IllegalStateException("「${playlist.displayName}」是系统收藏夹，不能删除"))
+        }
+        return runCatching { api.deletePlaylist(playlist.id) }
     }
 
     /** 切换主机后清掉缓存，避免跨站数据混用 */

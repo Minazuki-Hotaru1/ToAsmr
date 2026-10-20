@@ -34,6 +34,7 @@ import com.asmrone.app.ui.screen.search.SearchScreen
 import com.asmrone.app.ui.screen.search.SearchViewModel
 import com.asmrone.app.ui.screen.settings.AboutSettingsScreen
 import com.asmrone.app.ui.screen.settings.AppearanceSettingsScreen
+import com.asmrone.app.ui.screen.settings.CacheSettingsScreen
 import com.asmrone.app.ui.screen.settings.DataSettingsScreen
 import com.asmrone.app.ui.screen.settings.GlassSettingsScreen
 import com.asmrone.app.ui.screen.settings.ServerSettingsScreen
@@ -90,6 +91,9 @@ object Routes {
     /** 液态玻璃参数页（模糊 / 折射 / 透明度 / 色散） */
     const val SETTINGS_GLASS = "settings/glass"
     const val SETTINGS_DATA = "settings/data"
+
+    /** 缓存管理（设置 → 数据 → 缓存管理） */
+    const val SETTINGS_CACHE = "settings/cache"
     const val SETTINGS_ABOUT = "settings/about"
 
     /** 账号管理（设置 → 账号） */
@@ -276,7 +280,13 @@ fun AppNavGraph(
             GlassSettingsScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.SETTINGS_DATA) {
-            DataSettingsScreen(onBack = { navController.popBackStack() })
+            DataSettingsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenCache = { navController.navigate(Routes.SETTINGS_CACHE) }
+            )
+        }
+        composable(Routes.SETTINGS_CACHE) {
+            CacheSettingsScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.SETTINGS_ABOUT) {
             AboutSettingsScreen(onBack = { navController.popBackStack() })

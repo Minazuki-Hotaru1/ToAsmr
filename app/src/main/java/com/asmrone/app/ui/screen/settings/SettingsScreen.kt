@@ -201,7 +201,7 @@ private fun HttpLogDialog(onDismiss: () -> Unit) {
             TextButton(onClick = {
                 val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                     as android.content.ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("AsmrOne 网络日志", dump))
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("ToAsmr 网络日志", dump))
                 copied = true
             }) { Text(if (copied) "已复制" else "复制全部") }
         },
@@ -285,7 +285,7 @@ fun AppearanceSettingsScreen(
 @Composable
 fun AboutSettingsScreen(onBack: () -> Unit) {
     SettingsScaffold(title = "关于", onBack = onBack) {
-        FlatSection(title = "AsmrOne") {
+        FlatSection(title = "ToAsmr") {
             FlatRow(title = "版本", description = "0.2.1")
             FlatDivider()
             FlatRow(

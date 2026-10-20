@@ -1,10 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用图标背景：樱花粉 -> 玫瑰粉的斜向渐变。
+  浅底本身和角色的金发、白上衣明度接近，所以渐变的下半段特意压深一点，
+  让 48dp 桌面尺寸下仍能看清头发与裙子的轮廓；粉色系与角色的暖色调、
+  App 的青绿主题放在一起也不打架（青绿只出现在界面里，不进图标）。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#17817A"
-        android:pathData="M0,0h108v108h-108z" />
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:startColor="#FFFFB3C9"
+                android:endColor="#FFEF7C9C" />
+        </aapt:attr>
+    </path>
 </vector>

@@ -1,5 +1,6 @@
 package com.asmrone.app.ui.screen.detail
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -102,41 +103,115 @@ class DetailLinkGuardTest {
     // ═══════════════ 链接样式 ═══════════════
 
     @Test
-    fun `★ 链接文字有下划线，不只靠颜色`() {
-        val body = functionBody(screen, "private fun LinkText(")
+    fun `★ 名字是链接样式：主色 + 下划线`() {
+        val body = functionBody(screen, "private fun CreditsRow(")
         assertTrue(
             "只靠颜色的话，在不少主题里与正文差别很小，看不出能点",
-            body.contains("TextDecoration.Underline")
+            body.contains("textDecoration = TextDecoration.Underline")
         )
         assertTrue("主色以示可点", body.contains("colorScheme.primary"))
-        assertTrue("点击区域要够大", body.contains("TouchTarget.minimum"))
+        assertTrue("用 TextLinkStyles 统一样式", body.contains("TextLinkStyles("))
     }
 
     @Test
-    fun `★ 社团用链接样式渲染`() {
-        val body = functionBody(screen, "private fun StatsBlock(")
-        assertTrue("社团要标成链接", body.contains("link = work.circleId != null"))
-        assertTrue("并接上跳转回调", body.contains("onOpenCircle"))
+    fun `★ 社团没有 id 时不渲染成链接`() {
+        val body = functionBody(screen, "private fun CreditsRow(")
+        assertTrue("circleId 为空走纯文本分支", body.contains("if (circleId == null)"))
+        assertTrue("有 id 才挂跳转", body.contains("onOpenCircle(circleId, name)"))
+        val stats = functionBody(screen, "private fun StatsBlock(")
+        assertTrue(stats.contains("circleId = work.circleId"))
+        assertTrue(stats.contains("onOpenCircle = onOpenCircle"))
     }
 
     @Test
     fun `★ 多位声优逐个可点，而不是整串一起点`() {
-        val body = functionBody(screen, "private fun StatsBlock(")
-        assertTrue("要传 links 列表（每人一个回调）", body.contains("links = work.vas.map"))
+        val stats = functionBody(screen, "private fun StatsBlock(")
+        assertTrue(
+            "每个声优各带一个回调",
+            stats.contains("work.vas.map { va -> va.name to { onOpenVoiceActor(va.id, va.name) } }")
+        )
         assertFalse(
             "★ 拼成一整串再整体可点的话，点进去只能猜是哪一位",
-            body.contains("work.vas.joinToString")
+            stats.contains("work.vas.joinToString")
         )
-        assertTrue(body.contains("onOpenVoiceActor"))
+        val body = functionBody(screen, "private fun CreditsRow(")
+        assertTrue("每个名字各自 withLink", body.contains("withLink("))
+        assertTrue("每个链接有独立 tag，点了才知道是谁", body.contains("tag = \"va\$index\""))
+        assertTrue("分隔符用次要色，不抢链接的注意力", body.contains("\" / \""))
+    }
+
+    // ═══════════════ 基线对齐 ═══════════════
+
+    @Test
+    fun `★ 社团与声优按真实排版基线对齐到同一条线`() {
+        val body = functionBody(screen, "private fun CreditsRow(")
+        // 拉丁字母（Tower of Babel）与中日文（兎月りりむ。）来自不同 fallback 字体，
+        // ascent 差 0.2em 以上 → 行盒高度不同，顶对齐就差 2~3dp。
+        // 补顶部留白只能压到 1dp 左右（用户真的看得出来），所以这里读排版出来的基线再对位。
+        assertTrue("读真实排版的第一行基线", screen.contains("get(FirstBaseline)"))
+        assertTrue("取两者中更靠下的那条做共同基线", body.contains("val target = maxOf(baseline1, baseline2)"))
+        assertTrue(
+            "矮的那个整体下移差值，名字才落在同一条线上",
+            body.contains("value1.place(0, valueTop + (target - baseline1))")
+        )
+        assertTrue(
+            "声优那一列同理",
+            body.contains("value2.place(x2, valueTop + (target - baseline2))")
+        )
     }
 
     @Test
-    fun `MetaItem 支持多值且每值各自可点`() {
-        val declaration = signatureAndBody(screen, "private fun MetaItem(")
-        assertTrue(declaration.contains("links: List<Pair<String, () -> Unit>> = emptyList()"))
+    fun `★ 每列只 measure 一次，宽度先用 intrinsic 估`() {
+        val body = functionBody(screen, "private fun CreditsRow(")
+        // 真机上踩过：先 measure 一遍拿自然宽度、再按分好的宽度 measure 第二次，
+        // Compose 直接抛 `measure() may not be called multiple times on the same Measurable`。
+        assertTrue(
+            "宽度估计要走 maxIntrinsicWidth，而不是先量一遍",
+            body.contains("maxIntrinsicWidth(")
+        )
+        assertEquals(
+            "社团那一列只允许 measure 一次",
+            1,
+            Regex("measurables\\[1\\]\\.measure\\(").findAll(body).count()
+        )
+        assertEquals(
+            "声优那一列只允许 measure 一次",
+            1,
+            Regex("measurables\\[3\\]\\.measure\\(").findAll(body).count()
+        )
+    }
+
+    @Test
+    fun `数据行的中日文取值也补齐基线`() {
         val body = functionBody(screen, "private fun MetaItem(")
-        assertTrue("多值要各自渲染成链接", body.contains("LinkText(text = text, onClick = action)"))
-        assertTrue("分隔符用次要色，不抢链接的注意力", body.contains("\" / \""))
+        // 「免费」「—」与数字不是同一套字体，不补会低 2~3dp
+        assertTrue("要用 TextMeasurer 量基线", body.contains("rememberTextMeasurer()"))
+        assertTrue(
+            "以中日文基线为统一基准",
+            body.contains("rememberMetaBaseline(measurer, valueStyle, \"声\")")
+        )
+        assertTrue(
+            "矮的那个补顶部留白",
+            body.contains("Box(modifier = Modifier.padding(top = baselinePad))")
+        )
+    }
+
+    @Test
+    fun `信息项之间的横向间距统一为 14dp`() {
+        val stats = functionBody(screen, "private fun StatsBlock(")
+        assertTrue(
+            "数据行内部统一用 MetaItemGap",
+            stats.contains("spacedBy(MetaItemGap)")
+        )
+        assertTrue(
+            "社团/声优两列之间也是同一个间距",
+            functionBody(screen, "private fun CreditsRow(").contains("MetaItemGap.roundToPx()")
+        )
+        assertTrue(
+            "20dp 太散，数据项被推得满屏都是",
+            screen.contains("private val MetaItemGap = 14.dp")
+        )
+        assertFalse("不要再写死 20dp", stats.contains("spacedBy(20.dp)"))
     }
 
     // ═══════════════ 标签墙 ═══════════════

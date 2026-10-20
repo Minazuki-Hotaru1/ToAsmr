@@ -19,8 +19,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,7 +53,6 @@ import com.asmrone.app.data.model.Work
 fun WorkResultGrid(
     works: List<Work>,
     host: String,
-    progressMap: Map<Int, Float>,
     contentPadding: PaddingValues,
     onWorkClick: (Int) -> Unit,
     onLoadMore: () -> Unit,
@@ -71,16 +68,10 @@ fun WorkResultGrid(
     }
 
     val animatedKeys = remember { mutableSetOf<Int>() }
-    val shouldLoadMore by remember {
-        derivedStateOf {
-            val layout = listState.layoutInfo
-            layout.totalItemsCount > 0 &&
-                (layout.visibleItemsInfo.lastOrNull()?.index ?: 0) >= layout.totalItemsCount - 6
-        }
-    }
-    LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore) onLoadMore()
-    }
+
+    // 快到底部（还剩约一屏半）就先取下一页，别等用户真滚到「加载更多」那一行。
+    // 加载中的重复触发由 ViewModel 的 loadMore() 守卫，这里只负责"什么时候喊"。
+    listState.PrefetchNearEnd(enabled = hasMore && !loadingMore, onLoadMore = onLoadMore)
 
     LazyVerticalStaggeredGrid(
         columns = StaggeredGridCells.Adaptive(minSize = 160.dp),
@@ -114,8 +105,7 @@ fun WorkResultGrid(
                 WorkCard(
                     work = work,
                     host = host,
-                    onClick = { onWorkClick(work.id) },
-                    progress = progressMap[work.id]
+                    onClick = { onWorkClick(work.id) }
                 )
             }
         }

@@ -6,6 +6,7 @@ import com.asmrone.app.data.cache.SyncTrigger
 import com.asmrone.app.data.model.CollectionStatus
 import com.asmrone.app.data.model.Work
 import com.asmrone.app.data.repo.AsmrRepository
+import com.asmrone.app.data.sync.PendingSync
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -274,7 +275,8 @@ class CollectionViewModel : ViewModel() {
             _state.value = _state.value.copy(
                 retryingId = null,
                 pendingIds = AsmrRepository.pendingWorkIds(),
-                error = error
+                error = error,
+                toastMessage = if (error == null) "已同步" else "同步失败：$error"
             )
         }
     }
@@ -311,29 +313,33 @@ class CollectionViewModel : ViewModel() {
     /**
      * 修改某个作品的标记状态。
      *
-     * 乐观更新：先改本地让界面立刻响应。同时缓存里的 ETag 会被置空，
-     * 于是**下次进入页面必定拿到服务端的真实内容** —— 写失败、或网页端
-     * 在同一时间也改动过，都会在那一次校验里被纠正。
+     * **本地先行**（与详情页的快捷标记同一套）：先写本地缓存、立刻更新列表，
+     * 网络那半交给 [PendingSync] 后台补发 —— 用户不必等着"保存中"转圈。
+     * 发不出去时仓库会记一条待补写，卡片显示「待同步」，下次对齐自动重试。
      */
     fun setStatus(work: Work, status: CollectionStatus?) {
         if (_state.value.mutatingId != null) return
+        // 列表页点掉已选中的状态 = 清空状态（评分不动）。
+        // 不显式说明的话 PUT 里就没有 progress，云端会一直留着旧状态。
+        // 但也只在「这份列表原本确实显示着状态」时才送 null：
+        // 本地可能是过期副本，凭空送 null 会删掉云端真实存在的标记
+        val clearStatus = status == null && work.progress != null
         _state.value = _state.value.copy(mutatingId = work.id)
         viewModelScope.launch {
+            // ① 只写本地那一半（deferNetwork = true 时函数立即返回，不发请求）
             val error = AsmrRepository.updateCollection(
                 workId = work.id,
                 status = status,
                 work = work,
-                // 列表页点掉已选中的状态 = 清空状态（评分不动）。
-                // 不显式说明的话 PUT 里就没有 progress，云端会一直留着旧状态。
-                // 但也只在「这份列表原本确实显示着状态」时才送 null：
-                // 本地可能是过期副本，凭空送 null 会删掉云端真实存在的标记
-                clearStatus = status == null && work.progress != null
+                clearStatus = clearStatus,
+                deferNetwork = true
             )
             if (error != null) {
                 _state.value = _state.value.copy(mutatingId = null, error = error)
                 return@launch
             }
-            // 本地同步这份列表，省掉一次整页重拉
+
+            // ② 本地列表立刻套用这次改动，省掉一次整页重拉
             val filter = _state.value.filter
             val updated = _state.value.works.map { item ->
                 if (item.id == work.id) item.copy(progress = status?.apiValue) else item
@@ -345,8 +351,83 @@ class CollectionViewModel : ViewModel() {
                 totalCount = _state.value.totalCount - (_state.value.works.size - updated.size),
                 mutatingId = null,
                 // 刚刚确认过一次写入，时间戳往前推
-                syncedAt = System.currentTimeMillis()
+                syncedAt = System.currentTimeMillis(),
+                // 本地已经生效 → 立刻给反馈（网络失败会另外以「待同步」标记出现）
+                toastMessage = "已更新标记"
             )
+
+            // ③ 网络后台补发：进程级 scope，退出收藏页也照样发得出去
+            val key = "collection-write:${work.id}"
+            PendingSync.hold(key) {
+                AsmrRepository.sendDeferredCollectionUpdate(
+                    workId = work.id,
+                    status = status,
+                    rating = null,
+                    remove = false,
+                    work = work,
+                    clearStatus = clearStatus,
+                    clearRating = false
+                )
+            }
+            PendingSync.schedule(key, 0L)
+        }
+    }
+
+    /**
+     * 「删除」：把评分与状态整条移出（本地先行）。
+     *
+     * 与 [setStatus] 传 null 不同 —— 那只是"清掉状态、评分不动"，而弹窗里的
+     * 「删除」语义是"这件作品我没标记过"，所以星级也一起清。
+     */
+    fun removeMark(work: Work) {
+        if (_state.value.mutatingId != null) return
+        _state.value = _state.value.copy(mutatingId = work.id)
+        viewModelScope.launch {
+            val error = AsmrRepository.updateCollection(
+                workId = work.id,
+                status = null,
+                rating = null,
+                remove = true,
+                work = work,
+                clearStatus = true,
+                clearRating = true,
+                deferNetwork = true
+            )
+            if (error != null) {
+                _state.value = _state.value.copy(mutatingId = null, error = error)
+                return@launch
+            }
+
+            // 列表立刻套用：评分与状态都清掉；按状态筛选时这条记录整体移出列表
+            val filter = _state.value.filter
+            val updated = _state.value.works.mapNotNull { item ->
+                when {
+                    item.id != work.id -> item
+                    filter == null -> item.copy(progress = null, userRating = null)
+                    else -> null
+                }
+            }
+            _state.value = _state.value.copy(
+                works = updated,
+                totalCount = _state.value.totalCount - (_state.value.works.size - updated.size),
+                mutatingId = null,
+                syncedAt = System.currentTimeMillis(),
+                toastMessage = "已移除标记"
+            )
+
+            val key = "collection-write:${work.id}"
+            PendingSync.hold(key) {
+                AsmrRepository.sendDeferredCollectionUpdate(
+                    workId = work.id,
+                    status = null,
+                    rating = null,
+                    remove = true,
+                    work = work,
+                    clearStatus = true,
+                    clearRating = true
+                )
+            }
+            PendingSync.schedule(key, 0L)
         }
     }
 

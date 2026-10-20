@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.pm.ApplicationInfo
 import com.asmrone.app.data.audio.AudioCacheMaintenance
 import com.asmrone.app.data.cache.CacheFiles
+import com.asmrone.app.data.cache.CacheManager
 import com.asmrone.app.data.cache.CircleDictionary
 import com.asmrone.app.data.cache.FolderStateStore
 import com.asmrone.app.data.diag.HttpLog
@@ -41,6 +42,9 @@ class AsmrOneApplication : Application() {
         CacheFiles.ensureSchema(this)
         // 收藏类数据的本地镜像（JSON 文件）；必须在第一次读取收藏之前就绪
         SyncCacheStore.init(this)
+        // 缓存总览（设置 → 数据 → 缓存管理）：统计 / 清除各类缓存。
+        // 它自己不写盘，只是把散在各处的缓存索引到一起，早初始化只是为了拿到 applicationContext
+        CacheManager.init(this)
         // 待补写队列：装的是"用户已表达、但还没写到云端"的操作，同样要早于首次读取
         PendingWriteStore.init(this)
         // 文件树的本地持久化（按 RJ 号）：进入作品时写入，冷启动后播放器/歌词页直接读

@@ -26,7 +26,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -39,10 +38,10 @@ import androidx.compose.ui.unit.dp
 import com.asmrone.app.R
 import com.asmrone.app.data.model.HomeBoard
 import com.asmrone.app.data.model.Work
-import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
 import com.asmrone.app.ui.component.ListHint
+import com.asmrone.app.ui.component.PrefetchNearEnd
 import com.asmrone.app.ui.component.EmptyHint
 import com.asmrone.app.ui.component.ErrorHint
 import com.asmrone.app.ui.component.GlassSegment
@@ -85,7 +84,6 @@ fun HomeScreen(
     val boardState = state.current
     val listState = rememberLazyStaggeredGridState()
     val host = remember { AsmrRepository.host }
-    val progressMap by LibraryStore.progress.collectAsState()
 
     // 向下滚动收起底部导航、向上滚动展开（可在「设置 → 外观」关闭）
     CollapsibleBottomBarEffect {
@@ -138,7 +136,6 @@ fun HomeScreen(
                     board = board,
                     boardState = boardState,
                     host = host,
-                    progressMap = progressMap,
                     contentPadding = contentPadding,
                     listState = listState,
                     onWorkClick = onWorkClick,
@@ -188,7 +185,6 @@ private fun BoardGrid(
     board: HomeBoard,
     boardState: BoardState,
     host: String,
-    progressMap: Map<Int, Float>,
     contentPadding: PaddingValues,
     listState: LazyStaggeredGridState,
     onWorkClick: (Int) -> Unit,
@@ -197,16 +193,12 @@ private fun BoardGrid(
     // 入场动画按板块分别记录：换板块时新板块的卡片会重新播放入场
     val animatedKeys = remember(board) { mutableSetOf<Int>() }
 
-    val shouldLoadMore by remember {
-        derivedStateOf {
-            val layout = listState.layoutInfo
-            layout.totalItemsCount > 0 &&
-                (layout.visibleItemsInfo.lastOrNull()?.index ?: 0) >= layout.totalItemsCount - 6
-        }
-    }
-    LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore && boardState.hasMore) onLoadMore()
-    }
+    // 快到底部（还剩约一屏半）就先取下一页，别等用户滚到最后一张卡才开始请求。
+    // 与搜索结果 / 收藏页共用同一套 [PrefetchNearEnd]。
+    listState.PrefetchNearEnd(
+        enabled = boardState.hasMore && !boardState.loadingMore,
+        onLoadMore = onLoadMore
+    )
 
     LazyVerticalStaggeredGrid(
         columns = StaggeredGridCells.Adaptive(minSize = Sizes.GRID_MIN_CELL),
@@ -246,8 +238,7 @@ private fun BoardGrid(
                 WorkCard(
                     work = work,
                     host = host,
-                    onClick = { onWorkClick(work.id) },
-                    progress = progressMap[work.id]
+                    onClick = { onWorkClick(work.id) }
                 )
             }
         }
