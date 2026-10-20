@@ -1,7 +1,7 @@
 package com.asmrone.app.ui.screen.settings
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,7 +22,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -31,13 +30,11 @@ import androidx.compose.ui.unit.dp
 import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.diag.HttpLog
 import com.asmrone.app.data.prefs.AppPrefs
-import com.asmrone.app.ui.component.AsmrFilterChip
 import com.asmrone.app.ui.component.FlatDivider
 import com.asmrone.app.ui.component.FlatRow
 import com.asmrone.app.ui.component.FlatSection
 import com.asmrone.app.ui.component.RowChevron
 import com.asmrone.app.ui.component.SettingSwitch
-import com.asmrone.app.ui.theme.TouchTarget
 
 /**
  * 设置主页 —— 分组与排版完全沿用 comicApp 设置页：
@@ -53,7 +50,6 @@ fun SettingsScreen(
     onOpenAbout: () -> Unit
 ) {
     val host by AppPrefs.host.collectAsState()
-    val homeEnabled by AppPrefs.homeEnabled.collectAsState()
     val authState by AuthManager.state.collectAsState()
     var showHttpLog by remember { mutableStateOf(false) }
 
@@ -112,7 +108,7 @@ fun SettingsScreen(
         FlatSection(title = "外观") {
             FlatRow(
                 title = "外观",
-                description = "明暗模式 · 液态玻璃 · 底部导航栏",
+                description = "主题、玻璃样式、首页加载、底部栏",
                 onClick = onOpenAppearance,
                 trailing = { RowChevron() }
             )
@@ -120,20 +116,8 @@ fun SettingsScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // ── 其它：开关 + 工具 + 关于 ──
+        // ── 其它：工具 + 关于 ──
         FlatSection(title = "其它") {
-            FlatRow(
-                title = "加载首页榜单",
-                description = "关闭后首页不再自动加载",
-                trailing = {
-                    SettingSwitch(
-                        checked = homeEnabled,
-                        onCheckedChange = { AppPrefs.setHomeEnabled(it) }
-                    )
-                }
-            )
-
-            FlatDivider()
             FlatRow(
                 title = "网络日志",
                 onClick = { showHttpLog = true },
@@ -217,8 +201,13 @@ private fun HttpLogDialog(onDismiss: () -> Unit) {
 /**
  * 外观设置二级页。
  *
- * 与 comicApp 一样分成三组：主题 / 液态玻璃 / 底部导航栏。
+ * 与 comicApp 一样分成四组：主题 / 液态玻璃 / 底部导航栏 / 首页。
  * 「液态玻璃」进二级页调参数（模糊、折射、透明度、色散），改动实时生效。
+ *
+ * 主题是**两个开关**而不是三选一：「跟随系统」决定要不要自己管，
+ * 「暗色模式」只回答"现在是不是暗的"。三选一的芯片里，选了"跟随系统"之后
+ * 用户仍然不知道当前到底是亮还是暗，得退回首页看；两个开关里第二个
+ * 永远显示当前生效的样子，信息是完整的。
  */
 @Composable
 fun AppearanceSettingsScreen(
@@ -227,30 +216,51 @@ fun AppearanceSettingsScreen(
 ) {
     val themeMode by AppPrefs.themeMode.collectAsState()
     val collapseBottomBar by AppPrefs.collapseBottomBar.collectAsState()
+    val homeEnabled by AppPrefs.homeEnabled.collectAsState()
+
+    val followSystem = themeMode == 0
+    // 系统当前的深色状态 —— 只在"跟随系统"时用来决定第二个开关显示什么
+    val systemDark = isSystemInDarkTheme()
+    val darkNow = if (followSystem) systemDark else themeMode == 2
 
     SettingsScaffold(title = "外观", onBack = onBack) {
         FlatSection(title = "主题") {
             FlatRow(
-                title = "明暗模式",
-                description = "默认跟随系统"
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .heightIn(min = TouchTarget.minimum),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                listOf(0 to "跟随系统", 1 to "亮色", 2 to "暗色").forEach { (mode, label) ->
-                    AsmrFilterChip(
-                        text = label,
-                        selected = themeMode == mode,
-                        onClick = { AppPrefs.setThemeMode(mode) }
+                title = "跟随系统",
+                description = "关闭后可手动选择亮暗",
+                trailing = {
+                    SettingSwitch(
+                        checked = followSystem,
+                        onCheckedChange = { follow ->
+                            // 关掉跟随的那一刻要"停在当前观感上"：
+                            // 系统是暗的就锁成暗色，否则锁成亮色。
+                            // 直接设成亮色会让暗色系统里的用户被闪一下。
+                            AppPrefs.setThemeMode(
+                                when {
+                                    follow -> 0
+                                    systemDark -> 2
+                                    else -> 1
+                                }
+                            )
+                        }
                     )
                 }
-            }
-            Spacer(Modifier.height(8.dp))
+            )
+            FlatDivider()
+            FlatRow(
+                title = "暗色模式",
+                description = if (followSystem) "由系统决定" else null,
+                trailing = {
+                    SettingSwitch(
+                        checked = darkNow,
+                        onCheckedChange = { dark ->
+                            // 跟随系统时拨这个开关 = 接管观感，同时把「跟随系统」关掉，
+                            // 免得出现"跟随系统开着、但显示的是手动的模式"这种自相矛盾的状态。
+                            AppPrefs.setThemeMode(if (dark) 2 else 1)
+                        }
+                    )
+                }
+            )
         }
 
         Spacer(Modifier.height(24.dp))
@@ -274,6 +284,21 @@ fun AppearanceSettingsScreen(
                     SettingSwitch(
                         checked = collapseBottomBar,
                         onCheckedChange = { AppPrefs.setCollapseBottomBar(it) }
+                    )
+                }
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        FlatSection(title = "首页") {
+            FlatRow(
+                title = "加载首页榜单",
+                description = "关闭后首页不再自动加载",
+                trailing = {
+                    SettingSwitch(
+                        checked = homeEnabled,
+                        onCheckedChange = { AppPrefs.setHomeEnabled(it) }
                     )
                 }
             )

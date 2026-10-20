@@ -196,16 +196,6 @@ fun ServerSettingsScreen(onBack: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     iconRes = R.drawable.ic_check_fluent
                 )
-                normalizedDraft == host -> HintLine(
-                    text = "这就是当前主机",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    iconRes = R.drawable.ic_check_fluent
-                )
-                else -> HintLine(
-                    text = "自建 Kikoeru 也可以填，允许 http://",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    iconRes = null
-                )
             }
 
             if (draftCheck != null) CheckLine(draftCheck!!)
@@ -251,15 +241,6 @@ fun ServerSettingsScreen(onBack: () -> Unit) {
                 ) { Text("恢复默认") }
             }
         }
-
-        Spacer(Modifier.height(16.dp))
-        Text(
-            text = "asmr.one 在部分网络下无法直连，可先在系统层开启代理或 VPN。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 4.dp)
-        )
-        Spacer(Modifier.height(8.dp))
     }
 }
 
