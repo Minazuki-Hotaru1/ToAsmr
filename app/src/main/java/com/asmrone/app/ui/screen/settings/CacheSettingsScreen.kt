@@ -90,7 +90,7 @@ fun CacheSettingsScreen(onBack: () -> Unit) {
                 title = "合计",
                 description = when {
                     usages == null -> "正在统计…"
-                    else -> "共 ${CLEAR_ORDER.size} 类，按当前磁盘占用计算"
+                    else -> "按磁盘占用统计，不含已下载作品"
                 },
                 trailing = {
                     Text(
@@ -127,7 +127,7 @@ fun CacheSettingsScreen(onBack: () -> Unit) {
         FlatSection {
             FlatRow(
                 title = "清除全部缓存",
-                description = "已下载的作品、未同步的改动与登录状态都会保留",
+                description = "不含已下载作品、未同步的改动与登录状态",
                 enabled = total > 0L,
                 onClick = if (total > 0L) ({ target = ClearTarget.All }) else null,
                 trailing = { RowChevron() }
@@ -136,7 +136,7 @@ fun CacheSettingsScreen(onBack: () -> Unit) {
 
         if (pendingWrites > 0) {
             Text(
-                text = "有 $pendingWrites 条还没同步到云端的改动，清除缓存不会动它们。",
+                text = "另有 $pendingWrites 条改动还没同步到云端，不在清理范围内。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp)
@@ -192,14 +192,14 @@ private fun countPrefix(usage: CacheManager.Usage?): String =
     usage?.count?.takeIf { it > 0 }?.let { "$it 项 · " }.orEmpty()
 
 private fun CacheManager.Kind.describe(usage: CacheManager.Usage?): String = when (this) {
-    CacheManager.Kind.IMAGES -> "封面与截图；清除后重新联网加载"
-    CacheManager.Kind.AUDIO -> countPrefix(usage) + "边播边缓存的分片；清除后播放时重新缓存"
-    CacheManager.Kind.WORK_META -> countPrefix(usage) + "标题 / 社团 / 声优 / 标签；7 天内不重复请求"
-    CacheManager.Kind.TRACK_TREE -> countPrefix(usage) + "作品的文件清单；清除后重新拉取"
-    CacheManager.Kind.FOLDER_STATE -> "上次进作品时展开了哪些文件夹"
-    CacheManager.Kind.LYRICS -> "已解析的歌词；清除后播放时重新取"
-    CacheManager.Kind.SYNC_MIRRORS -> countPrefix(usage) + "收藏 / 标记 / 收藏夹的本地镜像"
-    CacheManager.Kind.EXTERNAL_FILES -> "分享到外部 App 时落盘的临时文件"
+    CacheManager.Kind.IMAGES -> "封面与截图"
+    CacheManager.Kind.AUDIO -> countPrefix(usage) + "边播边存的音频分片"
+    CacheManager.Kind.WORK_META -> countPrefix(usage) + "标题、社团、声优、标签"
+    CacheManager.Kind.TRACK_TREE -> countPrefix(usage) + "每部作品的文件树"
+    CacheManager.Kind.FOLDER_STATE -> "上次展开的文件夹"
+    CacheManager.Kind.LYRICS -> countPrefix(usage) + "已解析的歌词"
+    CacheManager.Kind.SYNC_MIRRORS -> countPrefix(usage) + "收藏、标记、收藏夹"
+    CacheManager.Kind.EXTERNAL_FILES -> "分享出去的临时文件"
 }
 
 private fun titleFor(target: ClearTarget): String = when (target) {
@@ -213,9 +213,9 @@ private fun messageFor(
     usages: List<CacheManager.Usage>?
 ): String = when (target) {
     is ClearTarget.All ->
-        "将释放约 ${formatBytes(total)}。已下载的作品、未同步的改动与登录状态都会保留。"
+        "将释放约 ${formatBytes(total)}。已下载作品、未同步改动与登录状态都保留。"
     is ClearTarget.One -> {
         val size = usages?.firstOrNull { it.kind == target.kind }?.bytes ?: 0L
-        "占用 ${formatBytes(size)}，清除后会在下次使用时重新生成。"
+        "占用 ${formatBytes(size)}，下次用到时会重新生成。"
     }
 }

@@ -100,8 +100,8 @@ fun SettingsScreen(
         // 与"连哪台服务器"不是一类设置。
         FlatSection(title = "数据") {
             FlatRow(
-                title = "搜索字典",
-                description = "标签 / 声优 / 社团，用于按标签搜索",
+                title = "缓存与本地数据",
+                description = "缓存管理、下载文件夹、搜索索引",
                 onClick = onOpenData,
                 trailing = { RowChevron() }
             )

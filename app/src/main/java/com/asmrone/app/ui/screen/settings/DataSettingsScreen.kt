@@ -80,7 +80,7 @@ fun DataSettingsScreen(onBack: () -> Unit, onOpenCache: () -> Unit) {
         FlatSection(title = "缓存") {
             FlatRow(
                 title = "缓存管理",
-                description = "查看图片、音频、详情等各类缓存的占用，按类清除",
+                description = "分类查看与清除各类缓存",
                 onClick = onOpenCache,
                 trailing = { RowChevron() }
             )
@@ -89,17 +89,15 @@ fun DataSettingsScreen(onBack: () -> Unit, onOpenCache: () -> Unit) {
         Spacer(Modifier.height(12.dp))
 
         // ── 搜索字典 ──
-        FlatSection(title = "搜索字典") {
+        FlatSection(title = "搜索索引") {
             FlatRow(
-                title = if (dictState.updating) "正在更新搜索字典…" else "更新搜索字典",
+                title = if (dictState.updating) "正在更新…" else "更新搜索索引",
                 description = buildString {
                     if (dictState.totalCount > 0) {
-                        append("本地已有 ").append(dictState.totalCount).append(" 条")
-                        dictState.updatedAt?.let {
-                            append(" · 上次更新 ").append(formatTagTime(it))
-                        }
+                        append("标签、声优、社团 · 本地 ").append(dictState.totalCount).append(" 条")
+                        dictState.updatedAt?.let { append("\n上次更新 ").append(formatTagTime(it)) }
                     } else {
-                        append("更新后才能按标签 / 声优 / 社团搜索")
+                        append("标签、声优、社团的本地索引\n未更新时只能按关键词搜索")
                     }
                     // 进度优先于结果提示：更新中时最该看到的是"到第几本了"
                     dictState.progress?.let { append("\n").append(it) }
@@ -187,11 +185,9 @@ private fun DownloadLocationSection() {
             title = "本地文件夹",
             description = buildString {
                 append(dir)
-                if (!hasAccess) {
-                    append("\n还没有存储权限，点此去授予")
-                } else {
-                    append("\n「下载」页切到「本地」后，文件会存到这里")
-                }
+                append(
+                    if (!hasAccess) "\n缺少存储权限，点此授予" else "\n下载页切到「本地」后存到这里"
+                )
             },
             onClick = {
                 if (hasAccess) {

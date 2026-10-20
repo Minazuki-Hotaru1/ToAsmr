@@ -106,9 +106,9 @@ object AudioController {
     private const val DUCK_FACTOR = 0.2f
 
     /** 睡眠定时结束时淡出的总时长 */
-    private const val SLEEP_FADE_MS = 4_000L
+    private const val SLEEP_FADE_MS = 6_000L
 
-    /** 淡出时每档的步长：100ms 一档，4 秒 = 40 档，听感上是连续下滑 */
+    /** 淡出时每档的步长：100ms 一档，6 秒 = 60 档，听感上是连续下滑 */
     private const val FADE_STEP_MS = 100L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

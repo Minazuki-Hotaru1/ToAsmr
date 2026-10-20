@@ -1136,12 +1136,6 @@ private fun SleepTimerSheet(
                         style = MaterialTheme.typography.bodyMedium,
                         color = PlayerText
                     )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = "到点时这一首还没放完，就等它放完再停",
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                        color = PlayerTertiary
-                    )
                 }
                 Spacer(Modifier.width(12.dp))
                 Switch(
@@ -1308,16 +1302,6 @@ private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
                     onClick = { AppPrefs.setAutoNext(false) }
                 )
             }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = if (autoNext) {
-                    "一首播完按「播放模式」继续（列表下一首 / 单曲重放 / 随机下一首）。"
-                } else {
-                    "一首播完就停在这个位置，不动播放列表。"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = PlayerTertiary
-            )
 
             SettingsDivider()
 
@@ -1334,7 +1318,7 @@ private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        text = "到点时音量在最后 4 秒渐弱，不会突然安静",
+                        text = "停止前 6 秒渐弱音量",
                         style = MaterialTheme.typography.labelSmall,
                         color = PlayerTertiary
                     )
@@ -1350,12 +1334,6 @@ private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
                     )
                 )
             }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "开启后，若勾了「自动延时到歌曲播放完毕」，淡出会落在这一首的最后 4 秒再停。",
-                style = MaterialTheme.typography.labelSmall,
-                color = PlayerTertiary
-            )
         }
     }
 }
