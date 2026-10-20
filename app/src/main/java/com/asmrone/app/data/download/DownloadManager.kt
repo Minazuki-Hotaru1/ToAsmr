@@ -196,15 +196,11 @@ object DownloadManager {
         job.cancel(CancellationException("已取消下载"))
     }
 
-    /** 删除某一份下载（App 内那份与公共目录那份各自独立） */
-    fun remove(workId: Int, storage: DownloadStorage) {
+    /** 删除 App 内那份下载（公共目录里的文件是用户的，App 不碰） */
+    fun remove(workId: Int) {
         cancel(workId)
         scope.launch {
-            if (storage == DownloadStorage.LOCAL) {
-                LocalDownloadStore.remove(workId)
-            } else {
-                DownloadStore.remove(workId)
-            }
+            DownloadStore.remove(workId)
             _tasks.update { it - workId }
             refreshLibrary()
         }
@@ -227,14 +223,14 @@ object DownloadManager {
     /**
      * 重新扫描磁盘，刷新下载页列表。
      *
-     * 两套目录都列：都是从本 App 下出去的，用户理应在这儿看到并管理它们
-     * （卡片角标与删除动作按 [DownloadedWork.storage] 区分）。
+     * **只列 App 内那份**：存到公共目录的内容是用户自己的文件 —— 给文件管理器、
+     * 给别的播放器用，App 不建立"我的下载"这层关系，也不提供删除。
+     * 唯一还用它的是"已经存过就别再下一遍"的判断（见 [DownloadSources]）。
      */
     fun refreshLibrary() {
         scope.launch {
-            val appLocal = DownloadStore.loadAll().mapNotNull { manifest -> toDownloaded(manifest) }
-            val publicDir = LocalDownloadStore.loadAll().mapNotNull { manifest -> toDownloaded(manifest) }
-            _library.value = (appLocal + publicDir).sortedByDescending { it.savedAt }
+            val local = DownloadStore.loadAll().mapNotNull { manifest -> toDownloaded(manifest) }
+            _library.value = local.sortedByDescending { it.savedAt }
         }
     }
 
@@ -269,7 +265,12 @@ object DownloadManager {
             if (local) LocalDownloadStore.save(m, work.title, work.sourceId) else DownloadStore.save(m)
         }
         fun existingFile(path: String): File? =
-            if (local) LocalDownloadStore.localFileFor(work.id, path) else DownloadStore.localFileFor(work.id, path)
+            if (local) {
+                // 本地这一档不靠清单判断：用户手动放进去的文件也算「已经下过」
+                LocalDownloadStore.existingFileAt(work.id, path, work.title, work.sourceId)
+            } else {
+                DownloadStore.localFileFor(work.id, path)
+            }
         fun targetFile(path: String): File =
             if (local) {
                 LocalDownloadStore.fileFor(work.id, work.title, path, work.sourceId)

@@ -69,18 +69,28 @@ class LocalStorageGuardTest {
     }
 
     @Test
-    fun `删除只删指定的那一份`() {
-        val body = body("data/download/DownloadManager.kt", "fun remove(workId: Int, storage: DownloadStorage)", 700)
-        assertTrue(body.contains("if (storage == DownloadStorage.LOCAL)"))
-        // 不能再出现"两个 store 都清"的写法
-        assertTrue(!body.contains("LocalDownloadStore.remove(workId)\n            DownloadStore.remove(workId)"))
+    fun `删除只碰 App 内那份，公共目录交给文件管理器`() {
+        val body = body("data/download/DownloadManager.kt", "fun remove(workId: Int)", 600)
+        assertTrue(body.contains("DownloadStore.remove(workId)"))
+        // 本地那一档不由 App 管理：这里不能出现删公共目录的调用
+        assertTrue(!body.contains("LocalDownloadStore.remove("))
     }
 
     @Test
-    fun `下载页同时列出两套目录`() {
-        val body = body("data/download/DownloadManager.kt", "fun refreshLibrary()", 800)
+    fun `下载页只列 App 内那份`() {
+        val body = body("data/download/DownloadManager.kt", "fun refreshLibrary()", 600)
         assertTrue(body.contains("DownloadStore.loadAll()"))
-        assertTrue(body.contains("LocalDownloadStore.loadAll()"))
+        assertTrue(!body.contains("LocalDownloadStore.loadAll()"))
+    }
+
+    @Test
+    fun `本地目录里已有的文件不再重复下载`() {
+        val body = body("data/download/DownloadManager.kt", "fun existingFile(", 500)
+        assertTrue(body.contains("LocalDownloadStore.existingFileAt("))
+        // 查重不能只信清单/索引：用户自己放进去的文件、清单被删的情况都要算已存在
+        val store = body("data/download/LocalDownloadStore.kt", "fun existingFileAt(", 900)
+        assertTrue(store.contains("findDir(workId)"))
+        assertTrue(store.contains("sanitizeRelative(path)"))
     }
 
     @Test

@@ -173,6 +173,32 @@ object LocalDownloadStore {
         return file.takeIf { it.isFile && it.length() > 0 }
     }
 
+    /**
+     * 下载前问一句「这个文件是不是已经在本地文件夹里了」。
+     *
+     * 和 [localFileFor] 的区别：这里**不要求清单和索引齐全** —— 用户可能自己把文件
+     * 拷进来、也可能把 `.toasmr.json` 删了，只要目标路径上有个非空文件就当已经下过，
+     * 直接跳过，不再重复占空间。
+     *
+     * 目录认不出时按 [title] + [sourceId] 推出它应该在的名字（只算路径，不建目录）：
+     * 清单丢了以后，名字才是唯一的线索。
+     */
+    fun existingFileAt(
+        workId: Int,
+        path: String,
+        title: String? = null,
+        sourceId: String? = null
+    ): File? {
+        if (workId <= 0 || path.isBlank()) return null
+        synchronized(lock) { index[workId]?.get(path) }
+            ?.let { return it.takeIf { file -> file.isFile && file.length() > 0 } }
+        val known = synchronized(lock) { dirs[workId] }
+            ?: findDir(workId)
+            ?: title?.takeIf { it.isNotBlank() }?.let { expectedDir(workId, it, sourceId) }
+            ?: return null
+        return File(known, sanitizeRelative(path)).takeIf { it.isFile && it.length() > 0 }
+    }
+
     /** 目标文件（下载前算路径；父目录顺手建好） */
     fun fileFor(workId: Int, title: String, path: String, sourceId: String? = null): File {
         val manifest = synchronized(lock) { cache[workId] }
@@ -274,11 +300,16 @@ object LocalDownloadStore {
         }
         val base = baseDir()
         if (!base.exists()) base.mkdirs()
-        val marker = sourceId?.trim()?.takeIf { it.startsWith("RJ", ignoreCase = true) } ?: "w$workId"
-        val dir = File(base, "${sanitizeSegment(title).ifBlank { "作品" }} [$marker]")
+        val dir = expectedDir(workId, title, sourceId)
         if (!dir.exists()) dir.mkdirs()
         synchronized(lock) { dirs[workId] = dir }
         return dir
+    }
+
+    /** 作品目录该叫什么（纯计算，不建目录 —— 清单坏了时靠它认出老目录） */
+    private fun expectedDir(workId: Int, title: String, sourceId: String? = null): File {
+        val marker = sourceId?.trim()?.takeIf { it.startsWith("RJ", ignoreCase = true) } ?: "w$workId"
+        return File(baseDir(), "${sanitizeSegment(title).ifBlank { "作品" }} [$marker]")
     }
 
     /**

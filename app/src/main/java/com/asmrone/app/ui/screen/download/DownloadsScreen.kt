@@ -198,13 +198,7 @@ fun DownloadsScreen(
                             onClick = { onWorkClick(item.work.id) },
                             onLongClick = { pendingActions = item },
                             // 与收藏页一致：不显示标签（标签在手机上一行放不下、信息价值低）
-                            showTags = false,
-                            // 存在公共目录里的那份标一下，否则同一部作品的两张卡看起来一样
-                            badge = if (item.storage == DownloadStorage.LOCAL) {
-                                { StorageBadge(text = "本地") }
-                            } else {
-                                null
-                            }
+                            showTags = false
                         )
                     }
                 }
@@ -258,47 +252,32 @@ fun DownloadsScreen(
             title = { Text(target.work.title, maxLines = 2) },
             text = {
                 Column {
-                    Text(
-                        "${target.fileCount} 个文件 · ${formatBytes(target.bytes)} · " +
-                            if (target.storage == DownloadStorage.LOCAL) "本地文件夹" else "App 内"
-                    )
-                    if (target.storage == DownloadStorage.APP) {
-                        Spacer(Modifier.height(12.dp))
-                        TextButton(onClick = {
-                            pendingActions = null
-                            DownloadManager.copyToLocal(target.work.id)
-                        }) {
-                            Text("另存到本地文件夹")
-                        }
-                        Text(
-                            text = localDir,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2
-                        )
-                    } else {
-                        // 公共目录那份是真的文件，删之前说清楚
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = localDir,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = "删除会把这些文件从本地文件夹里真正删掉",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
+                    Text("${target.fileCount} 个文件 · ${formatBytes(target.bytes)}")
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = {
+                        pendingActions = null
+                        DownloadManager.copyToLocal(target.work.id)
+                    }) {
+                        Text("另存到本地文件夹")
                     }
+                    Text(
+                        text = localDir,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "另存之后 App 不再管理那一份，需要时请到文件管理器里查看",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val storage = target.storage
                     pendingActions = null
-                    DownloadManager.remove(target.work.id, storage)
+                    DownloadManager.remove(target.work.id)
                 }) {
                     Text("删除", color = MaterialTheme.colorScheme.error)
                 }
@@ -374,25 +353,6 @@ private fun ActiveDownloadRow(
                 Text("取消", style = MaterialTheme.typography.labelMedium)
             }
         }
-    }
-}
-
-/** 卡片角标：标出这份存在公共目录里（同一作品可能有 App 内 / 本地两张卡） */
-@Composable
-private fun androidx.compose.foundation.layout.BoxScope.StorageBadge(text: String) {
-    Box(
-        modifier = Modifier
-            .align(Alignment.TopEnd)
-            .padding(6.dp)
-            .clip(RoundedCornerShape(50))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.92f))
-            .padding(horizontal = 8.dp, vertical = 3.dp)
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onPrimary
-        )
     }
 }
 

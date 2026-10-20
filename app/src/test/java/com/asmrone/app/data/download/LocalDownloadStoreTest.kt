@@ -226,6 +226,49 @@ class LocalDownloadStoreTest {
         assertNull(LocalDownloadStore.cached(workId()))
     }
 
+    // ─────────────────────── 要不要再下一遍 ───────────────────────
+
+    @Test
+    fun `本地已有同一路径的文件就不再下载`() = runBlocking {
+        val dir = LocalDownloadStore.workDir(workId(), "作品:测试?", "RJ243448")
+        File(dir, "mp3").mkdirs()
+        File(dir, "mp3/01 本編.mp3").writeText("x")
+        LocalDownloadStore.save(manifest(files = listOf("mp3/01 本編.mp3" to 1L)), "作品:测试?")
+        LocalDownloadStore.rescan()
+
+        assertNotNull(LocalDownloadStore.existingFileAt(workId(), "mp3/01 本編.mp3"))
+        // 树里没列出的路径当然也查不到
+        assertNull(LocalDownloadStore.existingFileAt(workId(), "mp3/99.mp3"))
+    }
+
+    @Test
+    fun `清单被删掉后也能认出已经下过的文件`() = runBlocking {
+        val dir = LocalDownloadStore.workDir(workId(), "作品:测试?", "RJ243448")
+        File(dir, "mp3").mkdirs()
+        File(dir, "mp3/01 本編.mp3").writeText("x")
+        LocalDownloadStore.save(manifest(files = listOf("mp3/01 本編.mp3" to 1L)), "作品:测试?")
+        File(dir, ".toasmr.json").delete()
+        LocalDownloadStore.initForTest(base) // 索引与目录表全清，且不 rescan
+
+        // 索引与清单都没了，但文件还在目录里 —— 仍然算「已经下过」：
+        // 目录名里的 [RJ243448] 不是 workId，只能靠"标题 + RJ"推出目录名
+        val found = LocalDownloadStore.existingFileAt(
+            workId = workId(),
+            path = "mp3/01 本編.mp3",
+            title = "作品:测试?",
+            sourceId = "RJ243448"
+        )
+
+        assertNotNull(found)
+        assertEquals("x", found?.readText())
+    }
+
+    @Test
+    fun `没有这个作品的目录时不做任何创建`() = runBlocking {
+        assertNull(LocalDownloadStore.existingFileAt(workId(), "mp3/01 本編.mp3"))
+        assertEquals(0, base.listFiles()?.size)
+    }
+
     // ─────────────────────── 另存到本地 ───────────────────────
 
     @Test
