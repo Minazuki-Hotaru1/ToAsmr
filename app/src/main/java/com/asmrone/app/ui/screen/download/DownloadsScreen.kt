@@ -137,9 +137,14 @@ fun DownloadsScreen(
     val animatedKeys = remember { mutableSetOf<String>() }
     var pendingActions by remember { mutableStateOf<DownloadManager.DownloadedWork?>(null) }
 
-    // 首次进入时把磁盘上的清单读出来（进程重启、或直接从通知点进来时 library 还可能是空的）
-    LaunchedEffect(Unit) {
-        if (library.isEmpty()) DownloadManager.refreshLibrary()
+    // 每次回到前台都重扫一遍：用户可能在文件管理器里删过文件，也可能刚在设置里换了本地目录
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) DownloadManager.refreshLibrary()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Box(

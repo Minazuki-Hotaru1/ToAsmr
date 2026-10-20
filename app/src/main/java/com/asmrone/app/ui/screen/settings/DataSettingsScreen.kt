@@ -37,6 +37,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.asmrone.app.data.audio.AudioCacheMaintenance
+import com.asmrone.app.data.download.DownloadManager
 import com.asmrone.app.data.download.DownloadStorage
 import com.asmrone.app.data.download.LocalDownloadStore
 import com.asmrone.app.data.prefs.AppPrefs
@@ -210,7 +211,11 @@ private fun DownloadLocationSection() {
             onPick = { picked ->
                 pickerOpen = false
                 AppPrefs.setLocalDownloadDir(picked.absolutePath)
-                scope.launch { LocalDownloadStore.rescan() }
+                scope.launch {
+                    // 换了根目录：重建索引，再让下载页的列表跟着刷（否则它仍显示旧目录里的作品）
+                    LocalDownloadStore.rescan()
+                    DownloadManager.refreshLibrary()
+                }
             }
         )
     }
