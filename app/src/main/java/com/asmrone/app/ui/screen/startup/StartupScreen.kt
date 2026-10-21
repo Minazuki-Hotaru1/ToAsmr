@@ -23,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.asmrone.app.ui.component.ToastHost
 import com.asmrone.app.ui.component.rememberToastState
 import kotlinx.coroutines.delay
 
@@ -141,12 +140,6 @@ fun StartupScreen(onFinished: () -> Unit) {
                 }
             }
         }
-
-        ToastHost(
-            state = toast,
-            toastOffset = 0.dp,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 64.dp)
-        )
     }
 }
 

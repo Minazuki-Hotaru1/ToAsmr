@@ -3,7 +3,6 @@ package com.asmrone.app.ui.screen.detail
 import com.asmrone.app.ui.component.ACTION_TOAST_DURATION_MS
 import com.asmrone.app.ui.component.rememberLocalStorageRequester
 import com.asmrone.app.ui.component.rememberToastState
-import com.asmrone.app.ui.component.ToastHost
 import kotlinx.coroutines.launch
 import com.asmrone.app.ui.component.viewer.VideoPlayerDialog
 import com.asmrone.app.ui.component.viewer.TextViewerState
@@ -656,16 +655,6 @@ fun DetailScreen(
                     toastState.show("已撤销这次收藏")
                 }
             }
-        )
-    }
-
-    // 提示宿主：挂在最后，覆盖在整个页面之上（含各弹窗之外）
-    Box(modifier = Modifier.fillMaxSize()) {
-        ToastHost(
-            state = toastState,
-            // 固定位置，不随迷你播放器出现/消失而跳动（见 Liquid.TOAST_OFFSET）
-            toastOffset = Liquid.TOAST_OFFSET,
-            modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
 }

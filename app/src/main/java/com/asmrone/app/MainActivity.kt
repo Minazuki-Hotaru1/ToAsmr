@@ -66,6 +66,7 @@ import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.prefs.PlaybackSessionStore
 import com.asmrone.app.data.repo.AsmrRepository
 import com.asmrone.app.player.AudioController
+import com.asmrone.app.ui.component.AppToast
 import com.asmrone.app.ui.component.BottomBarState
 import com.asmrone.app.ui.component.FloatingGlassBottomBar
 import com.asmrone.app.ui.component.GlassTabItem
@@ -73,6 +74,7 @@ import com.asmrone.app.ui.component.LocalBottomBarState
 import com.asmrone.app.ui.component.LocalStableNavigationBarBottom
 import com.asmrone.app.ui.component.LocalStableStatusBarTop
 import com.asmrone.app.ui.component.MiniPlayerBar
+import com.asmrone.app.ui.component.ToastHost
 import com.asmrone.app.ui.component.viewer.TextViewerPage
 import com.asmrone.app.ui.component.viewer.TextViewerState
 import com.asmrone.app.ui.navigation.AppNavGraph
@@ -83,6 +85,8 @@ import com.asmrone.app.ui.screen.search.SearchViewModel
 import com.asmrone.app.ui.screen.startup.StartupScreen
 import com.asmrone.app.ui.theme.AsmrOneTheme
 import com.asmrone.app.ui.theme.GlassStylePrefs
+import com.asmrone.app.ui.theme.Liquid
+import com.asmrone.app.ui.theme.Sizes
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
@@ -256,7 +260,16 @@ fun MainApp(
      */
     var dictionariesReady by remember { mutableStateOf(false) }
     if (!dictionariesReady) {
-        StartupScreen(onFinished = { dictionariesReady = true })
+        // 启动门自己的提示宿主：MainApp 在这一屏会提前 return，
+        // 全局那份还没组合出来（首次启动的"网络太慢 / 暂不更新"提示要用）。
+        Box(modifier = Modifier.fillMaxSize()) {
+            StartupScreen(onFinished = { dictionariesReady = true })
+            ToastHost(
+                state = AppToast,
+                toastOffset = 0.dp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 64.dp)
+            )
+        }
         return
     }
 
@@ -571,5 +584,20 @@ fun MainApp(
                 TextViewerPage(file = file, onClose = { TextViewerState.close() })
             }
         }
+
+        // ── 全局轻提示 ──
+        //
+        // 必须是这个 Box 的**最后一个子元素**：底栏与迷你播放器是 Scaffold 的
+        // bottomBar（绘制顺序在内容区之后），以前各页面挂在自己内容区里，
+        // 提示就被它们压住了。挂在这里则绘制在底栏、迷你播放器、播放器覆盖层、
+        // 文本查看器全部之后，永远在最上层。
+        //
+        // 高度：TOAST_OFFSET 已经抬过底栏；迷你播放器出现时再加它自己的高度，
+        // 免得提示正好糊在播放器上。
+        ToastHost(
+            state = AppToast,
+            toastOffset = Liquid.TOAST_OFFSET + if (showMiniPlayer) Sizes.MINI_PLAYER_HEIGHT else 0.dp,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }

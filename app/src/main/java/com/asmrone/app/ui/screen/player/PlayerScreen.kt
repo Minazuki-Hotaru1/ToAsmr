@@ -104,7 +104,6 @@ import com.asmrone.app.player.LyricsOverlay
 import com.asmrone.app.player.PlayQueuePolicy
 import com.asmrone.app.ui.component.CoverImage
 import com.asmrone.app.ui.component.PlayingIndicator
-import com.asmrone.app.ui.component.ToastHost
 import com.asmrone.app.ui.component.rememberToastState
 import com.asmrone.app.ui.screen.lyrics.PlayerLyrics
 import com.asmrone.app.ui.theme.Sizes
@@ -578,13 +577,6 @@ fun PlayerScreen(
 
             Spacer(Modifier.height(20.dp))
         }
-
-        ToastHost(
-            state = toast,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 132.dp)
-        )
     }
 
     if (showQueue) {
@@ -609,7 +601,7 @@ fun PlayerScreen(
                 // 弹窗关掉之后没有任何"正在计时"的提示，用户会不确定按到没有
                 toast.show(
                     if (AppPrefs.sleepUntilTrackEnd.value) {
-                        "定时 $minutes 分钟 · 这一首会放完再停"
+                        "定时 $minutes 分钟"
                     } else {
                         "定时 $minutes 分钟"
                     }

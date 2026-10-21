@@ -17,7 +17,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,9 +31,9 @@ import kotlinx.coroutines.delay
  *
  * 用法：
  * ```
- * val toast = rememberToastState()
- * // 在某个 Box 里挂上宿主
- * ToastHost(state = toast, toastOffset = 48.dp, modifier = Modifier.align(Alignment.BottomCenter))
+ * val toast = rememberToastState()   // 全局共享的 AppToast
+ * // 宿主只在 MainActivity 的最外层挂一次
+ * ToastHost(state = AppToast, toastOffset = ..., modifier = Modifier.align(Alignment.BottomCenter))
  * // 任意位置触发
  * toast.show("刷新失败")
  * ```
@@ -115,9 +114,23 @@ class ToastState internal constructor() {
     }
 }
 
-/** 记住一个 [ToastState] */
+/**
+ * 全局轻提示状态 —— 整个进程只有这一份。
+ *
+ * 以前是每个页面各自 `remember` 一个、各自在自己页面的 `Box` 里挂 host，
+ * 结果是提示的位置和层级都跟着页面走：主界面同时有底部导航栏和迷你播放器时，
+ * 提示会被压在它们下面（页面的 Box 在 Scaffold 内容区，底栏是 Scaffold 的
+ * bottomBar，绘制顺序在后）。
+ *
+ * 现在只保留一份状态 + 一个 host（挂在 `MainActivity` 最外层 Box 的最后一个
+ * 子元素上），提示永远在最上层。多页面共用一份也有副作用，但都是正向的：
+ * 页面切换时提示不会残留、也不会出现两条提示叠在一起。
+ */
+val AppToast: ToastState = ToastState()
+
+/** 记住一个 [ToastState] —— 现在返回全局共享的 [AppToast] */
 @Composable
-fun rememberToastState(): ToastState = remember { ToastState() }
+fun rememberToastState(): ToastState = AppToast
 
 /**
  * 轻量提示宿主 —— 固定在屏幕偏下方，不随内容滚动。
@@ -131,9 +144,11 @@ fun rememberToastState(): ToastState = remember { ToastState() }
  * 位置刻意"偏下而不是贴底"：贴底会与底部导航栏 / 迷你播放器混在一起，
  * 让提示看起来像界面的一部分而不是临时反馈。
  *
- * 调用方把它放进一个 `Box` 里给 `align`，再用 [toastOffset] 指定
- * **距屏幕底部抬多高**（组件内部做 `offset(y = -toastOffset)`）：
- * 主页面（导航栏 + 迷你播放器）约 168dp，详情页在播放器出现时约 128dp。
+ * **只应该挂一次**（`MainActivity` 最外层 Box 的最后一个子元素），这样它绘制在
+ * 底栏、迷你播放器、播放器覆盖层之后，永远在最上层。页面内部再挂会让提示
+ * 被 Scaffold 的 bottomBar 盖住 —— 那正是曾经的问题。
+ *
+ * [toastOffset] 指定 **距屏幕底部抬多高**（组件内部做 `offset(y = -toastOffset)`）。
  */
 @Composable
 fun ToastHost(

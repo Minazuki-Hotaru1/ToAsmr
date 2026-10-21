@@ -89,7 +89,6 @@ import com.asmrone.app.ui.component.rememberStatusBarTopDp
 import com.asmrone.app.ui.component.SmallTagChip
 import com.asmrone.app.ui.component.TabTopBar
 import com.asmrone.app.ui.component.TagTone
-import com.asmrone.app.ui.component.ToastHost
 import com.asmrone.app.ui.component.WorkCard
 import com.asmrone.app.ui.component.TopBarAction
 import com.asmrone.app.ui.component.animateCardEntrance
@@ -357,14 +356,6 @@ fun LibraryScreen(
                 label = if (tab == TAB_MARKED) "标记" else "列表"
             )
         }
-
-        // 轻量提示（用户主动刷新失败时）—— 固定在偏下方，不随列表滚动。
-        // 抬到「导航栏 + 迷你播放器」之上，否则会被它们压住看不见。
-        ToastHost(
-            state = toast,
-            toastOffset = Liquid.TOAST_OFFSET,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
     }
 
     pendingDelete?.let { playlist ->
