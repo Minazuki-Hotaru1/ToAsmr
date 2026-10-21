@@ -65,6 +65,7 @@ import com.asmrone.app.data.download.LocalDownloadStore
 import com.asmrone.app.data.model.Track
 import com.asmrone.app.data.model.TrackKind
 import com.asmrone.app.data.prefs.AppPrefs
+import com.asmrone.app.ui.component.DownloadStorageButton
 import com.asmrone.app.ui.component.TreeRow
 import com.asmrone.app.ui.component.collectFolderPaths
 import com.asmrone.app.ui.component.flattenVisibleTree
@@ -256,6 +257,20 @@ fun DownloadPickerSheet(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                DownloadStorageButton(
+                    storage = storage,
+                    warn = storage == DownloadStorage.LOCAL &&
+                        !LocalDownloadStore.hasAccess(context),
+                    onClick = {
+                        when {
+                            storage == DownloadStorage.LOCAL ->
+                                AppPrefs.setDownloadStorage(DownloadStorage.APP)
+                            LocalDownloadStore.hasAccess(context) ->
+                                AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
+                            else -> requestLocalAccess()
+                        }
+                    }
+                )
                 TextButton(
                     onClick = {
                         val paths = selected.toList()
@@ -285,14 +300,13 @@ fun DownloadPickerSheet(
                 }
             }
 
-            // 存到本地却还没权限：在用户点「下载」之前就把话说清楚。
-            // 切换存到哪儿在「下载」页右上角，这里只做提示，不再重复放开关。
+            // 存到本地却还没权限：在用户点「下载」之前就把话说清楚
             if (storage == DownloadStorage.LOCAL && !LocalDownloadStore.hasAccess(context)) {
                 Text(
                     text = if (permissionHint) {
-                        "没拿到存储权限，可以再点一次「下载」重试授权"
+                        "没拿到存储权限，点右上角「本地」可再试一次"
                     } else {
-                        "存到本地文件夹需要存储权限，点「下载」时会先请你授权"
+                        "存到本地文件夹需要存储权限，点右上角「本地」可前往授予"
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,

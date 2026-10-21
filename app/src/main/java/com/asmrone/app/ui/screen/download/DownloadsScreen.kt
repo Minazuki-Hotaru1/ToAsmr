@@ -58,7 +58,6 @@ import com.asmrone.app.data.download.DownloadStorage
 import com.asmrone.app.data.download.LocalDownloadStore
 import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.ui.component.CollapsibleBottomBarEffect
-import com.asmrone.app.ui.component.DownloadStorageButton
 import com.asmrone.app.ui.component.EmptyHint
 import com.asmrone.app.ui.component.LiquidCapsule
 import com.asmrone.app.ui.component.TabTopBar
@@ -90,24 +89,24 @@ fun DownloadsScreen(
 ) {
     val tasks by DownloadManager.tasks.collectAsState()
     val library by DownloadManager.library.collectAsState()
-    val storage by AppPrefs.downloadStorage.collectAsState()
     val localDir by AppPrefs.localDownloadDir.collectAsState()
     val message by DownloadManager.message.collectAsState()
     val context = LocalContext.current
     val toast = rememberToastState()
 
-    // 申请公共目录写权限：授权成功后顺手把存储模式切成"本地"，省得用户再点一次开关
-    // pendingCopy 非空表示这次授权是为了「另存到本地」——授权回来要接着把那一步做完
+    // 申请公共目录写权限。
+    // pendingCopy 非空表示这次授权是为了「另存到本地」——授权回来接着把那一步做完；
+    // 那种情况下**不改**全局存储模式（用户只是在另存一份，不代表以后都存本地）。
     var pendingCopy by remember { mutableStateOf<Int?>(null) }
     val requestLocalAccess = rememberLocalStorageRequester(
         onResult = { granted ->
             val copyId = pendingCopy
             pendingCopy = null
             if (granted) {
-                AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
                 if (copyId != null) {
                     DownloadManager.copyToLocal(copyId)
                 } else {
+                    AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
                     toast.show("之后的下载保存到本地文件夹")
                 }
             } else {
@@ -243,23 +242,6 @@ fun DownloadsScreen(
                 )
                 Spacer(Modifier.width(8.dp))
             }
-            DownloadStorageButton(
-                storage = storage,
-                warn = storage == DownloadStorage.LOCAL &&
-                    !LocalDownloadStore.hasAccess(context),
-                onClick = {
-                    if (storage == DownloadStorage.LOCAL) {
-                        AppPrefs.setDownloadStorage(DownloadStorage.APP)
-                        toast.show("之后的下载保存到 App 内")
-                    } else if (LocalDownloadStore.hasAccess(context)) {
-                        AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
-                        toast.show("之后的下载保存到本地文件夹")
-                    } else {
-                        // 提示统一由 onResult 给，这里只管把用户带去授权
-                        requestLocalAccess()
-                    }
-                }
-            )
         }
         ToastHost(
             state = toast,
