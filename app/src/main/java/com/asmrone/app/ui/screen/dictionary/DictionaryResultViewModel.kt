@@ -51,7 +51,6 @@ class DictionaryResultViewModel : ViewModel() {
 
         _state.value = _state.value.copy(
             title = query.displayName,
-            description = query.label,
             loading = true
         )
         loadFirstPage()
@@ -124,8 +123,6 @@ class DictionaryResultViewModel : ViewModel() {
 data class DictionaryResultUiState(
     /** 顶栏标题：这一项的名字 */
     val title: String = "",
-    /** 来源说明，如 `标签「ASMR」` */
-    val description: String = "",
     val works: List<Work> = emptyList(),
     val totalCount: Int = 0,
     val page: Int = 1,

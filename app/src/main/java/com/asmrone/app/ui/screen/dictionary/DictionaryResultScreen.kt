@@ -94,12 +94,14 @@ fun DictionaryResultScreen(
                     ),
                     onWorkClick = onWorkClick,
                     onLoadMore = { viewModel.loadMore() },
-                    // 「N 部作品 · 按什么筛出来的」不再放顶栏副标题，
-                    // 而是和搜索结果页一样作为列表**第一行**，随内容一起滚动
+                    // 只写数量。这一页"按什么筛出来的"已经写在顶栏大标题里了
+                    // （点进来时就是那一条标签 / 声优 / 社团的名字），
+                    // 列表第一行再拼一次「· 标签「xx」」属于同一句话读两遍，
+                    // 而且它会跟着列表滚走，反而比顶栏更不稳定。
                     headerText = if (state.totalCount > 0) {
-                        "${state.totalCount} 部作品 · ${state.description}"
+                        "${state.totalCount} 部作品"
                     } else {
-                        state.description
+                        null
                     },
                     hasMore = state.hasMore,
                     loadingMore = state.loadingMore
