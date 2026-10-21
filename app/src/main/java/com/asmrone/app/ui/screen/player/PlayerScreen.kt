@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -62,6 +63,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -107,6 +109,7 @@ import com.asmrone.app.ui.component.rememberToastState
 import com.asmrone.app.ui.screen.lyrics.PlayerLyrics
 import com.asmrone.app.ui.theme.Sizes
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 // ── 播放器的深色沉浸色板（对齐 Apple Music Now Playing 的「封面取色 + 黑底」）──
 private val PlayerBackground = Color(0xFF0B0B0D)
@@ -603,10 +606,20 @@ fun PlayerScreen(
             onToggleUntilTrackEnd = { AppPrefs.setSleepUntilTrackEnd(it) },
             onStart = { minutes ->
                 AudioController.setSleepTimer(minutes)
+                // 弹窗关掉之后没有任何"正在计时"的提示，用户会不确定按到没有
+                toast.show(
+                    if (AppPrefs.sleepUntilTrackEnd.value) {
+                        "定时 $minutes 分钟 · 这一首会放完再停"
+                    } else {
+                        "定时 $minutes 分钟"
+                    }
+                )
+                // 收起动画已经播完（closeWith 里先 hide 再回调），这里移除不会再"闪"
                 showSleepTimer = false
             },
             onCancel = {
                 AudioController.setSleepTimer(0)
+                toast.show("定时已取消")
                 showSleepTimer = false
             },
             onDismiss = { showSleepTimer = false }
@@ -1063,11 +1076,26 @@ private fun SleepTimerSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
     var minutes by remember { mutableFloatStateOf(SLEEP_TIMER_DEFAULT_MINUTES) }
     val picked = minutes.roundToInt().coerceIn(
         SLEEP_TIMER_MIN_MINUTES.roundToInt(),
         SLEEP_TIMER_MAX_MINUTES.roundToInt()
     )
+
+    /**
+     * 先播收起动画，再做动作。
+     *
+     * 直接从外面 `showSleepTimer = false` 会把整个 ModalBottomSheet 从组合里摘掉，
+     * 表现就是"闪一下消失"（开场有动画、退场没有）。这里让 sheet 自己滑下去，
+     * 到位后再让调用方移除它 —— 与拖动/点遮罩关闭的观感一致。
+     */
+    fun closeWith(action: () -> Unit) {
+        scope.launch {
+            runCatching { sheetState.hide() }
+            action()
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1159,7 +1187,7 @@ private fun SleepTimerSheet(
                     .height(48.dp)
                     .clip(RoundedCornerShape(50))
                     .background(PlayerText)
-                    .clickable { onStart(picked) },
+                    .clickable { closeWith { onStart(picked) } },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -1173,16 +1201,27 @@ private fun SleepTimerSheet(
             }
 
             if (remainingMs > 0L) {
-                Text(
-                    text = "取消定时（剩余 ${formatClock(remainingMs)}）",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = PlayerTertiary,
+                Spacer(Modifier.height(10.dp))
+                // 与「开始」同一套胶囊语言：同样 48dp 高、同样圆角，只是描边而非实心。
+                // 原来是一行裸文字，和上面的按钮不像同一个界面的东西。
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(onClick = onCancel)
-                        .padding(vertical = 14.dp),
-                    textAlign = TextAlign.Center
-                )
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(50))
+                        .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(50))
+                        .clickable { closeWith { onCancel() } },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "取消定时（剩余 ${formatClock(remainingMs)}）",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        color = PlayerSecondary
+                    )
+                }
             } else {
                 Spacer(Modifier.height(14.dp))
             }
