@@ -4,6 +4,7 @@ import android.content.ClipData
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -72,15 +73,10 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -208,19 +204,21 @@ fun DetailScreen(
     val scope = rememberCoroutineScope()
 
     // ── 长按复制 ─────────────────────────────────────────
-    // 写剪贴板、震动、提示三件事绑在**同一个**动作里，调用点只负责给文本。
+    // 写剪贴板、震动、提示三件事绑在**同一个**动作里，调用点只负责给文本与提示语。
     // 拆开写很容易漏掉一半：复制成功却没震动、或者震了却没写进剪贴板。
+    // 提示语由调用点给（"已复制RJ号" / "已复制标签"），因为用户需要知道复制到的是什么，
+    // 统一写"已复制"在连续复制两种内容时分不清。
     // 用新的 LocalClipboard（Clipboard.setClipEntry 是挂起函数，所以要 scope）；
     // 旧的 LocalClipboardManager 已被标记废弃，本工程要求零警告。
     val clipboard = LocalClipboard.current
     val haptic = LocalHapticFeedback.current
-    val copyText: (String) -> Unit = { text ->
+    val copyText: (String, String) -> Unit = { text, message ->
         if (text.isNotBlank()) {
             scope.launch {
                 clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("AsmrOne", text)))
             }
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            toastState.show("已复制")
+            toastState.show(message)
         }
     }
 
@@ -336,7 +334,7 @@ fun DetailScreen(
 
                     // ② 标题 + 角标（动作在顶栏，见 GlassTopBar 的 actions）
                     item(key = "title") {
-                        TitleBlock(work = work, onOpenWork = onOpenWork, onCopy = copyText)
+                        TitleBlock(work = work, onOpenWork = onOpenWork, onCopy = { rj -> copyText(rj, "已复制RJ号") })
                     }
 
                     // ②b 标记失败的**详细**报错（分类原因 + 建议 + 原始详情 + 重试）
@@ -361,7 +359,7 @@ fun DetailScreen(
 
                     // ④ 标签
                     if (work.tags.isNotEmpty()) {
-                        item(key = "tags") { TagsBlock(work, onTagClick = onOpenTag, onCopyTag = copyText) }
+                        item(key = "tags") { TagsBlock(work, onTagClick = onOpenTag, onCopyTag = { tag -> copyText(tag, "已复制标签") }) }
                     }
 
                     // ⑤ 文件树（文件夹嵌套）
@@ -1152,10 +1150,16 @@ private fun MetaItem(
  * `firstBaseline`，取较大者作共同基线，把矮的那个整体下移差值。
  * 剩下的误差只来自像素取整，与字体、字号、系统字体缩放都无关。
  *
- * ## 点击
+ * ## 点击与选区
  *
- * 值里可能不止一个名字（多位声优），每个名字都要能单独跳转 —— 所以用
- * `AnnotatedString` + [LinkAnnotation]，而不是把整串做成一个可点区域。
+ * 值里可能不止一个名字（多位声优），每个名字都要能单独跳转 —— 所以名字是**一个个**
+ * 独立的 `Text`（声优之间用 `/` 分隔），各自挂 `Modifier.clickable`。
+ *
+ * 另一个硬要求是长按能选中文字，所以整块包在 [SelectionContainer] 里。
+ * 这两件事有冲突：`AnnotatedString` + `LinkAnnotation` 虽然也能做"多段可点"，
+ * 但带链接注释的 `Text` 会自己装一层 pointerInput 处理链接点击，把按下事件消费掉，
+ * 外层 [SelectionContainer] 就再也起不来选区（表现为"长按没反应"）。
+ * 拆成独立 `Text` + [Modifier.clickable] 之后，点按照旧、长按完整交给选区。
  */
 @Composable
 private fun CreditsRow(
@@ -1164,76 +1168,76 @@ private fun CreditsRow(
     onOpenCircle: (id: Int, name: String) -> Unit,
     voiceActors: List<Pair<String, () -> Unit>>
 ) {
-    val linkStyles = TextLinkStyles(
-        style = SpanStyle(
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.Medium,
-            textDecoration = TextDecoration.Underline
-        )
-    )
-
-    val circleText = buildAnnotatedString {
-        val name = circleName ?: "—"
-        if (circleId == null) {
-            append(name)
-        } else {
-            withLink(
-                LinkAnnotation.Clickable(
-                    tag = "circle",
-                    styles = linkStyles,
-                    linkInteractionListener = LinkInteractionListener { onOpenCircle(circleId, name) }
-                )
-            ) { append(name) }
-        }
-    }
-
-    val vaText = buildAnnotatedString {
-        if (voiceActors.isEmpty()) {
-            append("—")
-        } else {
-            voiceActors.forEachIndexed { index, (name, action) ->
-                if (index > 0) append(" / ")
-                withLink(
-                    LinkAnnotation.Clickable(
-                        tag = "va$index",
-                        styles = linkStyles,
-                        linkInteractionListener = LinkInteractionListener { action() }
-                    )
-                ) { append(name) }
-            }
-        }
-    }
-
     val labelStyle = MaterialTheme.typography.labelSmall
     val valueStyle = MaterialTheme.typography.bodySmall
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val valueColor = MaterialTheme.colorScheme.onBackground
+    // 链接样式：主色 + 下划线 + Medium（颜色在很多主题下与正文差别不大，
+    // 而下划线能让"这里能点"一眼看出来，用户不会去试每一个字）
+    val linkStyle = valueStyle.copy(
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.Medium,
+        textDecoration = TextDecoration.Underline
+    )
 
     Layout(
         modifier = Modifier.fillMaxWidth(),
         content = {
             Text("社团", style = labelStyle, color = labelColor, maxLines = 1)
-            // 社团名／声优名都交给 SelectionContainer：长按可选中、复制，
-            // 而点一下仍然是原有的"按它搜索"（链接锚点由 AnnotatedString 承担，
-            // 与选区不冲突：点按走链接、长按走选区）。
+            // 长按选中、点按搜索 —— 两件事要同时成立。
+            //
+            // ⚠️ 这里**不能**用 `AnnotatedString` + `LinkAnnotation` 来做点击：带链接注释的
+            // Text 会自己装一层 pointerInput 处理链接点击，它把按下事件消费掉之后，
+            // SelectionContainer 就再也起不来选区（表现就是"长按社团/声优没反应"）。
+            // 改成"每个名字一个可点 Text"，点按由 Modifier.clickable 派发，
+            // 长按则完整地交给外层 SelectionContainer。
             SelectionContainer {
-                Text(
-                    text = circleText,
-                    style = valueStyle,
-                    color = valueColor,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+                if (circleId == null || circleName.isNullOrBlank()) {
+                    Text(
+                        text = circleName ?: "—",
+                        style = valueStyle,
+                        color = valueColor,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                } else {
+                    Text(
+                        text = circleName,
+                        style = linkStyle,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            // 关掉水波纹：这行是纯文本链接，涟漪会从字缝里透出来
+                            indication = null
+                        ) { onOpenCircle(circleId, circleName) }
+                    )
+                }
             }
             Text("声优", style = labelStyle, color = labelColor, maxLines = 1)
             SelectionContainer {
-                Text(
-                    text = vaText,
-                    style = valueStyle,
-                    color = valueColor,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+                if (voiceActors.isEmpty()) {
+                    Text("—", style = valueStyle, color = valueColor)
+                } else {
+                    // 多位声优各自可点，所以拆成 FlowRow + 分隔符，
+                    // 而不是一整串带多个链接的 AnnotatedString（原因同上）
+                    FlowRow {
+                        voiceActors.forEachIndexed { index, (name, action) ->
+                            if (index > 0) {
+                                Text(" / ", style = valueStyle, color = valueColor, maxLines = 1)
+                            }
+                            Text(
+                                text = name,
+                                style = linkStyle,
+                                maxLines = 1,
+                                modifier = Modifier.clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { action() }
+                            )
+                        }
+                    }
+                }
             }
         }
     ) { measurables, constraints ->
