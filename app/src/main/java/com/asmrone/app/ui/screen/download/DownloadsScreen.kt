@@ -62,6 +62,7 @@ import com.asmrone.app.ui.component.DownloadStorageButton
 import com.asmrone.app.ui.component.EmptyHint
 import com.asmrone.app.ui.component.LiquidCapsule
 import com.asmrone.app.ui.component.TabTopBar
+import com.asmrone.app.ui.component.ToastHost
 import com.asmrone.app.ui.component.TopBarAction
 import com.asmrone.app.ui.component.WorkCard
 import com.asmrone.app.ui.component.animateCardEntrance
@@ -260,6 +261,11 @@ fun DownloadsScreen(
                 }
             )
         }
+        ToastHost(
+            state = toast,
+            toastOffset = Liquid.TOAST_OFFSET,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 
     pendingActions?.let { target ->

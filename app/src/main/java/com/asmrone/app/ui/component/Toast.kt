@@ -1,6 +1,8 @@
 package com.asmrone.app.ui.component
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -17,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,9 +34,9 @@ import kotlinx.coroutines.delay
  *
  * 用法：
  * ```
- * val toast = rememberToastState()   // 全局共享的 AppToast
- * // 宿主只在 MainActivity 的最外层挂一次
- * ToastHost(state = AppToast, toastOffset = ..., modifier = Modifier.align(Alignment.BottomCenter))
+ * val toast = rememberToastState()
+ * // 在某个 Box 里挂上宿主
+ * ToastHost(state = toast, toastOffset = 48.dp, modifier = Modifier.align(Alignment.BottomCenter))
  * // 任意位置触发
  * toast.show("刷新失败")
  * ```
@@ -114,23 +117,26 @@ class ToastState internal constructor() {
     }
 }
 
-/**
- * 全局轻提示状态 —— 整个进程只有这一份。
- *
- * 以前是每个页面各自 `remember` 一个、各自在自己页面的 `Box` 里挂 host，
- * 结果是提示的位置和层级都跟着页面走：主界面同时有底部导航栏和迷你播放器时，
- * 提示会被压在它们下面（页面的 Box 在 Scaffold 内容区，底栏是 Scaffold 的
- * bottomBar，绘制顺序在后）。
- *
- * 现在只保留一份状态 + 一个 host（挂在 `MainActivity` 最外层 Box 的最后一个
- * 子元素上），提示永远在最上层。多页面共用一份也有副作用，但都是正向的：
- * 页面切换时提示不会残留、也不会出现两条提示叠在一起。
- */
-val AppToast: ToastState = ToastState()
-
-/** 记住一个 [ToastState] —— 现在返回全局共享的 [AppToast] */
+/** 记住一个 [ToastState] */
 @Composable
-fun rememberToastState(): ToastState = AppToast
+fun rememberToastState(): ToastState = remember { ToastState() }
+
+/**
+ * 迷你播放器当前占用的高度 —— 由 [MiniPlayerBar] 自己在进出组合时上报。
+ *
+ * 为什么用全局对象而不是 CompositionLocal：提示宿主挂在**各页面内部**
+ * （不经过 Scaffold 的 bottomBar），拿不到播放器那一层的组合上下文；
+ * 而要"把提示抬到播放器上方"就必须知道播放器有多高。
+ *
+ * 值为 `0.dp` 表示"这一屏没有播放器"，提示就回到各页面原本的位置。
+ */
+object MiniPlayerInset {
+    var height: Dp by mutableStateOf(0.dp)
+        internal set
+}
+
+/** 迷你播放器出现/消失时，提示跟着移动的动画参数 —— 与播放器自己的滑入一致 */
+private val MiniInsetSpec = spring<Dp>(dampingRatio = 0.8f, stiffness = 300f)
 
 /**
  * 轻量提示宿主 —— 固定在屏幕偏下方，不随内容滚动。
@@ -144,18 +150,28 @@ fun rememberToastState(): ToastState = AppToast
  * 位置刻意"偏下而不是贴底"：贴底会与底部导航栏 / 迷你播放器混在一起，
  * 让提示看起来像界面的一部分而不是临时反馈。
  *
- * **只应该挂一次**（`MainActivity` 最外层 Box 的最后一个子元素），这样它绘制在
- * 底栏、迷你播放器、播放器覆盖层之后，永远在最上层。页面内部再挂会让提示
- * 被 Scaffold 的 bottomBar 盖住 —— 那正是曾经的问题。
+ * 调用方把它放进一个 `Box` 里给 `align`，再用 [toastOffset] 指定
+ * **距屏幕底部抬多高**（组件内部做 `offset(y = -(toastOffset + 播放器高度))`）：
+ * 主页面（导航栏 + 迷你播放器）约 168dp，详情页在播放器出现时约 128dp。
  *
- * [toastOffset] 指定 **距屏幕底部抬多高**（组件内部做 `offset(y = -toastOffset)`）。
+ * ## 为什么要自动加上播放器高度
+ *
+ * 提示宿主在页面内容区，而迷你播放器是 Scaffold 的 bottomBar（绘制在后）。
+ * 只要两者重叠，提示就会被压住 —— 调大的 `toastOffset` 只是把重叠的概率降低，
+ * 播放器一出现（滑入 300ms）就会重新压上来。
+ *
+ * 现在 [MiniPlayerBar] 把自己真实占用的高度上报给 [MiniPlayerInset]，
+ * 这里用同一套弹簧参数把提示顶上去：播放器滑入时提示同步上移，滑出时同步落回，
+ * 没有播放器的页面（高度为 0）位置完全不变。
  */
 @Composable
 fun ToastHost(
     state: ToastState,
     modifier: Modifier = Modifier,
     toastOffset: Dp = 0.dp,
-    durationMs: Long = 1500L
+    durationMs: Long = 1500L,
+    /** 是否让出迷你播放器的高度；全屏播放器等已经盖住播放器的界面传 false */
+    offsetMiniPlayer: Boolean = true
 ) {
     // 带按钮的提示要留出反应时间：1.5 秒读完再抬手点「修改」根本来不及。
     val effectiveDuration = if (state.actionLabel != null) {
@@ -171,13 +187,20 @@ fun ToastHost(
         }
     }
 
+    // 有播放器就整体抬到它上方；高度变化时做动画，与播放器自己的滑入滑出同步。
+    val miniInset by animateDpAsState(
+        targetValue = if (offsetMiniPlayer) MiniPlayerInset.height else 0.dp,
+        animationSpec = MiniInsetSpec,
+        label = "toastMiniInset"
+    )
+
     AnimatedVisibility(
         visible = state.isVisible,
         enter = fadeIn(tween(150)),
         exit = fadeOut(tween(400)),
-        // toastOffset 是"距屏幕底部抬多高"：贴底会被底部导航栏 / 迷你播放器挡住。
+        // toastOffset 是"距屏幕底部抬多高"：贴底会被底部导航栏挡住。
         // 曾经这个参数只是声明在那里没被用到，结果提示总是压在播放器下面。
-        modifier = modifier.offset(y = -toastOffset)
+        modifier = modifier.offset(y = -(toastOffset + miniInset))
     ) {
         Surface(
             shape = RoundedCornerShape(22.dp),

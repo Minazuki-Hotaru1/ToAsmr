@@ -45,6 +45,7 @@ import com.asmrone.app.ui.component.PrefetchNearEnd
 import com.asmrone.app.ui.component.animateCardEntrance
 import com.asmrone.app.ui.component.cardEntrance
 import com.asmrone.app.ui.component.rememberStatusBarTopDp
+import com.asmrone.app.ui.component.ToastHost
 import com.asmrone.app.ui.component.WorkCard
 import com.asmrone.app.ui.component.rememberToastState
 import com.asmrone.app.ui.theme.ErrorColor
@@ -250,6 +251,13 @@ fun PlaylistDetailScreen(
             modifier = Modifier.onSizeChanged { barHeight = it.height }
             // 顶栏刻意**不放刷新按钮**：下拉刷新已经覆盖了这个需求，
             // 而每日首次进入也会自动与云端对齐一次 —— 多一个入口只是噪音。
+        )
+
+        // 轻量提示（用户主动刷新失败时）—— 抬到迷你播放器之上，不随列表滚动
+        ToastHost(
+            state = toast,
+            toastOffset = Liquid.TOAST_OFFSET,
+            modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
 

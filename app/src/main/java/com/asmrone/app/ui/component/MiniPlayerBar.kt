@@ -19,12 +19,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
@@ -58,10 +61,17 @@ fun MiniPlayerBar(
     backdrop: Backdrop? = null
 ) {
     val shape = RoundedCornerShape(percent = 50)
+    val density = LocalDensity.current
+    // 把自己真实占用的高度上报给提示宿主：播放器一出现就把提示顶上去，
+    // 一消失立刻归零（本组件在 AnimatedVisibility 里，隐藏时离开组合）。
+    DisposableEffect(Unit) {
+        onDispose { MiniPlayerInset.height = 0.dp }
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
             .height(Sizes.MINI_PLAYER_HEIGHT)
+            .onSizeChanged { MiniPlayerInset.height = with(density) { it.height.toDp() } }
             .backdropButton(backdrop = backdrop, shape = shape)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
