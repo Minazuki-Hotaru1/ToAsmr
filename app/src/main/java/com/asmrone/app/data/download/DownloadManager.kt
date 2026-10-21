@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -92,6 +93,9 @@ object DownloadManager {
     }
 
     private const val PROGRESS_INTERVAL_MS = 200L
+
+    /** 从 App 内那份复制到本地时的缓冲大小（纯本地 IO，可以给大一点） */
+    private const val COPY_BUFFER_BYTES = 128 * 1024
 
     private val _tasks = MutableStateFlow<Map<Int, Task>>(emptyMap())
 
@@ -329,6 +333,41 @@ object DownloadManager {
                     )
                     return@forEach
                 }
+
+                // 存到本地，而 App 内那份已经下好：直接复制过去。
+                //
+                // 用户勾这些文件就是想要"另存一份到本地文件夹"，再造一遍网络请求
+                // 只是白花流量（服务端限速时尤其难受）。复制失败不终止这一批，
+                // 退回下面的联网下载 —— 宁可慢一点，也不能因为一个文件坏掉整单。
+                if (local) {
+                    val appCopy = DownloadStore.localFileFor(work.id, node.path)
+                    if (appCopy != null && appCopy.length() > 0L) {
+                        val target = targetFile(node.path)
+                        if (copyFile(appCopy, target)) {
+                            val copied = target.length()
+                            val previous = manifest.files[node.path]?.bytes ?: 0L
+                            if (manifest.files[node.path] == null) {
+                                doneFiles += 1
+                            } else {
+                                bytesDone -= previous
+                            }
+                            bytesDone += copied
+                            manifest = manifest.withFile(
+                                DownloadedFile(path = node.path, fileName = target.name, bytes = copied, durationSec = node.durationSec)
+                            )
+                            saveManifest(manifest)
+                            setStatus(work.id) { task ->
+                                task.copy(
+                                    doneFiles = doneFiles,
+                                    bytesDone = bytesDone,
+                                    bytesTotal = if (knownTotal > 0L) knownTotal else 0L,
+                                    status = Status.RUNNING
+                                )
+                            }
+                            return@forEach
+                        }
+                    }
+                }
                 val url = node.mediaStreamUrl.orEmpty().ifBlank { node.mediaDownloadUrl.orEmpty() }
                 if (url.isBlank() && node.hash.isNullOrBlank()) {
                     // 没有下载地址的节点（服务端偶发缺字段）跳过，不让整批失败
@@ -392,6 +431,40 @@ object DownloadManager {
             }
             // 用户在详情页点了下载就回到浏览，不会盯着下载页 —— 失败必须主动说出来
             _message.value = "「${work.title}」下载失败：$reason"
+        }
+    }
+
+    /**
+     * 把一个已经下好在 App 内的文件复制到本地目录。
+     *
+     * 先写 `*.copying` 再改名：中途取消/失败不会留下半个文件冒充"已下载"，
+     * 也不会让下一次点下载误以为它已经完整。取消异常原样抛出，否则会被
+     * 当成普通失败而退回联网下载 —— 用户按了取消却还在耗流量是最糟的结果。
+     */
+    private suspend fun copyFile(from: File, to: File): Boolean = withContext(Dispatchers.IO) {
+        val parent = to.parentFile
+        if (parent != null && !parent.exists() && !parent.mkdirs()) return@withContext false
+        val tmp = File(parent ?: to, "${to.name}.copying")
+        try {
+            from.inputStream().use { input ->
+                tmp.outputStream().use { output ->
+                    val buffer = ByteArray(COPY_BUFFER_BYTES)
+                    while (true) {
+                        if (!currentCoroutineContext().isActive) throw CancellationException("已取消下载")
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        output.write(buffer, 0, read)
+                    }
+                }
+            }
+            to.delete()
+            tmp.renameTo(to)
+        } catch (e: CancellationException) {
+            tmp.delete()
+            throw e
+        } catch (e: Exception) {
+            tmp.delete()
+            false
         }
     }
 

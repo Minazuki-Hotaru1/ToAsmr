@@ -81,8 +81,10 @@ import com.asmrone.app.ui.component.rememberLocalStorageRequester
  *   这样在一个大目录里找文件时，不会一碰行就把 200 个文件全勾上。
  * - **文件**：点行的任意位置或勾选框都是选/不选 —— 文件没有子级，点行没有
  *   第二种含义，多一步反而难用。
- * - **已下载的文件**：勾选框固定为选中且禁用，并标「已下载」——
- *   下载只会补缺，不会重下已有文件（续传靠 `.part`，不靠这里）。
+ * - **已在 App 内的文件**：取决于这次存哪儿 ——
+ *   存「系统」时勾选框固定选中且禁用，标「已下载」（同一份不会有第二个副本）；
+ *   存「本地」时**可以勾**，标「已在 App 内 · 复制」，下载时直接把 App 里那份
+ *   复制到本地文件夹，不再走网络（详见 `DownloadManager.runDownload`）。
  *
  * 行按层级缩进（每级 14dp，最多 5 级），文件夹名比文件名稍重，展开时子项
  * 用 `animateItem()` 淡入、旧行平滑让位，所以能一眼看出哪些内容属于哪个文件夹。
@@ -104,9 +106,11 @@ fun DownloadPickerSheet(
 
     // 文件夹 path → 它下面的所有叶子文件 path（一次算好，避免每帧遍历整棵树）
     val leavesUnder = remember(tree) { folderLeaves(tree) }
-    val downloadableLeaves = remember(tree) {
+    val downloadableLeaves = remember(tree, downloadedPaths) {
         leavesUnder.values.flatten().toSet().filter { path ->
-            findNode(tree, path)?.let { node ->
+            // 已经在 App 内的文件哪怕树上缺了下载地址，也能勾 —— 它是从本地复制，
+            // 不是联网取（这类节点在服务端偶发缺字段，挡掉反而没法另存）
+            path in downloadedPaths || findNode(tree, path)?.let { node ->
                 node.mediaStreamUrl.orEmpty().isNotBlank() ||
                     node.mediaDownloadUrl.orEmpty().isNotBlank() ||
                     !node.hash.isNullOrBlank()
@@ -119,14 +123,33 @@ fun DownloadPickerSheet(
     var expanded by remember(tree) { mutableStateOf(emptySet<String>()) }
     var selected by remember(tree) { mutableStateOf(emptySet<String>()) }
 
+    // ── 保存位置（系统 / 本地）────────────────────────────
+    //
+    // 开关放在这里而不是设置页：用户是在"要下载这一部"的当下决定存哪儿的，
+    // 跑一趟设置再回来反而容易忘。只影响之后的下载，已下好的要另存。
+    val context = LocalContext.current
+    val storage by AppPrefs.downloadStorage.collectAsState()
+
+    // 哪些文件**不能**勾。
+    //
+    // 存到 App 内时，已经下好的那份再勾一遍没有意义（不会有第二个副本），禁用并标「已下载」；
+    // 存到本地时它们反而必须能勾 —— 那份在 App 里，用户勾它就是"复制一份到本地文件夹"，
+    // 所以这里按存储模式切换，而不是一律禁用。
+    val blockedPaths = remember(storage, downloadedPaths) {
+        if (storage == DownloadStorage.LOCAL) emptySet() else downloadedPaths
+    }
+    /** 已经在 App 内、但这次要落到本地文件夹（走复制而不是下载） */
+    fun copiesToLocal(path: String): Boolean =
+        storage == DownloadStorage.LOCAL && path in downloadedPaths
+
     fun toggleSelection(row: TreeRow) {
         val node = row.node
         if (node.children.isEmpty()) {
-            if (node.path in downloadedPaths) return
+            if (node.path in blockedPaths) return
             selected = if (node.path in selected) selected - node.path else selected + node.path
         } else {
             val leaves = leavesUnder[row.path].orEmpty().filter { it in downloadableLeaves }
-            val selectable = leaves - downloadedPaths
+            val selectable = leaves - blockedPaths
             if (selectable.isEmpty()) return
             val allSelected = selectable.all { it in selected }
             selected = if (allSelected) selected - selectable.toSet() else selected + selectable
@@ -184,12 +207,6 @@ fun DownloadPickerSheet(
         }
     }
 
-    // ── 保存位置（系统 / 本地）────────────────────────────
-    //
-    // 开关放在这里而不是设置页：用户是在"要下载这一部"的当下决定存哪儿的，
-    // 跑一趟设置再回来反而容易忘。只影响之后的下载，已下好的要另存。
-    val context = LocalContext.current
-    val storage by AppPrefs.downloadStorage.collectAsState()
     // 授权回来后要补那次"点了下载但被权限拦下"的操作
     var pendingPaths by remember { mutableStateOf<List<String>?>(null) }
     var permissionHint by remember { mutableStateOf(false) }
@@ -322,7 +339,7 @@ fun DownloadPickerSheet(
                 TextButton(onClick = {
                     val audio = downloadableLeaves.filter { path ->
                         findNode(tree, path)?.let { TrackKind.of(it) == TrackKind.AUDIO } ?: false
-                    }.toSet() - downloadedPaths
+                    }.toSet() - blockedPaths
                     selected = if (audio.isNotEmpty() && audio.all { it in selected }) {
                         selected - audio
                     } else {
@@ -349,16 +366,17 @@ fun DownloadPickerSheet(
             ) {
                 items(rows, key = { it.key }) { row ->
                     val isFolder = row.node.children.isNotEmpty()
-                    val isDownloaded = !isFolder && row.path in downloadedPaths
-                    val leaves = leavesUnder[row.path].orEmpty().filter { it in downloadableLeaves } - downloadedPaths
+                    // 已经在 App 内：存 App 时禁用（不会有第二份），存本地时可选（复制过去）
+                    val inApp = !isFolder && row.path in downloadedPaths
+                    val leaves = leavesUnder[row.path].orEmpty().filter { it in downloadableLeaves } - blockedPaths
                     val checked = when {
                         isFolder -> leaves.isNotEmpty() && leaves.all { it in selected }
-                        else -> isDownloaded || row.path in selected
+                        else -> row.path in blockedPaths || row.path in selected
                     }
                     val partially = isFolder && !checked && leaves.any { it in selected }
-                    val canSelect = if (isFolder) leaves.isNotEmpty() else !isDownloaded
+                    val canSelect = if (isFolder) leaves.isNotEmpty() else row.path !in blockedPaths
                     // 文件夹点行 = 展开收起；文件点行 = 选/不选
-                    val rowClickable = isFolder || !isDownloaded
+                    val rowClickable = isFolder || row.path !in blockedPaths
 
                     Row(
                         modifier = Modifier
@@ -422,7 +440,9 @@ fun DownloadPickerSheet(
                             modifier = Modifier.weight(1f)
                         )
                         val trailing = when {
-                            isDownloaded -> "已下载"
+                            // 存本地时可勾选：说明这一勾是"复制"，不是再下一遍
+                            inApp && copiesToLocal(row.path) -> "已在 App 内 · 复制"
+                            inApp -> "已下载"
                             isFolder -> {
                                 val count = leavesUnder[row.path].orEmpty().size
                                 if (count > 0) "$count 个" else ""
