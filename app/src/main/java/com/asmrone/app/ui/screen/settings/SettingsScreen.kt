@@ -1,22 +1,40 @@
 package com.asmrone.app.ui.screen.settings
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.prefs.AppPrefs
+import com.asmrone.app.R
 import com.asmrone.app.ui.component.FlatDivider
 import com.asmrone.app.ui.component.FlatRow
 import com.asmrone.app.ui.component.FlatSection
 import com.asmrone.app.ui.component.RowChevron
 import com.asmrone.app.ui.component.SettingSwitch
+import com.asmrone.app.ui.theme.ThemeColor
 
 /**
  * 设置主页 —— 分组与排版完全沿用 comicApp 设置页：
@@ -201,6 +219,10 @@ fun AppearanceSettingsScreen(
 
         Spacer(Modifier.height(24.dp))
 
+        ThemeColorSection()
+
+        Spacer(Modifier.height(24.dp))
+
         FlatSection(title = "液态玻璃") {
             FlatRow(
                 title = "玻璃样式",
@@ -237,6 +259,63 @@ fun AppearanceSettingsScreen(
                         onCheckedChange = { AppPrefs.setHomeEnabled(it) }
                     )
                 }
+            )
+        }
+    }
+}
+
+/**
+ * 主题色：一行色点。
+ *
+ * 不做成"带文字的单选行"：六个预设并排时，颜色本身就是信息，
+ * 加文字反而让这一组比上下两组都高，视觉上凸出来。选中态靠外圈 + 勾表达。
+ * 名称仍保留在 [ThemeColor.label] 里，给无障碍朗读用。
+ */
+@Composable
+private fun ThemeColorSection() {
+    val selectedIndex by AppPrefs.themeColor.collectAsState()
+    FlatSection(title = "主题色") {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ThemeColor.entries.forEach { color ->
+                ThemeColorDot(
+                    color = color,
+                    selected = color.ordinal == selectedIndex,
+                    onClick = { AppPrefs.setThemeColor(color.ordinal) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeColorDot(
+    color: ThemeColor,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val ring = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(color.swatch, CircleShape)
+            .border(2.dp, ring, CircleShape)
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = color.label },
+        contentAlignment = Alignment.Center
+    ) {
+        if (selected) {
+            Icon(
+                painter = painterResource(R.drawable.ic_check_fluent),
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
             )
         }
     }

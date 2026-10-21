@@ -83,6 +83,7 @@ import com.asmrone.app.ui.screen.search.SearchViewModel
 import com.asmrone.app.ui.screen.startup.StartupScreen
 import com.asmrone.app.ui.theme.AsmrOneTheme
 import com.asmrone.app.ui.theme.GlassStylePrefs
+import com.asmrone.app.ui.theme.ThemeColor
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
@@ -169,6 +170,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val themeMode by AppPrefs.themeMode.collectAsState()
+            val themeColor by AppPrefs.themeColor.collectAsState()
             val systemDark = isSystemInDarkTheme()
             val darkTheme = when (themeMode) {
                 1 -> false
@@ -192,7 +194,10 @@ class MainActivity : ComponentActivity() {
             var stableNavBottom by remember { mutableStateOf(liveNavBottom) }
             if (liveNavBottom > stableNavBottom) stableNavBottom = liveNavBottom
 
-            AsmrOneTheme(darkTheme = darkTheme) {
+            AsmrOneTheme(
+                darkTheme = darkTheme,
+                themeColor = ThemeColor.of(themeColor)
+            ) {
                 CompositionLocalProvider(
                     LocalStableStatusBarTop provides stableStatusTop,
                     LocalStableNavigationBarBottom provides stableNavBottom

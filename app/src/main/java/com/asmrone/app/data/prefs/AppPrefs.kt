@@ -187,6 +187,15 @@ object AppPrefs {
     val themeMode: StateFlow<Int> = _themeMode.asStateFlow()
 
     /**
+     * 主题色序号，对应 `ui.theme.ThemeColor` 的 ordinal。
+     *
+     * 存序号而不是存颜色值：预设是有限集合，存序号才能保证"以后调整某个预设的
+     * 具体色值"也能影响到已经选过它的用户；越界时 `ThemeColor.of` 会退回默认色。
+     */
+    private val _themeColor = MutableStateFlow(0)
+    val themeColor: StateFlow<Int> = _themeColor.asStateFlow()
+
+    /**
      * 收藏页当前页签：0 = 标记，1 = 列表。
      *
      * 持久化是刻意的：从「标记」切到「列表」之后，只要用户不再主动切回去，
@@ -388,6 +397,11 @@ object AppPrefs {
         sp.edit().putInt(KEY_THEME_MODE, value).apply()
     }
 
+    fun setThemeColor(value: Int) {
+        _themeColor.value = value
+        sp.edit().putInt(KEY_THEME_COLOR, value).apply()
+    }
+
     fun init(context: Context) {
         if (::sp.isInitialized) return
         sp = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -421,6 +435,7 @@ object AppPrefs {
             .let { if (it in PLAY_MODE_RANGE) it else 0 }
         _autoNext.value = sp.getBoolean(KEY_AUTO_NEXT, true)
         _themeMode.value = sp.getInt(KEY_THEME_MODE, 0)
+        _themeColor.value = sp.getInt(KEY_THEME_COLOR, 0)
         _libraryTab.value = sp.getInt(KEY_LIBRARY_TAB, 0)
         _overlayLyrics.value = sp.getBoolean(KEY_OVERLAY_LYRICS, false)
         _downloadStorage.value = sp.getString(KEY_DOWNLOAD_STORAGE, null)
@@ -567,6 +582,7 @@ object AppPrefs {
     private const val KEY_PLAY_MODE = "play_mode"
     private const val KEY_AUTO_NEXT = "auto_next"
     private const val KEY_THEME_MODE = "theme_mode"
+private const val KEY_THEME_COLOR = "theme_color"
     private const val KEY_LIBRARY_TAB = "library_tab"
     private const val KEY_OVERLAY_LYRICS = "overlay_lyrics"
     private const val KEY_DOWNLOAD_STORAGE = "download_storage"

@@ -55,10 +55,35 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 /**
+ * 把 [ThemeColor] 铺到基础配色上。
+ *
+ * 只换 primary 家族 + secondary：表面色/正文/分割线都是压过饱和的中性色，
+ * 留着能让明暗关系保持稳定（换主题色不该让界面亮度也跳一档）。
+ */
+private fun schemeFor(palette: ThemePalette, dark: Boolean) = if (dark) {
+    DarkColorScheme.copy(
+        primary = palette.darkPrimary,
+        onPrimary = palette.darkOnPrimary,
+        primaryContainer = palette.darkPrimaryContainer,
+        onPrimaryContainer = palette.darkOnPrimaryContainer,
+        secondary = palette.darkSecondary
+    )
+} else {
+    LightColorScheme.copy(
+        primary = palette.lightPrimary,
+        onPrimary = palette.lightOnPrimary,
+        primaryContainer = palette.lightPrimaryContainer,
+        onPrimaryContainer = palette.lightOnPrimaryContainer,
+        secondary = palette.lightSecondary
+    )
+}
+
+/**
  * ToAsmr 主题（沿用 comicApp 的 `ComicAppTheme` 结构）
  *
  * @param darkTheme 暗色模式，默认跟随系统设置
  * @param dynamicColor 是否使用 Material You 动态取色，默认关闭（使用自定义配色）
+ * @param themeColor 主题色预设，来自设置页（`AppPrefs.themeColor`）
  *
  * 说明：下面给系统栏写透明色是有意保留的旧 API 用法（覆盖未走 edge-to-edge 的场景），
  * 在 API 35+ 已被废弃但行为仍然正确，所以就地抑制 DEPRECATION 告警。
@@ -68,6 +93,7 @@ private val DarkColorScheme = darkColorScheme(
 fun AsmrOneTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = false,
+    themeColor: ThemeColor = ThemeColor.MINT,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -75,8 +101,7 @@ fun AsmrOneTheme(
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
+        else -> schemeFor(themeColor.palette, darkTheme)
     }
 
     val view = LocalView.current
