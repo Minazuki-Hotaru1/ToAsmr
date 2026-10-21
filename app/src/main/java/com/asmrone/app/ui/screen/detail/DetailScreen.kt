@@ -1,6 +1,7 @@
 package com.asmrone.app.ui.screen.detail
 
 import com.asmrone.app.ui.component.ACTION_TOAST_DURATION_MS
+import com.asmrone.app.ui.component.rememberLocalStorageRequester
 import com.asmrone.app.ui.component.rememberToastState
 import com.asmrone.app.ui.component.ToastHost
 import kotlinx.coroutines.launch
@@ -195,6 +196,20 @@ fun DetailScreen(
     var downloadingPdf by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // 「存到本地文件夹」需要存储权限。下载按钮点下去发现没权限时，ViewModel 会置
+    // downloadNeedsPermission，这里负责真的把用户带到授权页 —— 以前这条路是断的：
+    // 下载器把任务标成失败，而失败的任务在下载页被 isActive 过滤掉，用户什么都看不到。
+    val requestLocalAccess = rememberLocalStorageRequester(
+        onResult = { granted ->
+            if (granted) viewModel.onLocalPermissionGranted()
+            else viewModel.onLocalPermissionDenied()
+        },
+        onFailure = { viewModel.onLocalPermissionDenied("打不开系统权限页面，请到「设置 → 应用 → 权限」里手动开启") }
+    )
+    LaunchedEffect(state.downloadNeedsPermission) {
+        if (state.downloadNeedsPermission) requestLocalAccess()
+    }
 
     LaunchedEffect(pickerResult) {
         // 先取到局部变量再判空：pickerResult 是委托属性（by collectAsState），

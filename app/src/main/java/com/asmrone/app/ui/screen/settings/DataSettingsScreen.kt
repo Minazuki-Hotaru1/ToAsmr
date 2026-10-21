@@ -209,12 +209,19 @@ private fun DownloadLocationSection() {
 
     // 两条授权路径（API 30+ 跳设置页、API 28/29 弹运行时权限）都收在这一个函数里；
     // 授权成功后直接打开系统选择器，省一次点击
-    val requestAccess = rememberLocalStorageRequester { granted ->
-        if (granted) {
-            accessTick++
-            treePicker.launch(null)
+    val requestAccess = rememberLocalStorageRequester(
+        onResult = { granted ->
+            if (granted) {
+                accessTick++
+                treePicker.launch(null)
+            } else {
+                pickError = "没有存储权限，无法选择本地文件夹"
+            }
+        },
+        onFailure = {
+            pickError = "打不开系统权限页面，请到「设置 → 应用 → 权限」里手动开启"
         }
-    }
+    )
 
     // 从系统授权页回来时刷新一次权限状态（否则要杀进程重进才认）
     val lifecycleOwner = LocalLifecycleOwner.current

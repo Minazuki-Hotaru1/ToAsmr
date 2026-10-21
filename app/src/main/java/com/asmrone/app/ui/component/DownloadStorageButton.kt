@@ -29,18 +29,22 @@ import com.asmrone.app.ui.theme.Liquid
  * "本地方案"下染主色底，顺便提示"现在不是默认位置"。
  *
  * 只影响**之后**的下载 —— 已经下好的内容要另存（下载页长按卡片）。
+ *
+ * [warn] 为 true 时用错误色：按钮上写着"本地"但系统里的权限已经没了（用户关掉了
+ * 所有文件访问权限、或换了台机器恢复备份）。不标出来的话，用户会以为一切就绪。
  */
 @Composable
 fun DownloadStorageButton(
     storage: DownloadStorage,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    warn: Boolean = false
 ) {
     val local = storage == DownloadStorage.LOCAL
-    val tint = if (local) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
+    val tint = when {
+        warn -> MaterialTheme.colorScheme.error
+        local -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -48,10 +52,10 @@ fun DownloadStorageButton(
             .heightIn(min = Liquid.ACTION_HEIGHT)
             .clip(LiquidCapsule)
             .background(
-                if (local) {
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
+                when {
+                    warn -> MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                    local -> MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
                 }
             )
             .clickable(onClick = onClick)

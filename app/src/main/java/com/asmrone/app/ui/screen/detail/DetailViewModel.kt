@@ -29,6 +29,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** 详情页「标记」按钮一点即给的默认星级（满分即 5 星） */
@@ -80,7 +81,14 @@ data class DetailUiState(
      */
     val downloadTree: List<Track> = emptyList(),
     /** 已下载的文件路径；非空即表示"这部作品下载过" */
-    val downloadedPaths: Set<String> = emptySet()
+    val downloadedPaths: Set<String> = emptySet(),
+    /**
+     * 有一次下载因为缺少存储权限被拦下了，等界面去发起授权。
+     *
+     * 置 true 之后界面弹权限流程；回调走 [DetailViewModel.onLocalPermissionGranted]
+     * 或 [DetailViewModel.onLocalPermissionDenied]，两者都会把它复位。
+     */
+    val downloadNeedsPermission: Boolean = false
 ) {
     val tracks: List<Track> get() = work?.tracks ?: emptyList()
     val selectedFormat: AudioFormatOption? get() = formatOptions.getOrNull(selectedFormatIndex)
@@ -110,6 +118,14 @@ class DetailViewModel : ViewModel() {
 
     /** 上一次标记尝试的完整意图（含两层"清空"语义），供失败后「重试」用 */
     private var lastAttempt: CollectionAttempt? = null
+
+    /**
+     * 等待授权后补发的那一次下载。
+     *
+     * 记下 workId 是为了防串台：授权期间用户可能返回列表、点进另一部作品，
+     * 这个 ViewModel 会被复用去加载新的作品，那时这批路径已经不该再下。
+     */
+    private var pendingDownload: PendingDownload? = null
 
     /** 已经落本地、但网络还没发出去的快捷评分（见 [sendQuickRate]） */
     private var pendingQuickRate: QuickRateRequest? = null
@@ -243,6 +259,11 @@ class DetailViewModel : ViewModel() {
      *
      * 这里**只入队**：真正的网络请求由 [DownloadManager] 在后台排队执行，
      * 详情页不必等待，用户可以立刻返回或退出。
+     *
+     * 存到"本地文件夹"要先有存储权限。以前这里是直接入队，没权限时下载器把任务标成
+     * 失败——而失败的任务在下载页被 `isActive` 过滤掉了，用户什么提示都看不到。
+     * 现在改成：先检查，缺权限就置 [DetailUiState.downloadNeedsPermission]，
+     * 由界面发起授权，授权回来再补这一次入队（见 [onLocalPermissionGranted]）。
      */
     fun downloadSelected(paths: Collection<String>) {
         val work = _state.value.work ?: return
@@ -250,10 +271,41 @@ class DetailViewModel : ViewModel() {
         if (paths.isEmpty() || tree.isEmpty()) return
         // 存哪儿由「下载」页那个开关决定（默认 App 内，也能切成公共目录）
         val storage = AppPrefs.downloadStorage.value
+        if (storage == DownloadStorage.LOCAL && !DownloadManager.canWriteLocal()) {
+            pendingDownload = PendingDownload(work.id, paths.toList())
+            _state.update { it.copy(downloadNeedsPermission = true) }
+            return
+        }
+        enqueueDownload(work, tree, paths, storage)
+    }
+
+    /** 授权成功：把刚才被拦下的那次下载补上 */
+    fun onLocalPermissionGranted() {
+        val pending = pendingDownload
+        pendingDownload = null
+        _state.update { it.copy(downloadNeedsPermission = false) }
+        val work = _state.value.work
+        val tree = _state.value.pickerTree
+        if (pending == null || work == null || work.id != pending.workId || tree.isEmpty()) return
+        enqueueDownload(work, tree, pending.paths, DownloadStorage.LOCAL)
+    }
+
+    /** 没授权（拒绝 / 从设置页空手回来 / 压根打不开设置页） */
+    fun onLocalPermissionDenied(reason: String? = null) {
+        pendingDownload = null
+        _state.update { it.copy(downloadNeedsPermission = false) }
+        notify(reason ?: "没有存储权限，无法保存到本地文件夹")
+    }
+
+    private fun enqueueDownload(
+        work: Work,
+        tree: List<Track>,
+        paths: Collection<String>,
+        storage: DownloadStorage
+    ) {
         DownloadManager.enqueue(work, tree, paths, storage)
-        val count = paths.size
         val where = if (storage == DownloadStorage.LOCAL) "本地文件夹" else "App 内"
-        notify("已加入下载队列（$count 个文件，保存到$where），可在「下载」页查看进度")
+        notify("已加入下载队列（${paths.size} 个文件，保存到$where），可在「下载」页查看进度")
     }
 
     // ─────────────────────────── 我的收藏（云端状态）───────────────────────────
@@ -430,6 +482,12 @@ class DetailViewModel : ViewModel() {
         val clearStatus: Boolean,
         val clearRating: Boolean,
         val keepStatus: Boolean = false
+    )
+
+    /** 被存储权限拦下、等授权回来再补的那一次下载 */
+    private data class PendingDownload(
+        val workId: Int,
+        val paths: List<String>
     )
 
     private fun performCollectionWrite(

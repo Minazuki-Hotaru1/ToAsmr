@@ -25,11 +25,18 @@ import com.asmrone.app.data.download.LocalDownloadStore
  *
  * [onResult] 拿到的是"最终能不能写"（已用 [LocalDownloadStore.hasAccess] 复查过），
  * 而不是"对话框点了允许"，因为用户可能在设置页里只开了半截就返回。
+ *
+ * [onFailure] 只在"连设置页都打不开"时调用（个别 ROM 不认所有文件访问权限的 Intent）：
+ * 这种情况必须让界面说一句，否则用户看到的就是点了没反应。
  */
 @Composable
-fun rememberLocalStorageRequester(onResult: (granted: Boolean) -> Unit): () -> Unit {
+fun rememberLocalStorageRequester(
+    onResult: (granted: Boolean) -> Unit,
+    onFailure: () -> Unit = {}
+): () -> Unit {
     val context = LocalContext.current
     val currentOnResult by rememberUpdatedState(onResult)
+    val currentOnFailure by rememberUpdatedState(onFailure)
     // 只在"跳去系统设置页"这条路径上等待，运行时权限走 launcher 回调
     var awaitingSettings by remember { mutableStateOf(false) }
 
@@ -62,8 +69,14 @@ fun rememberLocalStorageRequester(onResult: (granted: Boolean) -> Unit): () -> U
                 LocalDownloadStore.requiresRuntimePermission() ->
                     runtimeLauncher.launch(LocalDownloadStore.runtimePermission())
                 else -> {
+                    // 先置位再跳：跳成功时靠 ON_RESUME 复查；跳失败要立刻复位，
+                    // 否则下一次回到前台会莫名其妙地回调一次"没授权"
                     awaitingSettings = true
-                    runCatching { context.startActivity(LocalDownloadStore.permissionIntent(context)) }
+                    val opened = LocalDownloadStore.tryOpenPermissionSettings(context)
+                    if (!opened) {
+                        awaitingSettings = false
+                        currentOnFailure()
+                    }
                 }
             }
             Unit

@@ -106,6 +106,34 @@ object LocalDownloadStore {
         }
 
     /**
+     * 真的把用户送到一个"能授权"的页面，返回是否送成功。
+     *
+     * 只发 [permissionIntent] 不够：`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` 在部分
+     * 定制 ROM 上没人接（抛 `ActivityNotFoundException`），以前被 `runCatching` 吞掉之后
+     * 既不弹页面也不提示 —— 用户看到的就是"点了没反应"。这里逐级退化：
+     * 应用自己的所有文件访问页 → 所有文件访问总列表 → 应用详情页（一定能开）。
+     */
+    fun tryOpenPermissionSettings(context: Context): Boolean {
+        val candidates = ArrayList<Intent>(3)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            candidates += Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:${context.packageName}")
+            )
+            candidates += Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+        }
+        candidates += Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(Uri.parse("package:${context.packageName}"))
+        for (intent in candidates) {
+            val opened = runCatching {
+                context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.isSuccess
+            if (opened) return true
+        }
+        return false
+    }
+
+    /**
      * 把系统文件选择器（`ACTION_OPEN_DOCUMENT_TREE`）返回的 tree Uri 映射回文件系统路径。
      *
      * 落盘走的是 `java.io.File`（拿到「所有文件访问权限」后能原样保留作品内部的目录结构），

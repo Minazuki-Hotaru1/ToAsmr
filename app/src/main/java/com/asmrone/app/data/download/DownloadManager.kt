@@ -173,12 +173,13 @@ object DownloadManager {
             // 写公共目录前必须拿到「所有文件访问权限」，没有就直接标失败，
             // 让界面去引导授权，而不是下到一半才发现写不进去
             if (!canWriteLocal()) {
+                val reason = "没有存储权限，无法保存到本地文件夹"
                 setStatus(work.id) {
-                    it.copy(
-                        status = Status.FAILED,
-                        error = "没有存储权限，无法保存到本地文件夹"
-                    )
+                    it.copy(status = Status.FAILED, error = reason)
                 }
+                // 失败也要说出来：这条任务的错误在下载页可见，同时弹一次提示
+                // （用户在详情页点的下载，根本没打开过下载页）
+                _message.value = reason
                 return
             }
             scope.launch { LocalDownloadStore.prewarm() }
@@ -207,12 +208,27 @@ object DownloadManager {
     }
 
     /**
+     * 把一条**已经结束**的任务从列表里划掉（失败/取消之后用户点「移除」）。
+     *
+     * 失败的任务会一直留在 [tasks] 里，好让下载页把错误说清楚；但不能让它永远挂着。
+     */
+    fun dismiss(workId: Int) {
+        synchronized(jobs) { if (jobs[workId]?.isActive == true) return }
+        _tasks.update { it - workId }
+    }
+
+    /**
      * 把 App 内那份下载复制到公共目录（「另存到本地」）。
      *
      * 复制而不是移动：App 内那份可能正在播放，也可能被"离线详情"依赖；
      * 用户只是想同时在文件管理器里有一份。
      */
     fun copyToLocal(workId: Int) {
+        if (!canWriteLocal()) {
+            // 没有权限就别去 mkdirs 撞墙：给一句能对得上的提示，界面据此引导授权
+            _message.value = "没有存储权限，无法另存到本地文件夹"
+            return
+        }
         scope.launch {
             val ok = LocalDownloadStore.copyFromApp(workId)
             _message.value = if (ok) "已保存到本地文件夹" else "保存失败，请检查本地文件夹与存储权限"
@@ -370,9 +386,12 @@ object DownloadManager {
             setStatus(work.id) { it.copy(status = Status.CANCELLED) }
             throw e
         } catch (e: Exception) {
+            val reason = e.message ?: "下载失败"
             setStatus(work.id) {
-                it.copy(status = Status.FAILED, error = e.message ?: "下载失败")
+                it.copy(status = Status.FAILED, error = reason)
             }
+            // 用户在详情页点了下载就回到浏览，不会盯着下载页 —— 失败必须主动说出来
+            _message.value = "「${work.title}」下载失败：$reason"
         }
     }
 

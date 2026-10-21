@@ -190,10 +190,29 @@ fun DownloadPickerSheet(
     // 跑一趟设置再回来反而容易忘。只影响之后的下载，已下好的要另存。
     val context = LocalContext.current
     val storage by AppPrefs.downloadStorage.collectAsState()
-    val requestLocalAccess = rememberLocalStorageRequester { granted ->
-        // 授权成功就直接切过去（按钮本身就是存储模式的开关）
-        if (granted) AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
-    }
+    // 授权回来后要补那次"点了下载但被权限拦下"的操作
+    var pendingPaths by remember { mutableStateOf<List<String>?>(null) }
+    var permissionHint by remember { mutableStateOf(false) }
+    val requestLocalAccess = rememberLocalStorageRequester(
+        onResult = { granted ->
+            if (granted) {
+                // 授权成功就直接切过去（按钮本身就是存储模式的开关）
+                AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
+                permissionHint = false
+                pendingPaths?.let { paths ->
+                    onDownload(paths)
+                    onDismiss()
+                }
+            } else {
+                permissionHint = true
+            }
+            pendingPaths = null
+        },
+        onFailure = {
+            permissionHint = true
+            pendingPaths = null
+        }
+    )
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -223,6 +242,8 @@ fun DownloadPickerSheet(
                 }
                 DownloadStorageButton(
                     storage = storage,
+                    warn = storage == DownloadStorage.LOCAL &&
+                        !LocalDownloadStore.hasAccess(context),
                     onClick = {
                         when {
                             storage == DownloadStorage.LOCAL ->
@@ -235,8 +256,18 @@ fun DownloadPickerSheet(
                 )
                 TextButton(
                     onClick = {
-                        onDownload(selected.toList())
-                        onDismiss()
+                        val paths = selected.toList()
+                        // 存到本地要先有权限。开关可能早就是"本地"（上次授权过），
+                        // 之后权限被撤销时这里必须重新走一遍授权，而不是直接入队失败。
+                        if (storage == DownloadStorage.LOCAL &&
+                            !LocalDownloadStore.hasAccess(context)
+                        ) {
+                            pendingPaths = paths
+                            requestLocalAccess()
+                        } else {
+                            onDownload(paths)
+                            onDismiss()
+                        }
                     },
                     enabled = selected.isNotEmpty()
                 ) {
@@ -250,6 +281,20 @@ fun DownloadPickerSheet(
                         }
                     )
                 }
+            }
+
+            // 存到本地却还没权限：在用户点「下载」之前就把话说清楚
+            if (storage == DownloadStorage.LOCAL && !LocalDownloadStore.hasAccess(context)) {
+                Text(
+                    text = if (permissionHint) {
+                        "没拿到存储权限，点右上角「本地」可再试一次"
+                    } else {
+                        "存到本地文件夹需要存储权限，点右上角「本地」可前往授予"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp)
+                )
             }
 
             // ── 汇总 + 快捷操作 ─────────────────────────

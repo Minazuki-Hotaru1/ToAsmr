@@ -97,14 +97,28 @@ fun DownloadsScreen(
     val toast = rememberToastState()
 
     // 申请公共目录写权限：授权成功后顺手把存储模式切成"本地"，省得用户再点一次开关
-    val requestLocalAccess = rememberLocalStorageRequester { granted ->
-        if (granted) {
-            AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
-            toast.show("之后的下载保存到本地文件夹")
-        } else {
-            toast.show("没有存储权限，仍保存到 App 内")
+    // pendingCopy 非空表示这次授权是为了「另存到本地」——授权回来要接着把那一步做完
+    var pendingCopy by remember { mutableStateOf<Int?>(null) }
+    val requestLocalAccess = rememberLocalStorageRequester(
+        onResult = { granted ->
+            val copyId = pendingCopy
+            pendingCopy = null
+            if (granted) {
+                AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
+                if (copyId != null) {
+                    DownloadManager.copyToLocal(copyId)
+                } else {
+                    toast.show("之后的下载保存到本地文件夹")
+                }
+            } else {
+                toast.show("没有存储权限，无法保存到本地文件夹")
+            }
+        },
+        onFailure = {
+            pendingCopy = null
+            toast.show("打不开系统权限页面，请到「设置 → 应用 → 权限」里手动开启")
         }
-    }
+    )
 
     LaunchedEffect(message) {
         message?.let {
@@ -131,8 +145,12 @@ fun DownloadsScreen(
         listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
     }
 
-    val activeTasks = remember(tasks) {
-        tasks.values.filter { it.isActive }.sortedBy { it.title }
+    // 除了在跑的，也要列出**失败**的那些：失败原因只在这里能看见。
+    // 用户主动取消的不列 —— 他本来就是想让这条消失。
+    val visibleTasks = remember(tasks) {
+        tasks.values
+            .filter { it.isActive || it.status == DownloadManager.Status.FAILED }
+            .sortedBy { it.title }
     }
     val animatedKeys = remember { mutableSetOf<String>() }
     var pendingActions by remember { mutableStateOf<DownloadManager.DownloadedWork?>(null) }
@@ -153,7 +171,7 @@ fun DownloadsScreen(
             .background(MaterialTheme.colorScheme.background)
     ) {
         when {
-            library.isEmpty() && activeTasks.isEmpty() -> EmptyHint(
+            library.isEmpty() && visibleTasks.isEmpty() -> EmptyHint(
                 title = "还没有下载",
                 description = "打开任意作品详情页，点「下载」把音声存到本地，之后没网也能听。"
             )
@@ -166,13 +184,14 @@ fun DownloadsScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalItemSpacing = 10.dp
             ) {
-                if (activeTasks.isNotEmpty()) {
+                if (visibleTasks.isNotEmpty()) {
                     item(key = "active", span = StaggeredGridItemSpan.FullLine) {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            activeTasks.forEach { task ->
+                            visibleTasks.forEach { task ->
                                 ActiveDownloadRow(
                                     task = task,
-                                    onCancel = { DownloadManager.cancel(task.workId) }
+                                    onCancel = { DownloadManager.cancel(task.workId) },
+                                    onDismiss = { DownloadManager.dismiss(task.workId) }
                                 )
                             }
                             Spacer(Modifier.height(2.dp))
@@ -225,7 +244,10 @@ fun DownloadsScreen(
                 Spacer(Modifier.width(8.dp))
             }
             DownloadStorageButton(
-                storage = storage,                onClick = {
+                storage = storage,
+                warn = storage == DownloadStorage.LOCAL &&
+                    !LocalDownloadStore.hasAccess(context),
+                onClick = {
                     if (storage == DownloadStorage.LOCAL) {
                         AppPrefs.setDownloadStorage(DownloadStorage.APP)
                         toast.show("之后的下载保存到 App 内")
@@ -233,7 +255,7 @@ fun DownloadsScreen(
                         AppPrefs.setDownloadStorage(DownloadStorage.LOCAL)
                         toast.show("之后的下载保存到本地文件夹")
                     } else {
-                        toast.show("需要存储权限才能保存到本地文件夹")
+                        // 提示统一由 onResult 给，这里只管把用户带去授权
                         requestLocalAccess()
                     }
                 }
@@ -255,8 +277,15 @@ fun DownloadsScreen(
                     Text("${target.fileCount} 个文件 · ${formatBytes(target.bytes)}")
                     Spacer(Modifier.height(12.dp))
                     TextButton(onClick = {
+                        val workId = target.work.id
                         pendingActions = null
-                        DownloadManager.copyToLocal(target.work.id)
+                        // 没有权限时先把用户带去授权，回来在 onResult 里接着另存
+                        if (LocalDownloadStore.hasAccess(context)) {
+                            DownloadManager.copyToLocal(workId)
+                        } else {
+                            pendingCopy = workId
+                            requestLocalAccess()
+                        }
                     }) {
                         Text("另存到本地文件夹")
                     }
@@ -289,11 +318,12 @@ fun DownloadsScreen(
     }
 }
 
-/** 进行中的一条：封面 + 标题 + 进度条 + 取消按钮 */
+/** 进行中的一条：封面 + 标题 + 进度条 + 取消按钮；失败 / 取消的一条带「移除」 */
 @Composable
 private fun ActiveDownloadRow(
     task: DownloadManager.Task,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -351,6 +381,11 @@ private fun ActiveDownloadRow(
         if (task.isActive) {
             TextButton(onClick = onCancel) {
                 Text("取消", style = MaterialTheme.typography.labelMedium)
+            }
+        } else {
+            // 失败/取消的那条留在列表里给用户看原因，看完自己划掉
+            TextButton(onClick = onDismiss) {
+                Text("移除", style = MaterialTheme.typography.labelMedium)
             }
         }
     }
