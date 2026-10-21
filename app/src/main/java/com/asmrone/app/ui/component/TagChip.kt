@@ -1,7 +1,9 @@
 package com.asmrone.app.ui.component
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -180,11 +182,21 @@ private const val IMAGE_BADGE_BG_ALPHA = 0.85f
  * 无障碍语义，于是改为显式关掉那个最小尺寸（见下方 `CompositionLocalProvider`），
  * 效果与 comicApp 一致：标签片按内容高度排布，行距是多少就显示多少。
  */
+/**
+ * 标签墙上的一个标签片。
+ *
+ * [onLongClick] 非空时挂了长按（详情页用它复制标签名）；为空时只有点按。
+ * 用 [combinedClickable] 而不是"Surface(onClick) + 另加一个长按手势"：
+ * 同一节点上叠两层手势时，更内层会先消费事件，外层就永远收不到 ——
+ * 收藏夹卡片曾经因为这么写而点不开。
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TagWallChip(
     text: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null
 ) {
     // ⚠️ Material3 里「可点击的 Surface」会在画背景的外层强制**最小触控尺寸 48dp**：
     //    标签片视觉高度只有 ~24dp，但布局高度被撑到 48dp，
@@ -194,10 +206,12 @@ fun TagWallChip(
     //    若觉得难点中，可用外层不可见容器单独放大触摸区，视觉紧凑度不受影响）。
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
         Surface(
-            modifier = modifier,
+            modifier = modifier.combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
             shape = RoundedCornerShape(4.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            onClick = onClick
+            color = MaterialTheme.colorScheme.surfaceVariant
         ) {
             Text(
                 text = text,

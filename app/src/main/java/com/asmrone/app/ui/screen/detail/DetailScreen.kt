@@ -1,5 +1,15 @@
 package com.asmrone.app.ui.screen.detail
 
+import android.content.ClipData
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalHapticFeedback
 import com.asmrone.app.ui.component.ACTION_TOAST_DURATION_MS
 import com.asmrone.app.ui.component.rememberLocalStorageRequester
 import com.asmrone.app.ui.component.rememberToastState
@@ -197,6 +207,23 @@ fun DetailScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // ── 长按复制 ─────────────────────────────────────────
+    // 写剪贴板、震动、提示三件事绑在**同一个**动作里，调用点只负责给文本。
+    // 拆开写很容易漏掉一半：复制成功却没震动、或者震了却没写进剪贴板。
+    // 用新的 LocalClipboard（Clipboard.setClipEntry 是挂起函数，所以要 scope）；
+    // 旧的 LocalClipboardManager 已被标记废弃，本工程要求零警告。
+    val clipboard = LocalClipboard.current
+    val haptic = LocalHapticFeedback.current
+    val copyText: (String) -> Unit = { text ->
+        if (text.isNotBlank()) {
+            scope.launch {
+                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("AsmrOne", text)))
+            }
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            toastState.show("已复制")
+        }
+    }
+
     // 「存到本地文件夹」需要存储权限。下载按钮点下去发现没权限时，ViewModel 会置
     // downloadNeedsPermission，这里负责真的把用户带到授权页 —— 以前这条路是断的：
     // 下载器把任务标成失败，而失败的任务在下载页被 isActive 过滤掉，用户什么都看不到。
@@ -309,7 +336,7 @@ fun DetailScreen(
 
                     // ② 标题 + 角标（动作在顶栏，见 GlassTopBar 的 actions）
                     item(key = "title") {
-                        TitleBlock(work = work, onOpenWork = onOpenWork)
+                        TitleBlock(work = work, onOpenWork = onOpenWork, onCopy = copyText)
                     }
 
                     // ②b 标记失败的**详细**报错（分类原因 + 建议 + 原始详情 + 重试）
@@ -334,7 +361,7 @@ fun DetailScreen(
 
                     // ④ 标签
                     if (work.tags.isNotEmpty()) {
-                        item(key = "tags") { TagsBlock(work, onTagClick = onOpenTag) }
+                        item(key = "tags") { TagsBlock(work, onTagClick = onOpenTag, onCopyTag = copyText) }
                     }
 
                     // ⑤ 文件树（文件夹嵌套）
@@ -742,7 +769,8 @@ private fun HeroCover(work: Work) {
 @Composable
 private fun TitleBlock(
     work: Work,
-    onOpenWork: (Int) -> Unit
+    onOpenWork: (Int) -> Unit,
+    onCopy: (String) -> Unit = {}
 ) {
     Column(
         modifier = Modifier.padding(
@@ -751,12 +779,16 @@ private fun TitleBlock(
             top = HeroTitleGap
         )
     ) {
-        Text(
-            text = work.title,
-            // 对齐 KikoFlu 详情页标题：16sp / Bold（样式定义见 ui/theme/Type.kt 的 WorkTitleStyle）
-            style = WorkTitleStyle,
-            color = MaterialTheme.colorScheme.onBackground
-        )
+        // 标题可长按选中：作品名里常有需要单独查的假名/社团后缀，
+        // 能选中复制比整串复制有用。选中态由系统提供（含放大镜与拖柄）。
+        SelectionContainer {
+            Text(
+                text = work.title,
+                // 对齐 KikoFlu 详情页标题：16sp / Bold（样式定义见 ui/theme/Type.kt 的 WorkTitleStyle）
+                style = WorkTitleStyle,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
 
         Spacer(Modifier.height(TitleMetaGap))
 
@@ -768,7 +800,17 @@ private fun TitleBlock(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            work.sourceId?.let { SmallTagChip(text = it, tone = TagTone.Neutral) }
+            work.sourceId?.let { rj ->
+                // RJ 号整串就是要复制的东西（拿去 DLsite 搜、发给别人），
+                // 长按直接复制，不走"先选中再拖柄"那两步。
+                SmallTagChip(
+                    text = rj,
+                    tone = TagTone.Neutral,
+                    modifier = Modifier.pointerInput(rj) {
+                        detectTapGestures(onLongPress = { onCopy(rj) })
+                    }
+                )
+            }
             releaseTag?.let { SmallTagChip(text = it, tone = TagTone.Neutral) }
         }
 
@@ -1171,21 +1213,28 @@ private fun CreditsRow(
         modifier = Modifier.fillMaxWidth(),
         content = {
             Text("社团", style = labelStyle, color = labelColor, maxLines = 1)
-            Text(
-                text = circleText,
-                style = valueStyle,
-                color = valueColor,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
+            // 社团名／声优名都交给 SelectionContainer：长按可选中、复制，
+            // 而点一下仍然是原有的"按它搜索"（链接锚点由 AnnotatedString 承担，
+            // 与选区不冲突：点按走链接、长按走选区）。
+            SelectionContainer {
+                Text(
+                    text = circleText,
+                    style = valueStyle,
+                    color = valueColor,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Text("声优", style = labelStyle, color = labelColor, maxLines = 1)
-            Text(
-                text = vaText,
-                style = valueStyle,
-                color = valueColor,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
+            SelectionContainer {
+                Text(
+                    text = vaText,
+                    style = valueStyle,
+                    color = valueColor,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     ) { measurables, constraints ->
         val gapPx = MetaItemGap.roundToPx()
@@ -1260,7 +1309,11 @@ private fun rememberMetaBaseline(measurer: TextMeasurer, style: TextStyle, text:
 /** ④ 标签墙（优先显示官方中文名） */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TagsBlock(work: Work, onTagClick: (id: Int, name: String) -> Unit = { _, _ -> }) {
+private fun TagsBlock(
+    work: Work,
+    onTagClick: (id: Int, name: String) -> Unit = { _, _ -> },
+    onCopyTag: (String) -> Unit = {}
+) {
     Column(modifier = Modifier.padding(horizontal = 20.dp)) {
         Spacer(Modifier.height(SectionGap))
         Text(
@@ -1278,7 +1331,12 @@ private fun TagsBlock(work: Work, onTagClick: (id: Int, name: String) -> Unit = 
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             work.tags.forEach { tag ->
-                TagWallChip(text = tag.displayName, onClick = { onTagClick(tag.id, tag.displayName) })
+                TagWallChip(
+                    text = tag.displayName,
+                    onClick = { onTagClick(tag.id, tag.displayName) },
+                    // 点按 = 按这个标签搜；长按 = 复制标签名（拿去别处搜或记下来）
+                    onLongClick = { onCopyTag(tag.displayName) }
+                )
             }
         }
     }
