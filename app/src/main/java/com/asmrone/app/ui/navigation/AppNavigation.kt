@@ -38,6 +38,7 @@ import com.asmrone.app.ui.screen.settings.AppearanceSettingsScreen
 import com.asmrone.app.ui.screen.settings.CacheSettingsScreen
 import com.asmrone.app.ui.screen.settings.DataSettingsScreen
 import com.asmrone.app.ui.screen.settings.GlassSettingsScreen
+import com.asmrone.app.ui.screen.settings.PlaybackSettingsScreen
 import com.asmrone.app.ui.screen.settings.ServerSettingsScreen
 import com.asmrone.app.ui.screen.settings.SettingsScreen
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -99,6 +100,9 @@ object Routes {
     /** 歌词效果预览（独立演示页，与真实音频无关） */
 
     const val SETTINGS_SERVER = "settings/server"
+
+    /** 播放设置（设置 → 播放）：后台保护等与"播放能不能持续"相关的开关 */
+    const val SETTINGS_PLAYBACK = "settings/playback"
     const val SETTINGS_APPEARANCE = "settings/appearance"
     /** 液态玻璃参数页（模糊 / 折射 / 透明度 / 色散） */
     const val SETTINGS_GLASS = "settings/glass"
@@ -259,6 +263,7 @@ fun AppNavGraph(
         composable(Routes.SETTINGS) {
             SettingsScreen(
                 onOpenServer = { navController.navigate(Routes.SETTINGS_SERVER) },
+                onOpenPlayback = { navController.navigate(Routes.SETTINGS_PLAYBACK) },
                 onOpenAppearance = { navController.navigate(Routes.SETTINGS_APPEARANCE) },
                 onOpenData = { navController.navigate(Routes.SETTINGS_DATA) },
                 onOpenAccount = { navController.navigate(Routes.SETTINGS_ACCOUNT) },
@@ -296,6 +301,9 @@ fun AppNavGraph(
 
         composable(Routes.SETTINGS_SERVER) {
             ServerSettingsScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.SETTINGS_PLAYBACK) {
+            PlaybackSettingsScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.SETTINGS_APPEARANCE) {
             AppearanceSettingsScreen(

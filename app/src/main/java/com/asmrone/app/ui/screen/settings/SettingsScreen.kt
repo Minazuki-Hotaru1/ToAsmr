@@ -44,6 +44,7 @@ import com.asmrone.app.ui.component.SettingSwitch
 @Composable
 fun SettingsScreen(
     onOpenServer: () -> Unit,
+    onOpenPlayback: () -> Unit,
     onOpenAppearance: () -> Unit,
     onOpenData: () -> Unit,
     onOpenAccount: () -> Unit,
@@ -84,6 +85,21 @@ fun SettingsScreen(
                 title = "API 主机",
                 description = host,
                 onClick = onOpenServer,
+                trailing = { RowChevron() }
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // ── 播放 ──
+        //
+        // 单独一组而不是塞进「外观」：这里管的是播放能不能活下来（电池优化白名单），
+        // 与视觉无关。
+        FlatSection(title = "播放") {
+            FlatRow(
+                title = "播放设置",
+                description = "后台保护",
+                onClick = onOpenPlayback,
                 trailing = { RowChevron() }
             )
         }
