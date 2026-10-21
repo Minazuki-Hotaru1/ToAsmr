@@ -151,6 +151,15 @@ object AppPrefs {
     val sleepFadeOut: StateFlow<Boolean> = _sleepFadeOut.asStateFlow()
 
     /**
+     * 暂停时是否**淡出**：音量在几百毫秒内渐弱到 0 再真正停下，而不是一刀切静音。
+     *
+     * 针对的是 ASMR 这类素材 —— 突然归零在安静环境里格外刺耳，"咔"一下把情绪打断。
+     * 与 [sleepFadeOut] 各管各的：那个管"到点停"，这个管"手动按暂停"。
+     */
+    private val _pauseFadeOut = MutableStateFlow(true)
+    val pauseFadeOut: StateFlow<Boolean> = _pauseFadeOut.asStateFlow()
+
+    /**
      * 播放速度：0.5× – 2.0×，1.0 = 原速。
      *
      * 持久化是刻意的：调速度通常针对"这类素材"的整体偏好，而不是某一首的
@@ -405,6 +414,7 @@ object AppPrefs {
         _sleepTimerMinutes.value = sp.getInt(KEY_SLEEP_TIMER, 0)
         _sleepUntilTrackEnd.value = sp.getBoolean(KEY_SLEEP_UNTIL_TRACK_END, true)
         _sleepFadeOut.value = sp.getBoolean(KEY_SLEEP_FADE_OUT, true)
+        _pauseFadeOut.value = sp.getBoolean(KEY_PAUSE_FADE_OUT, true)
         _playbackSpeed.value = sp.getFloat(KEY_PLAYBACK_SPEED, 1.0f)
             .coerceIn(MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED)
         _playMode.value = sp.getInt(KEY_PLAY_MODE, 0)
@@ -510,6 +520,11 @@ object AppPrefs {
         sp.edit().putBoolean(KEY_SLEEP_FADE_OUT, value).apply()
     }
 
+    fun setPauseFadeOut(value: Boolean) {
+        _pauseFadeOut.value = value
+        sp.edit().putBoolean(KEY_PAUSE_FADE_OUT, value).apply()
+    }
+
     /**
      * 设置播放速度。
      *
@@ -547,6 +562,7 @@ object AppPrefs {
     private const val KEY_SLEEP_TIMER = "sleep_timer"
     private const val KEY_SLEEP_UNTIL_TRACK_END = "sleep_until_track_end"
     private const val KEY_SLEEP_FADE_OUT = "sleep_fade_out"
+    private const val KEY_PAUSE_FADE_OUT = "pause_fade_out"
     private const val KEY_PLAYBACK_SPEED = "playback_speed"
     private const val KEY_PLAY_MODE = "play_mode"
     private const val KEY_AUTO_NEXT = "auto_next"

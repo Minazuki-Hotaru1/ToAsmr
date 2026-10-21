@@ -108,6 +108,14 @@ object AudioController {
     /** 睡眠定时结束时淡出的总时长 */
     private const val SLEEP_FADE_MS = 6_000L
 
+    /**
+     * 暂停淡出的总时长。
+     *
+     * 400ms 是"听得出渐弱、但不至于让暂停感觉拖沓"的折中：再短（<200ms）在 ASMR
+     * 这种安静素材上仍像一刀切断，再长（>700ms）会让人以为没按到。
+     */
+    private const val PAUSE_FADE_MS = 400L
+
     /** 淡出时每档的步长：100ms 一档，6 秒 = 60 档，听感上是连续下滑 */
     private const val FADE_STEP_MS = 100L
 
@@ -138,6 +146,13 @@ object AudioController {
      */
     private var fadeFactor: Float = 1.0f
     private var fadeJob: Job? = null
+    /**
+     * 「按下暂停 → 音量渐弱 → 真的暂停」这条链路的 job。
+     *
+     * 不复用 [fadeJob]：那个是"定时/曲末"的淡出，走 `pauseWhenDone` 会绕回
+     * [pauseInternal] 形成递归；而这里淡完才暂停，且淡出途中按播放要能反悔。
+     */
+    private var pauseFadeJob: Job? = null
     /**
      * 定时到点时置起：这一首放完再停，并且**在最后几秒淡出**。
      *
@@ -306,6 +321,18 @@ object AudioController {
     /** 播放 / 从暂停恢复（界面、通知、锁屏、焦点恢复都走这里） */
     fun resume() {
         val s = _state.value
+        // 暂停淡出还没走完就点播放 = 反悔：撤掉淡出，接着放
+        //
+        // 必须在这里拦：淡出期间 isPlaying 仍是 true，走到下面那句
+        // `if (s.isPlaying) return` 会直接返回，然后 400ms 后照样暂停 ——
+        // 用户点了播放却停下来，是最难解释的那种 bug。
+        if (pauseFadeJob?.isActive == true) {
+            pauseFadeJob?.cancel()
+            pauseFadeJob = null
+            fadeFactor = 1f
+            applyGain()
+            return
+        }
         if (s.isPlaying) return
         if (!s.isPrepared) {
             // 冷启动恢复会话后还没 prepare：这就是"点播放，从上次的位置继续"
@@ -332,14 +359,55 @@ object AudioController {
     /**
      * @param fromFocusLoss 焦点丢失导致的暂停。此时**不能**让出焦点 ——
      *   让出之后的焦点恢复事件就收不到了，"临时丢失（导航播报）结束后自动续播"会失效。
+     * @param fade 是否允许先淡出再暂停（见 [AppPrefs.pauseFadeOut]）。淡出链路自己
+     *   收尾时传 false，否则会再起一次淡出、无限递归。
      */
-    private fun pauseInternal(fromFocusLoss: Boolean) {
+    private fun pauseInternal(fromFocusLoss: Boolean, fade: Boolean = true) {
         val s = _state.value
+        // 正在播 + 用户开了淡出 + 没有别的淡出在跑 → 先降音量，降完再真的停
+        if (fade && s.isPlaying && AppPrefs.pauseFadeOut.value && pauseFadeJob?.isActive != true) {
+            startPauseFade(fromFocusLoss)
+            return
+        }
+        pauseFadeJob?.cancel()
+        pauseFadeJob = null
         player?.let { runCatching { if (it.isPlaying) it.pause() } }
         stopTicker()
         if (s.isPlaying) _state.value = s.copy(isPlaying = false)
         if (!fromFocusLoss) ensureFocus()?.abandon()
         persistSession()
+    }
+
+    /**
+     * 用 [PAUSE_FADE_MS] 把音量降到 0，然后才真正暂停。
+     *
+     * 每档只改 [fadeFactor] 再 [applyGain]，和定时淡出走同一套音量乘法，
+     * 所以"焦点被压低"时也能正确叠加（0.2 × 渐弱）。
+     */
+    private fun startPauseFade(fromFocusLoss: Boolean) {
+        pauseFadeJob = scope.launch {
+            val from = fadeFactor
+            val total = PAUSE_FADE_MS
+            var elapsed = 0L
+            while (elapsed < total) {
+                // 这一首自己先放完了（或别处已经暂停）：别再补一次暂停
+                if (!_state.value.isPlaying) {
+                    fadeFactor = 1f
+                    applyGain()
+                    pauseFadeJob = null
+                    return@launch
+                }
+                elapsed += FADE_STEP_MS
+                fadeFactor = (from * (1f - elapsed.toFloat() / total)).coerceIn(0f, 1f)
+                applyGain()
+                delay(FADE_STEP_MS)
+            }
+            // 先还原系数：pauseInternal 之后下次 resume 会 applyGain，
+            // 若留着 0 就等于"一播放就是静音"
+            fadeFactor = 1f
+            pauseFadeJob = null
+            pauseInternal(fromFocusLoss = fromFocusLoss, fade = false)
+        }
     }
 
     fun next() {
@@ -473,8 +541,8 @@ object AudioController {
                 }
                 // ② 要淡出：立刻开始，淡完暂停
                 fade && playing -> startFade(SLEEP_FADE_MS, pauseWhenDone = true)
-                // ③ 不淡出：直接暂停
-                else -> pauseInternal(fromFocusLoss = false)
+                // ③ 不淡出：直接暂停（用户明确关掉了睡眠淡出，别自作主张再来 0.4 秒）
+                else -> pauseInternal(fromFocusLoss = false, fade = false)
             }
             persistSession()
         }
@@ -686,7 +754,8 @@ object AudioController {
             if (pauseWhenDone && _state.value.isPlaying) {
                 // 先还原系数再暂停：否则下次 resume 会以 0 音量起播（等于静音）
                 fadeFactor = 1f
-                pauseInternal(fromFocusLoss = false)
+                // fade = false：刚淡完的这一刻音量已经是 0，再淡一次只会白等 400ms
+                pauseInternal(fromFocusLoss = false, fade = false)
             }
         }
     }
@@ -695,6 +764,9 @@ object AudioController {
     private fun cancelFade() {
         fadeJob?.cancel()
         fadeJob = null
+        // 暂停淡出也要撤：切歌/停止时它若还在跑，几百毫秒后会把新的一轨按停
+        pauseFadeJob?.cancel()
+        pauseFadeJob = null
         if (fadeFactor != 1f) {
             fadeFactor = 1f
             applyGain()

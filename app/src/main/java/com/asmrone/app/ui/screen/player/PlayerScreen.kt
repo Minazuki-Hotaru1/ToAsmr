@@ -1190,9 +1190,9 @@ private fun SleepTimerSheet(
 }
 
 /**
- * 底部「设置」弹窗：播放速度、一首放完之后、睡眠淡出。
+ * 底部「设置」弹窗：播放速度、一首放完之后、睡眠淡出、暂停淡出。
  *
- * 三件事都**立刻生效并持久化**，没有"保存"按钮 —— 播放器里的开关都是
+ * 四件事都**立刻生效并持久化**，没有"保存"按钮 —— 播放器里的开关都是
  * 边调边听的，加一步确认反而打断试听。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1202,6 +1202,7 @@ private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
     val savedSpeed by AppPrefs.playbackSpeed.collectAsState()
     val autoNext by AppPrefs.autoNext.collectAsState()
     val fadeOut by AppPrefs.sleepFadeOut.collectAsState()
+    val pauseFadeOut by AppPrefs.pauseFadeOut.collectAsState()
 
     // 拖动过程中只改内核速度（preview），松手才落盘：
     // 否则每一帧都写一次 SharedPreferences，既放大磁盘写入又会引起全 App 重组。
@@ -1326,6 +1327,38 @@ private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
                 Switch(
                     checked = fadeOut,
                     onCheckedChange = { AppPrefs.setSleepFadeOut(it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.Black,
+                        checkedTrackColor = PlayerText,
+                        uncheckedThumbColor = PlayerSecondary,
+                        uncheckedTrackColor = PlayerChrome
+                    )
+                )
+            }
+
+            SettingsDivider()
+
+            // ── 暂停淡出 ──
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "暂停淡出",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+                        color = PlayerText
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        text = "暂停时音量渐弱约 0.4 秒",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = PlayerTertiary
+                    )
+                }
+                Switch(
+                    checked = pauseFadeOut,
+                    onCheckedChange = { AppPrefs.setPauseFadeOut(it) },
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.Black,
                         checkedTrackColor = PlayerText,
