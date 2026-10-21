@@ -69,6 +69,11 @@ fun WorkResultGrid(
 
     val animatedKeys = remember { mutableSetOf<Int>() }
 
+    // 按 id 去重再铺：下面 `key = work.id`，同一部作品在两页里各出现一次就会抛
+    // 「Key … was already used」，整块列表当场白掉 —— 服务端分页边界确实会重叠。
+    // 兜在这一层，调用方（搜索页 / 字典结果页）就不用各自防一遍。
+    val items = remember(works) { works.distinctBy { it.id } }
+
     // 快到底部（还剩约一屏半）就先取下一页，别等用户真滚到「加载更多」那一行。
     // 加载中的重复触发由 ViewModel 的 loadMore() 守卫，这里只负责"什么时候喊"。
     listState.PrefetchNearEnd(enabled = hasMore && !loadingMore, onLoadMore = onLoadMore)
@@ -93,7 +98,7 @@ fun WorkResultGrid(
             }
         }
 
-        itemsIndexed(works, key = { _: Int, work: Work -> work.id }) { index, work ->
+        itemsIndexed(items, key = { _: Int, work: Work -> work.id }) { index, work ->
             val alpha = remember { Animatable(if (work.id in animatedKeys) 1f else 0f) }
             LaunchedEffect(Unit) {
                 if (work.id !in animatedKeys) {

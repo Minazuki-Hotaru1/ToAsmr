@@ -12,6 +12,7 @@ import com.asmrone.app.data.model.SuggestionMerger
 import com.asmrone.app.data.model.Tag
 import com.asmrone.app.data.model.VoiceActor
 import com.asmrone.app.data.model.Work
+import com.asmrone.app.data.model.WorkFilter
 import com.asmrone.app.data.prefs.SearchHistoryEntry
 import com.asmrone.app.data.prefs.SearchHistoryStore
 import com.asmrone.app.data.repo.AsmrRepository
@@ -202,6 +203,24 @@ class SearchViewModel : ViewModel() {
 
     private var searchJob: Job? = null
 
+    /**
+     * 上一次**真正发出去**的检索参数（翻页照抄这一份）。
+     *
+     * 为什么不能现读界面上的输入框：
+     *
+     *  1. **点搜索历史重放**时输入框是**空的** —— 那条记录按设计不回填输入框
+     *     （见 [replay]），于是翻页时再怎么归纳也得到"空白关键词"，`loadMore()`
+     *     第一行就 return 了。表现是"滑到底不加载、点「加载更多」也没反应"，
+     *     而这一页的数据其实是好的。
+     *  2. 用户在结果页返回后**改了关键词却没重新搜**，现读会拿新词去翻旧结果的页，
+     *     第二页和第一页从此对不上。
+     *
+     * 所以"要搜什么"在提交那一刻就该定下来，之后翻页只认这份快照。
+     */
+    private var appliedKeyword: String = ""
+    private var appliedConditions: List<SearchCondition> = emptyList()
+    private var appliedFilter: WorkFilter? = null
+
     /** 下一个条件栏的 id（只增不减，避免 Compose 复用错栏） */
     private var nextSlotId = 1
 
@@ -222,6 +241,16 @@ class SearchViewModel : ViewModel() {
      * 而且候选区高度有限（见 `SuggestionList` 的 maxHeight）。
      */
     private val suggestionLimit = 40
+
+    private companion object {
+        /**
+         * 每页条数。
+         *
+         * 首屏与翻页**必须用同一个值**：`hasMore` 是 `currentPage * pageSize < totalCount`
+         * 算出来的，两处不一致会让"还有没有下一页"的判断忽真忽假。
+         */
+        const val PAGE_SIZE = 20
+    }
 
     init {
         reloadDictionaries()
@@ -457,6 +486,11 @@ class SearchViewModel : ViewModel() {
         val endpointFilter = SearchQueryBuilder.singleConditionEndpoint(conditions, keyword)
         val requestKeyword = if (endpointFilter != null) null else keyword
 
+        // 翻页要照抄这一刻的检索参数（理由见 [appliedKeyword]）
+        appliedConditions = conditions
+        appliedFilter = endpointFilter
+        appliedKeyword = requestKeyword.orEmpty()
+
         _state.value = _state.value.copy(
             // 结果页大标题用的快照：之后用户改输入栏，这行字也不会跟着变
             appliedSummary = summary,
@@ -472,7 +506,7 @@ class SearchViewModel : ViewModel() {
             runCatching {
                 AsmrRepository.getWorks(
                     page = 1,
-                    pageSize = 20,
+                    pageSize = PAGE_SIZE,
                     keyword = requestKeyword,
                     filter = endpointFilter
                 )
@@ -647,33 +681,45 @@ class SearchViewModel : ViewModel() {
      */
     fun research() = runSearch()
 
+    /**
+     * 取下一页。
+     *
+     * 三个要点（都是踩过的坑）：
+     *
+     *  1. **只认提交时的快照**（[appliedKeyword] / [appliedConditions] / [appliedFilter]），
+     *     不重新读输入框 —— 否则点历史重放进来的结果永远翻不了页。
+     *  2. **按 id 去重**：结果页的瀑布流用 `key = work.id`，两页之间出现重复 id
+     *     会直接让列表崩掉（"Key was already used"）；服务端分页边界也可能重叠。
+     *  3. **一页没带来任何新内容就停下**（`hasMore = false`）：否则提前一屏的触发
+     *     会一直喊，请求打空转。
+     */
     fun loadMore() {
         val s = _state.value
-        if (!s.hasMore || s.loadingMore) return
-
-        // 与 [runSearch] 用**同一套归纳**，否则第二页会漏掉文字或条件
-        val (conditions, keyword, _) = searchInputs()
-        if (conditions.isEmpty() && keyword.isBlank()) return
-
-        val endpointFilter = SearchQueryBuilder.singleConditionEndpoint(conditions, keyword)
-        val requestKeyword = if (endpointFilter != null) null else keyword
+        if (!s.hasMore || s.loading || s.loadingMore) return
+        if (appliedKeyword.isBlank() && appliedConditions.isEmpty()) return
 
         _state.value = s.copy(loadingMore = true)
         viewModelScope.launch {
             runCatching {
                 AsmrRepository.getWorks(
                     page = s.page + 1,
-                    pageSize = 20,
-                    keyword = requestKeyword,
-                    filter = endpointFilter
+                    pageSize = PAGE_SIZE,
+                    keyword = appliedKeyword.ifBlank { null },
+                    filter = appliedFilter
                 )
             }.onSuccess { result ->
-                _state.value = _state.value.copy(
-                    results = _state.value.results + result.items,
+                val current = _state.value
+                val seen = current.results.mapTo(HashSet(current.results.size)) { it.id }
+                val fresh = result.items.filter { it.id > 0 && seen.add(it.id) }
+                val merged = current.results + fresh
+                current.copy(
+                    results = merged,
                     page = result.currentPage,
-                    hasMore = result.hasMore,
+                    totalCount = maxOf(result.totalCount, merged.size),
+                    // 一页全是重复的（或本页为空）就别再往下要了
+                    hasMore = fresh.isNotEmpty() && result.hasMore,
                     loadingMore = false
-                )
+                ).let { _state.value = it }
             }.onFailure {
                 _state.value = _state.value.copy(loadingMore = false)
             }

@@ -67,16 +67,16 @@ data class Playlist(
         }
 
     /**
-     * 封面完整地址。
+     * 封面完整地址（永远是 Coil 能直接取的绝对地址）。
      *
-     * 服务端返回的可能是 `/statics/no-image.jpg` 这种相对路径，
-     * 需要拼上主机；已经是 http(s) 开的原样返回。
+     * 服务端返回的可能是 `/statics/no-image.jpg` 这种相对路径，也可能是网页域名上的
+     * 绝对地址；两种都交给 [resolveMediaUrl] 收敛到当前主机，与作品封面同一套规则。
      */
     fun coverUrl(host: String): String {
+        val base = host.trimEnd('/')
         val raw = mainCoverUrl.orEmpty()
-        if (raw.startsWith("http://") || raw.startsWith("https://")) return raw
-        if (raw.isBlank()) return "$host/api/cover/$latestWorkId"
-        return host.trimEnd('/') + raw
+        if (raw.isBlank()) return "$base/api/cover/$latestWorkId"
+        return resolveMediaUrl(raw, base)
     }
 
     fun toJson(): JSONObject = JSONObject().apply {

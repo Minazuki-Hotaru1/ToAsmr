@@ -264,11 +264,23 @@ data class Work(
      * 后者会把「站内没有的版本」也算进来（网页端同样不显示）。
      */
     val hasMultipleLanguages: Boolean get() = languageEditions.isNotEmpty()
-    fun coverUrl(host: String): String =
-        mainCoverUrl?.takeIf { it.isNotBlank() }
+    /**
+     * 封面地址（永远给一个 Coil 能直接取的**绝对**地址）。
+     *
+     * 服务端各端点回给我们的是三种形态混着来：绝对的 `https://…/media/…`、
+     * 网页端用的绝对地址 `https://asmr.one/media/…`、以及相对路径 `/media/…`。
+     * 后两种交给 Coil 只会得到"图片永远加载不出来"（相对 Uri 无法请求；
+     * 网页域名在很多网络下压根连不上，而 API 主机是通的）。
+     * 所以在取值这一处统一收敛（见 [resolveMediaUrl]），调用方只管拿 URL。
+     */
+    fun coverUrl(host: String): String {
+        val base = host.trimEnd('/')
+        val explicit = mainCoverUrl?.takeIf { it.isNotBlank() }
             ?: samCoverUrl?.takeIf { it.isNotBlank() }
             ?: thumbnailCoverUrl?.takeIf { it.isNotBlank() }
-            ?: "$host/api/cover/$id"
+            ?: return "$base/api/cover/$id"
+        return resolveMediaUrl(explicit, base)
+    }
 
     val durationText: String get() = formatDuration(durationSec.toLong())
     val vaText: String get() = vas.joinToString(" / ") { it.name }
@@ -578,4 +590,44 @@ enum class WorkOrder(val apiValue: String, val label: String) {
         fun fromApi(value: String?): WorkOrder =
             entries.firstOrNull { it.apiValue == value } ?: RELEASE
     }
+}
+
+/** 网页端的域名：这些 host 上的 `/media/`、`/api/` 与 API 主机同一套资源 */
+private val WEB_MEDIA_HOSTS = setOf("asmr.one", "www.asmr.one", "beta.asmr.one")
+
+/**
+ * 把任意形态的媒体地址收敛成**当前主机上能取到**的绝对地址。
+ *
+ * 接口给我们的地址三种形态混着来，直接丢给 Coil 会出现"首页有图、搜索结果全白"这种事：
+ *
+ *  1. 已经是绝对地址且指向别处 → 原样保留；
+ *  2. 相对路径 `/media/xxx/main` → 拼当前主机。相对 Uri 在 Coil 里压根没法请求；
+ *  3. 指向网页域名（`https://asmr.one/media/…`）→ 把 origin 换成 API 主机。
+ *     网页域名在不少网络环境下连不上，而 API 主机是通的；且这两类路径本就由 API 主机提供。
+ *
+ * 协议相对的 `//host/path` 按 https 补齐后走同一套判断；非 http(s) 的 scheme（`data:`、
+ * `file:` 之类）一律原样返回，不能乱拼。
+ */
+internal fun resolveMediaUrl(value: String, base: String): String {
+    val trimmed = value.trim()
+    val root = base.trim()
+    if (trimmed.isEmpty()) return root
+    val absolute = when {
+        trimmed.startsWith("//") -> "https:$trimmed"
+        trimmed.contains("://") -> trimmed
+        // 相对地址：以 / 开头直接拼主机，否则补一个分隔符
+        trimmed.startsWith("/") -> return root + trimmed
+        else -> return "$root/$trimmed"
+    }
+    val schemeEnd = absolute.indexOf("://")
+    val scheme = absolute.substring(0, schemeEnd).lowercase()
+    if (scheme != "http" && scheme != "https") return absolute
+    val rest = absolute.substring(schemeEnd + 3)
+    val slash = rest.indexOf('/')
+    val authority = if (slash < 0) rest else rest.substring(0, slash)
+    val path = if (slash < 0) "" else rest.substring(slash)
+    val hostName = authority.substringBefore(':').lowercase()
+    val needsApiHost = hostName in WEB_MEDIA_HOSTS &&
+        (path.startsWith("/media/") || path.startsWith("/api/"))
+    return if (needsApiHost) root + path else absolute
 }

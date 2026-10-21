@@ -78,9 +78,10 @@ class DictionaryResultViewModel : ViewModel() {
                 )
             }.onSuccess { result ->
                 _state.value = _state.value.copy(
-                    works = _state.value.works + result.items,
+                    // 分页边界偶发重复，列表 key 是 work.id，重复键会抛异常
+                    works = (_state.value.works + result.items).distinctBy { work -> work.id },
                     page = result.currentPage,
-                    hasMore = result.hasMore,
+                    hasMore = result.hasMore && result.items.isNotEmpty(),
                     totalCount = result.totalCount,
                     loadingMore = false
                 )

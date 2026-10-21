@@ -140,10 +140,12 @@ class HomeViewModel : ViewModel() {
                     // 期间可能已经切到别的板块，但状态是按板块存的，这里始终更新自己那一份
                     updateBoard(board) {
                         it.copy(
-                            items = it.items + result.items,
+                            // 分页边界上偶发重复；瀑布流的 key 是 work.id，
+                            // 重复键会让列表直接抛异常，所以在这里就去掉
+                            items = (it.items + result.items).distinctBy { item -> item.id },
                             page = result.currentPage,
                             totalCount = result.totalCount,
-                            hasMore = result.hasMore,
+                            hasMore = result.hasMore && result.items.isNotEmpty(),
                             loadingMore = false
                         )
                     }
