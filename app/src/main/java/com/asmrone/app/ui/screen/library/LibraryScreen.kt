@@ -267,7 +267,9 @@ fun LibraryScreen(
                             onRefresh = { collectionViewModel.refresh() },
                             onPullRefresh = { collectionViewModel.pullRefresh() },
                             onLoadMore = { collectionViewModel.loadMore() },
-                            onChanged = { work, status -> collectionViewModel.setStatus(work, status) },
+                            onChanged = { work, status, rating ->
+                                collectionViewModel.setStatus(work, status, rating)
+                            },
                             onRemoveMark = { collectionViewModel.removeMark(it) },
                             onRetryPending = { collectionViewModel.retryPending(it) }
                         )
@@ -448,7 +450,7 @@ private fun CollectionTab(
     onRefresh: () -> Unit,
     onPullRefresh: () -> Unit,
     onLoadMore: () -> Unit,
-    onChanged: (Work, CollectionStatus?) -> Unit,
+    onChanged: (Work, CollectionStatus?, Int?) -> Unit,
     /** 弹窗里的「删除」：评分与状态整条移出 */
     onRemoveMark: (Work) -> Unit,
     /** 点某个作品卡片上的「待同步」→ 只重试这一个 */
@@ -677,9 +679,9 @@ private fun CollectionTab(
                 editing = null
                 onRemoveMark(work)
             },
-            onConfirm = { status, _ ->
+            onConfirm = { status, rating ->
                 editing = null
-                onChanged(work, status)
+                onChanged(work, status, rating)
             },
             onDismiss = { editing = null }
         )

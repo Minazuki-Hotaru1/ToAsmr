@@ -365,22 +365,48 @@ class DetailViewModel : ViewModel() {
     /**
      * 弹窗点了「取消」：把这次快捷评分**原样还回去**，等于什么都没发生。
      *
-     * 只写本地、不发网络 —— 那笔网络请求还在 6 秒反悔窗口里，从来没发出去过；
-     * 这里把本地缓存改回点之前的样子（状态与星级都按快照还原）。
+     * 只写本地、不发网络 —— 那笔网络请求还在 6 秒反悔窗口里，从来没发出去过。
+     *
+     * ## 为什么"还原"要分两种情况
+     *
+     * 快捷评分只会在"这部作品还没进过收藏"时被触发（没有状态、也没有星级），所以撤销
+     * 通常意味着**这条记录本来就不该存在**。此时必须把本地那一行**整条删掉**；
+     * 只把状态/评分写成空是不行的 —— [AsmrRepository.patchCollectionCache] 在没有
+     * `remove` 时是"就地更新 / 插入"，于是会留下一条「无状态、无评分」的空记录：
+     * 收藏页看得见它，直到下次与云端对齐才消失（用户报过这个现象）。
+     *
+     * 反过来，如果点之前确实有状态或星级（未来别的入口可能这样调），那就把两个字段
+     * 还原成点之前的值，不能误删整条记录。
      */
     fun revertQuickRate(request: QuickRateRequest) {
         if (pendingQuickRate == request) pendingQuickRate = null
+        val wasCollected = request.previousStatus != null || request.previousRating != null
+
+        // 界面也得还回去：否则取消之后详情页仍然亮着 5 星，看起来像没撤销成功
+        _state.value.work?.let { work ->
+            if (work.id == request.workId) {
+                _state.value = _state.value.copy(
+                    work = work.copy(
+                        progress = request.previousStatus?.apiValue,
+                        userRating = request.previousRating
+                    ),
+                    collectionFailure = null
+                )
+            }
+        }
+
         viewModelScope.launch {
             runCatching {
                 AsmrRepository.updateCollection(
                     workId = request.workId,
                     status = request.previousStatus,
                     rating = request.previousRating,
-                    remove = false,
+                    // 之前不在收藏里 → 整条移除（本地即时生效、不发请求）
+                    remove = !wasCollected,
                     work = _state.value.work,
                     // 点之前没有的东西要显式清掉（部分更新不传等于"别动"）
-                    clearStatus = request.previousStatus == null,
-                    clearRating = request.previousRating == null,
+                    clearStatus = wasCollected && request.previousStatus == null,
+                    clearRating = wasCollected && request.previousRating == null,
                     deferNetwork = true
                 )
             }

@@ -317,21 +317,29 @@ class CollectionViewModel : ViewModel() {
      * 网络那半交给 [PendingSync] 后台补发 —— 用户不必等着"保存中"转圈。
      * 发不出去时仓库会记一条待补写，卡片显示「待同步」，下次对齐自动重试。
      */
-    fun setStatus(work: Work, status: CollectionStatus?) {
+    fun setStatus(work: Work, status: CollectionStatus?, rating: Int? = null) {
         if (_state.value.mutatingId != null) return
         // 列表页点掉已选中的状态 = 清空状态（评分不动）。
         // 不显式说明的话 PUT 里就没有 progress，云端会一直留着旧状态。
         // 但也只在「这份列表原本确实显示着状态」时才送 null：
         // 本地可能是过期副本，凭空送 null 会删掉云端真实存在的标记
         val clearStatus = status == null && work.progress != null
+        // 评分的"清空"同理：弹窗里再点一次亮着的星星 = 清空评分（状态保留）。
+        // 只有原本确实有评分才算清空 —— 否则本地那份可能只是没带这个字段，
+        // 送 null 会把云端真实存在的评分删掉。
+        val clearRating = rating == null && work.userRating != null
         _state.value = _state.value.copy(mutatingId = work.id)
         viewModelScope.launch {
             // ① 只写本地那一半（deferNetwork = true 时函数立即返回，不发请求）
             val error = AsmrRepository.updateCollection(
                 workId = work.id,
                 status = status,
+                // ⚠️ 必须把星级一起传下去：弹窗的选中值就是"完整目标状态"，
+                // 漏传会让用户刚点的星星被静默丢弃（详情页踩过同一个坑）。
+                rating = rating,
                 work = work,
                 clearStatus = clearStatus,
+                clearRating = clearRating,
                 deferNetwork = true
             )
             if (error != null) {
@@ -342,7 +350,8 @@ class CollectionViewModel : ViewModel() {
             // ② 本地列表立刻套用这次改动，省掉一次整页重拉
             val filter = _state.value.filter
             val updated = _state.value.works.map { item ->
-                if (item.id == work.id) item.copy(progress = status?.apiValue) else item
+                if (item.id == work.id) item.copy(progress = status?.apiValue, userRating = rating)
+                else item
             }.let { list ->
                 if (filter == null || status == filter) list else list.filterNot { it.id == work.id }
             }
@@ -362,11 +371,11 @@ class CollectionViewModel : ViewModel() {
                 AsmrRepository.sendDeferredCollectionUpdate(
                     workId = work.id,
                     status = status,
-                    rating = null,
+                    rating = rating,
                     remove = false,
                     work = work,
                     clearStatus = clearStatus,
-                    clearRating = false
+                    clearRating = clearRating
                 )
             }
             PendingSync.schedule(key, 0L)

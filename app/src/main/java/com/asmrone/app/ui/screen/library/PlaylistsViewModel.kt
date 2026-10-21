@@ -416,7 +416,13 @@ class PlaylistDetailViewModel : ViewModel() {
         }
         val key = "playlist-write:$playlistId:${work.id}:rm"
         PendingSync.hold(key) {
-            val result = AsmrRepository.removeWorkFromPlaylist(playlistId, work.id)
+            // ⚠️ 这里只能发**网络那一半**。
+            //
+            // 上面已经用 `deferNetwork = true` 把本地那笔记好了（内容与件数都落过），
+            // 如果再调一次完整的 `removeWorkFromPlaylist`，它会**再 patch 一次本地缓存**：
+            // 作品已经不在列表里，`PlaylistPatchOps.compute(remove = true)` 依然给出
+            // `countDelta = -1`，于是收藏夹件数被扣两次，看起来像是"少了一部"。
+            val result = AsmrRepository.sendDeferredPlaylistRemove(playlistId, work.id)
             if (!result.ok) {
                 // 失败：本地保持"已移除"，只是提示还没送到云端
                 _state.value = _state.value.copy(

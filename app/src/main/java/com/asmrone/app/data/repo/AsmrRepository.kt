@@ -1776,7 +1776,14 @@ object AsmrRepository {
      */
     fun revertLocalPlaylistAdd(playlistId: String, workId: Int) {
         if (playlistId.isBlank() || workId <= 0) return
-        patchPlaylistWorksCache(playlistId, workId, remove = true, work = null, markDirty = true)
+        // 只有本地**确实加进去过**才需要摘掉。
+        //
+        // `patchPlaylistWorksCache(remove = true)` 在"作品根本不在列表里"时依然会给出
+        // `countDelta = -1`（那是为"移出未加载页里的作品"准备的），所以无条件调用会在
+        // 加入那一步被静默跳过时（比如还没登录、本地没有收藏夹基线）凭空把件数减一。
+        if (cachedIsWorkInPlaylist(playlistId, workId) == true) {
+            patchPlaylistWorksCache(playlistId, workId, remove = true, work = null, markDirty = true)
+        }
         clearPending(PendingWrite.PlaylistAdd(playlistId, workId, createdAt = 0L))
     }
 
