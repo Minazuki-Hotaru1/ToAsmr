@@ -1,12 +1,8 @@
 package com.asmrone.app.ui.screen.settings
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -75,15 +71,6 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
                     trailing = { RowChevron() }
                 )
             }
-
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = "系统会对长时间在后台运行的应用做省电限制。开启后台保护后，" +
-                    "息屏或切到别的应用时播放不容易被系统掐断 —— 睡眠定时、" +
-                    "锁屏与通知栏的播放控制也都依赖它在后台存活。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
 
         ToastHost(

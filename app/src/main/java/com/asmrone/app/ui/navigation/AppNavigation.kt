@@ -41,6 +41,7 @@ import com.asmrone.app.ui.screen.settings.GlassSettingsScreen
 import com.asmrone.app.ui.screen.settings.PlaybackSettingsScreen
 import com.asmrone.app.ui.screen.settings.ServerSettingsScreen
 import com.asmrone.app.ui.screen.settings.SettingsScreen
+import com.asmrone.app.ui.screen.settings.TestSettingsScreen
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 /** 路由表（字符串常量 + 构造辅助，与 comicApp 的组织方式一致） */
@@ -103,6 +104,9 @@ object Routes {
 
     /** 播放设置（设置 → 播放）：后台保护等与"播放能不能持续"相关的开关 */
     const val SETTINGS_PLAYBACK = "settings/playback"
+
+    /** 测试设置（设置 → 测试设置）：网络日志等排查工具 */
+    const val SETTINGS_TEST = "settings/test"
     const val SETTINGS_APPEARANCE = "settings/appearance"
     /** 液态玻璃参数页（模糊 / 折射 / 透明度 / 色散） */
     const val SETTINGS_GLASS = "settings/glass"
@@ -267,6 +271,7 @@ fun AppNavGraph(
                 onOpenAppearance = { navController.navigate(Routes.SETTINGS_APPEARANCE) },
                 onOpenData = { navController.navigate(Routes.SETTINGS_DATA) },
                 onOpenAccount = { navController.navigate(Routes.SETTINGS_ACCOUNT) },
+                onOpenTest = { navController.navigate(Routes.SETTINGS_TEST) },
                 onOpenAbout = { navController.navigate(Routes.SETTINGS_ABOUT) }
             )
         }
@@ -304,6 +309,9 @@ fun AppNavGraph(
         }
         composable(Routes.SETTINGS_PLAYBACK) {
             PlaybackSettingsScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.SETTINGS_TEST) {
+            TestSettingsScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.SETTINGS_APPEARANCE) {
             AppearanceSettingsScreen(
