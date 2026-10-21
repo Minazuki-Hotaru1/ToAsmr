@@ -86,6 +86,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1304,7 +1305,7 @@ private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
                 )
             }
 
-            SettingsDivider()
+            SettingsDivider(spacing = 8.dp)
 
             // ── 睡眠定时淡出 ──
             Row(
@@ -1336,7 +1337,7 @@ private fun PlayerSettingsSheet(onDismiss: () -> Unit) {
                 )
             }
 
-            SettingsDivider()
+            SettingsDivider(spacing = 8.dp)
 
             // ── 暂停淡出 ──
             Row(
@@ -1382,16 +1383,22 @@ private fun SettingsLabel(text: String) {
     )
 }
 
+/**
+ * 分节用的细分割线。
+ *
+ * @param spacing 线上下各留多少。默认 18dp 适合"有标题、有滑杆"的重区块；
+ *   底部两个开关行的信息量小，用 8dp 收拢，免得一屏里全是空白。
+ */
 @Composable
-private fun SettingsDivider() {
-    Spacer(Modifier.height(18.dp))
+private fun SettingsDivider(spacing: Dp = 18.dp) {
+    Spacer(Modifier.height(spacing))
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(1.dp)
             .background(Color.White.copy(alpha = 0.08f))
     )
-    Spacer(Modifier.height(18.dp))
+    Spacer(Modifier.height(spacing))
 }
 
 /** 播放速度的快捷档位 */
