@@ -174,6 +174,29 @@ fun LoginScreen(
             }
         }
 
+        // ── 错误 / 本地校验提示 ───────────────────────────
+        val hint = ui.error ?: localHint
+        if (hint != null) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = hint,
+                style = MaterialTheme.typography.bodySmall,
+                color = ErrorColor,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── 主操作：紧跟在账号密码下方 ─────────────────────
+        Button(
+            onClick = { doSubmit() },
+            modifier = Modifier.fillMaxWidth().heightIn(min = TouchTarget.minimum),
+            enabled = !ui.submitting
+        ) {
+            Text(if (ui.registerMode) "注册并登录" else "登录")
+        }
+
         Spacer(Modifier.height(20.dp))
 
         // ── 服务器 ────────────────────────────────────────
@@ -243,29 +266,6 @@ fun LoginScreen(
                     placeholder = "前面挂了 Cloudflare 会话时填写，官方站留空"
                 )
             }
-        }
-
-        // ── 错误 / 本地校验提示 ───────────────────────────
-        val hint = ui.error ?: localHint
-        if (hint != null) {
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = hint,
-                style = MaterialTheme.typography.bodySmall,
-                color = ErrorColor,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
-            )
-        }
-
-        Spacer(Modifier.height(20.dp))
-
-        // ── 主操作 ────────────────────────────────────────
-        Button(
-            onClick = { doSubmit() },
-            modifier = Modifier.fillMaxWidth().heightIn(min = TouchTarget.minimum),
-            enabled = !ui.submitting
-        ) {
-            Text(if (ui.registerMode) "注册并登录" else "登录")
         }
     }
 
