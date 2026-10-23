@@ -263,7 +263,14 @@ fun LoginScreen(
                     value = cookie,
                     onValueChange = { cookie = it },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = "前面挂了 Cloudflare 会话时填写，官方站留空"
+                    placeholder = "Cookie"
+                )
+                Spacer(Modifier.height(6.dp))
+                // 说明放在输入框下方：框内只留占位词，长句子当提示读
+                Text(
+                    text = "官方站留空；前面挂了 Cloudflare 会话（需要额外 Cookie）时才填",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
