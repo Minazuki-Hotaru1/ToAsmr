@@ -30,7 +30,11 @@ import com.asmrone.app.R
  *
  * 72dp 图标（tint = surfaceVariant，弹入 spring(0.4, 300)）
  *  → 16dp → 标题 bodyLarge/onSurfaceVariant
- *  → 4dp → 说明 bodySmall/onSurfaceVariant(0.6f) 居中。
+ *  → 4dp → 说明 bodySmall/onSurfaceVariant(0.6f) 居中
+ *  → 16dp → 可选 [action]（例如"刷新"）。
+ *
+ * [action] 是为了"列表本来就是空的、又没有可滚动内容"这种情况：空态里没有
+ * 任何可滚动区域，下拉刷新根本触发不了，只在空态给一个按钮才救得回来。
  *
  * 图标为 Fluent 矢量图资源（`@DrawableRes`）。
  */
@@ -40,7 +44,8 @@ fun EmptyHint(
     description: String? = null,
     modifier: Modifier = Modifier,
     @DrawableRes iconRes: Int = R.drawable.ic_headphones_fluent,
-    iconSize: Dp = 72.dp
+    iconSize: Dp = 72.dp,
+    action: (@Composable () -> Unit)? = null
 ) {
     val scale = remember { Animatable(0.3f) }
     LaunchedEffect(Unit) {
@@ -78,6 +83,10 @@ fun EmptyHint(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(horizontal = 32.dp)
             )
+        }
+        if (action != null) {
+            Spacer(Modifier.height(16.dp))
+            action()
         }
     }
 }

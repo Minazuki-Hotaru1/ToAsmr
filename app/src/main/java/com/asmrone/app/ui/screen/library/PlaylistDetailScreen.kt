@@ -151,13 +151,16 @@ fun PlaylistDetailScreen(
                     state.error != null && state.works.isEmpty() -> EmptyHint(
                         title = "加载失败",
                         description = state.error,
-                        iconRes = R.drawable.ic_folder_fluent
+                        iconRes = R.drawable.ic_folder_fluent,
+                        action = { TextButton(onClick = { viewModel.pullRefresh() }) { Text("刷新") } }
                     )
 
                     state.works.isEmpty() -> EmptyHint(
                         title = "这个收藏夹还是空的",
                         description = "在作品详情页点右上角的收藏按钮，把作品加进来",
-                        iconRes = R.drawable.ic_folder_fluent
+                        iconRes = R.drawable.ic_folder_fluent,
+                        // 空态不可滚动，下拉刷新触发不了 —— 给显式按钮
+                        action = { TextButton(onClick = { viewModel.pullRefresh() }) { Text("刷新") } }
                     )
 
                     else -> LazyVerticalStaggeredGrid(

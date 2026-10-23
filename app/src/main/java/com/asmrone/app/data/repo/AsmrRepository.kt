@@ -2219,7 +2219,31 @@ object AsmrRepository {
         if (state.host.isNotBlank() && state.displayName.isNotBlank()) {
             PendingWriteStore.removeAllForPlaylist(state.host, state.displayName, playlist.id)
         }
-        currentPlaylistsKey()?.let { SyncCacheStore.delete(it) }
+        // 只把**这一个**收藏夹从列表快照里摘掉。
+        //
+        // ⚠️ 这里以前是 `SyncCacheStore.delete(listKey)` —— 直接删掉整份列表缓存。
+        // 后果：删一个收藏夹，本地所有收藏夹一起消失；服务端其实一个都没少，
+        // 而空界面又没有刷新入口（用户只能看到一片空白）。
+        // 现在改成"读出来、去掉这一条、写回去"，其余收藏夹原样保留。
+        val listKey = currentPlaylistsKey()
+        if (listKey != null) {
+            val entry = SyncCacheStore.read(listKey, PlaylistsCodec)
+            val remaining = entry?.value?.items?.filterNot { it.id == playlist.id }
+            if (entry != null && remaining != null) {
+                SyncCacheStore.write(
+                    listKey,
+                    PlaylistsCodec,
+                    SyncCacheStore.CacheEntry(
+                        value = CachedPlaylists(remaining),
+                        // ETag 作废：本地这份已经与服务端不一致，下一次同步必须走完整
+                        // 200 而不是 304 —— 万一云端删除失败，才能把收藏夹读回来
+                        etag = null,
+                        syncedAt = entry.syncedAt,
+                        dirty = false
+                    )
+                )
+            }
+        }
         currentPlaylistWorksKey(playlist.id)?.let { SyncCacheStore.delete(it) }
         playlistsSnapshot = null
     }

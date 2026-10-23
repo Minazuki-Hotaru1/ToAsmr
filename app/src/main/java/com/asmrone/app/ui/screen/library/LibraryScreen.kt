@@ -593,7 +593,9 @@ private fun CollectionTab(
                             } else {
                                 "没有「${state.filter.label}」状态的作品"
                             },
-                            description = "在作品详情页可以给作品打标记（想听 / 在听 / 听过 / 重听 / 搁置）"
+                            description = "在作品详情页可以给作品打标记（想听 / 在听 / 听过 / 重听 / 搁置）",
+                            // 空态不可滚动 → 下拉刷新不触发，这里给显式按钮
+                            action = { RefreshEmptyButton(onRefresh) }
                         )
                     }
                 }
@@ -858,7 +860,9 @@ private fun PlaylistsTab(
 
         state.playlists.isEmpty() -> EmptyHint(
             title = "还没有收藏夹",
-            description = "正常情况下服务端会自带「我标记的」与「我喜欢的」两个系统收藏夹"
+            description = "正常情况下服务端会自带「我标记的」与「我喜欢的」两个系统收藏夹",
+            // 空态里没有可滚动内容，下拉刷新触发不了 —— 必须给一个按钮
+            action = { RefreshEmptyButton(onRefresh) }
         )
 
         else -> LazyVerticalStaggeredGrid(
@@ -1096,7 +1100,8 @@ private fun LoadMoreRow(loading: Boolean, onLoadMore: () -> Unit) {
 private fun InlineEmpty(
     @androidx.annotation.DrawableRes iconRes: Int,
     title: String,
-    description: String
+    description: String,
+    action: (@Composable () -> Unit)? = null
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp),
@@ -1121,7 +1126,23 @@ private fun InlineEmpty(
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
             modifier = Modifier.padding(horizontal = 32.dp)
         )
+        if (action != null) {
+            Spacer(Modifier.height(14.dp))
+            action()
+        }
     }
+}
+
+/**
+ * 空态里的「刷新」按钮。
+ *
+ * 收藏页的几个空态都放在 `PullToRefreshBox` 里，但**空态没有可滚动内容**，
+ * 下拉手势根本不会触发 —— 界面一片空白时用户无处可点。
+ * 所以凡是"可能空、且空下来要能自己救回来"的地方都给一个显式按钮。
+ */
+@Composable
+private fun RefreshEmptyButton(onRefresh: () -> Unit) {
+    TextButton(onClick = onRefresh) { Text("刷新") }
 }
 
 /**
