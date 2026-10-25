@@ -1192,67 +1192,43 @@ private fun CreditsRow(
         textDecoration = TextDecoration.Underline
     )
 
-    Layout(
-        modifier = Modifier.fillMaxWidth(),
-        content = {
-            Text("社团", style = labelStyle, color = labelColor, maxLines = 1)
-            // 长按选中、点按搜索 —— 两件事要同时成立。
-            //
-            // ⚠️ 这里**不能**用 `AnnotatedString` + `LinkAnnotation` 来做点击：带链接注释的
-            // Text 会自己装一层 pointerInput 处理链接点击，它把按下事件消费掉之后，
-            // SelectionContainer 就再也起不来选区（表现就是"长按社团/声优没反应"）。
-            // 改成"每个名字一个可点 Text"，点按由 Modifier.clickable 派发，
-            // 长按则完整地交给外层 SelectionContainer。
-            SelectionContainer {
-                if (circleId == null || circleName.isNullOrBlank()) {
-                    Text(
-                        text = circleName ?: "—",
-                        style = valueStyle,
-                        color = valueColor,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                } else {
-                    Text(
-                        text = circleName,
-                        style = linkStyle,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            // 关掉水波纹：这行是纯文本链接，涟漪会从字缝里透出来
-                            indication = null
-                        ) { onOpenCircle(circleId, circleName) }
-                    )
-                }
+    // 长按选中、点按搜索 —— 两件事要同时成立。
+    //
+    // ⚠️ 这里**不能**用 `AnnotatedString` + `LinkAnnotation` 来做点击：带链接注释的
+    // Text 会自己装一层 pointerInput 处理链接点击，它把按下事件消费掉之后，
+    // SelectionContainer 就再也起不来选区（表现就是"长按社团/声优没反应"）。
+    // 改成"每个名字一个可点 Text"，点按由 Modifier.clickable 派发，
+    // 长按则完整地交给外层 SelectionContainer。
+    //
+    // ⚠️ 而 SelectionContainer 又必须包在**整行外面**，不能包在每个值外面：
+    // 它内部是一个普通 Layout，不往外传对齐线 —— `Placeable.get(FirstBaseline)`
+    // 拿到 `AlignmentLine.Unspecified`，下面的基线对齐就只能退回"按高度估算"。
+    // 同一个 bodySmall 样式下两列盒子一样高 ⇒ 估算值也一样 ⇒ 偏移恒为 0，
+    // 基线从来没真正对上过；表现为中日文那列整体低 3dp（字体的 ascent 更大），
+    // 也就是"有没有片假名，内容高低就不一样"。包在外面时被测量的是 Text 本身，
+    // 基线是真的。
+    SelectionContainer {
+        Layout(
+            modifier = Modifier.fillMaxWidth(),
+            content = {
+                Text("社团", style = labelStyle, color = labelColor, maxLines = 1)
+                CircleValue(
+                    circleName = circleName,
+                    circleId = circleId,
+                    valueStyle = valueStyle,
+                    linkStyle = linkStyle,
+                    valueColor = valueColor,
+                    onOpenCircle = onOpenCircle
+                )
+                Text("声优", style = labelStyle, color = labelColor, maxLines = 1)
+                VoiceActorValue(
+                    voiceActors = voiceActors,
+                    valueStyle = valueStyle,
+                    linkStyle = linkStyle,
+                    valueColor = valueColor
+                )
             }
-            Text("声优", style = labelStyle, color = labelColor, maxLines = 1)
-            SelectionContainer {
-                if (voiceActors.isEmpty()) {
-                    Text("—", style = valueStyle, color = valueColor)
-                } else {
-                    // 多位声优各自可点，所以拆成 FlowRow + 分隔符，
-                    // 而不是一整串带多个链接的 AnnotatedString（原因同上）
-                    FlowRow {
-                        voiceActors.forEachIndexed { index, (name, action) ->
-                            if (index > 0) {
-                                Text(" / ", style = valueStyle, color = valueColor, maxLines = 1)
-                            }
-                            Text(
-                                text = name,
-                                style = linkStyle,
-                                maxLines = 1,
-                                modifier = Modifier.clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) { action() }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    ) { measurables, constraints ->
+        ) { measurables, constraints ->
         val gapPx = MetaItemGap.roundToPx()
         val labelGapPx = 2.dp.roundToPx()
         val loose = constraints.copy(minWidth = 0, minHeight = 0)
@@ -1295,16 +1271,167 @@ private fun CreditsRow(
             value1.place(0, valueTop + (target - baseline1))
             value2.place(x2, valueTop + (target - baseline2))
         }
+        }
+    }
+}
+
+/** 社团名：能点就点，没有 id 时只当普通文本 */
+@Composable
+private fun CircleValue(
+    circleName: String?,
+    circleId: Int?,
+    valueStyle: TextStyle,
+    linkStyle: TextStyle,
+    valueColor: Color,
+    onOpenCircle: (id: Int, name: String) -> Unit
+) {
+    if (circleId == null || circleName.isNullOrBlank()) {
+        Text(
+            text = circleName ?: "—",
+            style = valueStyle,
+            color = valueColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    } else {
+        Text(
+            text = circleName,
+            style = linkStyle,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                // 关掉水波纹：这行是纯文本链接，涟漪会从字缝里透出来
+                indication = null
+            ) { onOpenCircle(circleId, circleName) }
+        )
     }
 }
 
 /**
- * 取真实排版的第一行基线；极少数不暴露基线的节点（比如将来有人把值换成容器）
- * 用一个按行高估算的兜底值，至少不会把布局算崩。
+ * 声优：0 位给占位符，1 位直接一个 Text，多位走自写的流式排版。
+ *
+ * 三种情况都必须是"一个能被 measure 的子节点"，且都要能报出第一行基线，
+ * 否则 [CreditsRow] 那边的基线对齐又要退化成估算。
+ */
+@Composable
+private fun VoiceActorValue(
+    voiceActors: List<Pair<String, () -> Unit>>,
+    valueStyle: TextStyle,
+    linkStyle: TextStyle,
+    valueColor: Color
+) {
+    when {
+        voiceActors.isEmpty() -> Text("—", style = valueStyle, color = valueColor)
+        voiceActors.size == 1 -> Text(
+            text = voiceActors.first().first,
+            style = linkStyle,
+            maxLines = 1,
+            modifier = Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) { voiceActors.first().second() }
+        )
+        else -> VoiceActorFlow(
+            voiceActors = voiceActors,
+            valueStyle = valueStyle,
+            linkStyle = linkStyle,
+            valueColor = valueColor
+        )
+    }
+}
+
+/**
+ * 多位声优的流式排版：名字一个个排，放不下就换行。
+ *
+ * 为什么不用 `FlowRow`：它不对外报第一行基线，[CreditsRow] 就没法把这一列和
+ * 社团那一列对齐。这里自己排，顺手把"首行基线"通过 `alignmentLines` 报出去。
+ */
+@Composable
+private fun VoiceActorFlow(
+    voiceActors: List<Pair<String, () -> Unit>>,
+    valueStyle: TextStyle,
+    linkStyle: TextStyle,
+    valueColor: Color
+) {
+    Layout(
+        content = {
+            voiceActors.forEachIndexed { index, (name, action) ->
+                if (index > 0) {
+                    Text(" / ", style = valueStyle, color = valueColor, maxLines = 1)
+                }
+                Text(
+                    text = name,
+                    style = linkStyle,
+                    maxLines = 1,
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { action() }
+                )
+            }
+        }
+    ) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val placeables = measurables.map { it.measure(loose) }
+        val maxWidth = constraints.maxWidth
+        val xs = IntArray(placeables.size)
+        val ys = IntArray(placeables.size)
+        var rowStart = 0
+        var x = 0
+        var y = 0
+        var rowBaseline = 0
+        var rowHeight = 0
+        var firstRowBaseline = -1
+        var usedWidth = 0
+
+        // 一行排完（或到末尾）时才落位：行内先按基线对齐，再整行下移
+        fun placeRow(endExclusive: Int, rowTop: Int) {
+            for (i in rowStart until endExclusive) {
+                ys[i] = rowTop + (rowBaseline - placeables[i].usableFirstBaseline())
+            }
+            if (firstRowBaseline < 0) firstRowBaseline = rowTop + rowBaseline
+        }
+
+        placeables.forEachIndexed { index, placeable ->
+            if (x > 0 && x + placeable.width > maxWidth) {
+                placeRow(index, y)
+                usedWidth = maxOf(usedWidth, x)
+                y += rowHeight
+                rowStart = index
+                x = 0
+                rowBaseline = 0
+                rowHeight = 0
+            }
+            xs[index] = x
+            x += placeable.width
+            rowBaseline = maxOf(rowBaseline, placeable.usableFirstBaseline())
+            rowHeight = maxOf(rowHeight, placeable.height)
+        }
+        placeRow(placeables.size, y)
+        usedWidth = maxOf(usedWidth, x)
+
+        layout(
+            width = usedWidth.coerceAtMost(maxWidth).coerceAtLeast(constraints.minWidth),
+            height = y + rowHeight,
+            // 报出去的这一条就是"这一列的第一行基线"，外层据此与社团列对齐
+            alignmentLines = mapOf(FirstBaseline to firstRowBaseline)
+        ) {
+            placeables.forEachIndexed { index, placeable -> placeable.place(xs[index], ys[index]) }
+        }
+    }
+}
+
+/**
+ * 取真实排版的第一行基线。
+ *
+ * `> 0` 而不是 `>= 0`：文本的第一行基线不可能是 0，拿到 0 说明这个节点根本没提供
+ * 这条对齐线（`AlignmentLine.Unspecified` 是 Int.MIN_VALUE，但过程中也可能出现 0），
+ * 当成有效值会让两个值错开整整一个 ascent —— 正是"中日文那列低 3dp"的由来。
  */
 private fun Placeable.usableFirstBaseline(): Int {
     val baseline = get(FirstBaseline)
-    return if (baseline >= 0) baseline else (height * 0.8f).toInt()
+    return if (baseline > 0) baseline else (height * 0.8f).toInt()
 }
 
 /**
