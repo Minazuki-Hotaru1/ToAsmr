@@ -9,8 +9,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
@@ -29,7 +27,6 @@ import com.asmrone.app.ui.screen.home.HomeViewModel
 import com.asmrone.app.ui.screen.library.LibraryScreen
 import com.asmrone.app.ui.screen.library.PlaylistDetailScreen
 import com.asmrone.app.ui.screen.link.WorkLinkScreen
-import com.asmrone.app.ui.screen.player.PlayerScreen
 import com.asmrone.app.ui.screen.search.SearchResultScreen
 import com.asmrone.app.ui.screen.search.SearchScreen
 import com.asmrone.app.ui.screen.search.SearchViewModel
@@ -92,7 +89,8 @@ object Routes {
     const val DETAIL = "detail/{workId}"
     fun detail(workId: Int) = "detail/$workId"
 
-    const val PLAYER = "player"
+    // 播放器**没有路由**：它是 MainActivity 里的常驻覆盖层（见 `PlayerSlideOverlay`），
+    // 详情页点音频与点迷你栏走同一个 `openPlayerOverlay()`，入场动画因此一致。
 
     /** 收藏夹详情（从收藏 → 列表点进） */
     const val PLAYLIST_DETAIL = "playlist/{playlistId}"
@@ -130,12 +128,18 @@ object Routes {
  * 导航图 —— 页面切换动画沿用 comicApp 的三种编排：
  *  - 普通页面：淡入淡出（300ms）
  *  - 详情页：左右滑动（进 spring、回 tween），有"层级推进"的感觉
- *  - 播放器：缩放进入（scale 0.92 → 1），像一层浮起来的界面
+ *
+ * 播放器**不在这张图里**：它是 `MainActivity` 里常驻组合的覆盖层
+ * （`PlayerSlideOverlay`），不管是点迷你播放器还是点详情页的音频，
+ * 都是自下而上滑入。曾经它是一条路由（缩放进入），两条路径的动画因此不一致 ——
+ * 从详情页点音频会"从屏幕中间展开"，从迷你栏点却是"从下往上"。
  *
  * @param pendingWorkToken 从外部链接带进来的作品线索（`RJ01700554` / 数字 id）。
  *   非空时导航到 [Routes.WORK_LINK] 去换 workId —— 冷启动（系统点了链接拉起 App）
  *   与热启动（App 已在后台）都由 `MainActivity` 塞进这个参数。
  * @param onWorkTokenConsumed 线索已经被受理，调用方应把它清空，否则重组时会再跳一次
+ * @param onOpenPlayer 打开播放器覆盖层。详情页点音频时调用；由 `MainActivity`
+ *   传入自己的 `openPlayerOverlay`，这样详情页与迷你栏共用同一段入场动画。
  */
 @Composable
 fun AppNavGraph(
@@ -143,7 +147,8 @@ fun AppNavGraph(
     homeViewModel: HomeViewModel,
     searchViewModel: SearchViewModel,
     pendingWorkToken: String? = null,
-    onWorkTokenConsumed: () -> Unit = {}
+    onWorkTokenConsumed: () -> Unit = {},
+    onOpenPlayer: () -> Unit = {}
 ) {
     LaunchedEffect(pendingWorkToken) {
         val token = pendingWorkToken?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
@@ -386,7 +391,7 @@ fun AppNavGraph(
                 viewModel = detailViewModel,
                 workId = workId,
                 onBack = { navController.popBackStack() },
-                onOpenPlayer = { navController.navigate(Routes.PLAYER) },
+                onOpenPlayer = onOpenPlayer,
                 // 点语言版本链接：跳到那个语言版本的详情页
                 onOpenWork = { targetId -> navController.navigate(Routes.detail(targetId)) },
                 // 点详情页的标签 / 声优 / 社团：**直达**这些资源的作品页。
@@ -411,26 +416,8 @@ fun AppNavGraph(
             )
         }
 
-        composable(
-            route = Routes.PLAYER,
-            enterTransition = {
-                scaleIn(
-                    initialScale = 0.92f,
-                    animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f)
-                ) + fadeIn(tween(250))
-            },
-            exitTransition = {
-                scaleOut(targetScale = 0.92f, animationSpec = tween(300)) + fadeOut(tween(250))
-            },
-            popEnterTransition = {
-                scaleIn(initialScale = 0.95f, animationSpec = tween(350)) + fadeIn(tween(300))
-            },
-            popExitTransition = {
-                scaleOut(targetScale = 0.92f, animationSpec = tween(350)) + fadeOut(tween(300))
-            }
-        ) {
-            PlayerScreen(onBack = { navController.popBackStack() })
-        }
+        // 播放器不占路由：它是 `MainActivity` 里的常驻覆盖层，两条入口都走
+        // `openPlayerOverlay()`，入场动画是同一段"自下而上"。
     }
 }
 

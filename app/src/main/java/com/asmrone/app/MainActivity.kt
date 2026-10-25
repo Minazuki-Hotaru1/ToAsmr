@@ -295,11 +295,12 @@ fun MainApp(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
     val showBottomBar = currentRoute in Routes.topLevel
-    val showMiniPlayer = playerState.isActive && currentRoute != Routes.PLAYER
+    // 播放器是覆盖层，不占路由 —— 只要在播就有迷你栏（展开时被覆盖层盖住）。
+    val showMiniPlayer = playerState.isActive
 
     // ── 迷你播放器 → 全屏播放器的展开动画 ──
-    // 不走 Routes.PLAYER：播放器作为覆盖层从迷你栏的矩形长到全屏，
-    // 这样返回时也能原路缩回迷你栏，而不是 NavHost 的整页 scale/fade。
+    // 播放器不占路由：作为覆盖层从底部滑入（点迷你栏、点详情页的音频都走这里），
+    // 收起时原路滑回去，而不是 NavHost 的整页 scale/fade。
     val overlayScope = rememberCoroutineScope()
     val overlayProgress = remember { Animatable(0f) }
     var playerOverlayVisible by remember { mutableStateOf(false) }
@@ -521,7 +522,9 @@ fun MainApp(
                         homeViewModel = homeViewModel,
                         searchViewModel = searchViewModel,
                         pendingWorkToken = pendingWorkToken,
-                        onWorkTokenConsumed = onWorkTokenConsumed
+                        onWorkTokenConsumed = onWorkTokenConsumed,
+                        // 详情页点音频后也用同一个入口，入场动画与点迷你栏完全一致
+                        onOpenPlayer = { openPlayerOverlay() }
                     )
                 }
             }
