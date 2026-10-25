@@ -161,12 +161,19 @@ class DetailLinkGuardTest {
     }
 
     @Test
-    fun `★ 每列只 measure 一次，宽度先用 intrinsic 估`() {
+    fun `★ 每列只 measure 一次，宽度在 measure 之前就定好`() {
         val body = functionBody(screen, "private fun CreditsRow(")
         // 真机上踩过：先 measure 一遍拿自然宽度、再按分好的宽度 measure 第二次，
         // Compose 直接抛 `measure() may not be called multiple times on the same Measurable`。
+        //
+        // 现在左列宽来自固定占比常量、与内容无关，所以"在 measure 之前算好宽度"
+        // 这件事是结构性成立的，不再需要靠 intrinsic 估。
         assertTrue(
-            "宽度估计要走 maxIntrinsicWidth，而不是先量一遍",
+            "左列宽用固定占比算，不看内容",
+            body.contains("CIRCLE_COLUMN_FRACTION")
+        )
+        assertFalse(
+            "不再用 intrinsic 估宽度 —— 那正是各作品列起点不一致的根源",
             body.contains("maxIntrinsicWidth(")
         )
         assertEquals(
@@ -178,6 +185,22 @@ class DetailLinkGuardTest {
             "声优那一列只允许 measure 一次",
             1,
             Regex("measurables\\[3\\]\\.measure\\(").findAll(body).count()
+        )
+    }
+
+    @Test
+    fun `★ 社团与声优两列的起点固定，不随社团名长度漂`() {
+        val body = functionBody(screen, "private fun CreditsRow(")
+        // 曾经按社团名的 maxIntrinsicWidth 分配左列宽，于是声优那列的 x 位置
+        // = f(社团名长度)：社团叫「把你淫普淫普掉」时被推到很右边、叫「Whisp」时又缩回来。
+        // 换一部作品再看就觉得"这两行没对齐"。改成固定占比后位置与内容无关。
+        assertTrue(
+            "左列宽 = 可用宽度 × 固定占比",
+            body.contains("val col1 = maxOf(label1.width, (available * CIRCLE_COLUMN_FRACTION).toInt())")
+        )
+        assertTrue(
+            "声优列从 col1 + 间隙 开始",
+            body.contains("val x2 = col1 + gapPx")
         )
     }
 

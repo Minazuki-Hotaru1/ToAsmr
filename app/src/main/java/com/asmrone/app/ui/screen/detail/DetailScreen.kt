@@ -733,6 +733,18 @@ private val InnerGap = 10.dp
 private val MetaItemGap = 14.dp
 
 /**
+ * 社团 / 声优两列的**左列宽度占比**（占去掉间隙后的可用宽度）。
+ *
+ * 定成固定比例而不是按内容算：左列宽一旦跟着社团名长度走，声优那列的
+ * 起始位置就会**每一部作品都不一样** —— 社团叫「把你淫普淫普掉」时声优被推到很右边，
+ * 叫「Whisp」时又缩回来。同一个用户连着看两部，会觉得这两行"没对齐"。
+ *
+ * 0.38 的取法：常见社团名（`Whisp`、`ミッケのニコラ`）在 360dp 屏上刚好放得下，
+ * 声优一列还剩约 200dp，够放两三个名字再折行。
+ */
+private const val CIRCLE_COLUMN_FRACTION = 0.38f
+
+/**
  * ① 头图。
  *
  * 按需求：
@@ -1246,19 +1258,17 @@ private fun CreditsRow(
         val loose = constraints.copy(minWidth = 0, minHeight = 0)
         val label1 = measurables[0].measure(loose)
         val label2 = measurables[2].measure(loose)
-        // 先估一下社团"想多宽"再决定怎么分：社团名可能很长（带特典后缀那种），
-        // 但必须给声优留出至少 1/4 宽，否则声优那列会被挤成一个字、两行省略号。
+        // 两列宽度**固定**成比例，不看内容 —— 声优永远从同一条竖线开始。
         //
-        // ⚠️ 这里只能用 maxIntrinsicWidth()，**不能**先 measure 一遍再按结果重 measure ——
-        // Compose 规定同一个 Measurable 每次测量只能 measure 一次，否则直接抛
-        // `measure() may not be called multiple times on the same Measurable`（真机闪退就踩的这个）。
-        val natural1 = measurables[1].maxIntrinsicWidth(constraints.maxHeight)
-            .coerceAtMost(constraints.maxWidth)
-        val minSecond = maxOf(label2.width, constraints.maxWidth / 4)
-        val col1 = maxOf(
-            label1.width,
-            minOf(natural1, constraints.maxWidth - gapPx - minSecond)
-        ).coerceAtLeast(label1.width)
+        // 旧写法按社团名的 maxIntrinsicWidth 决定左列（还夹在"至少给声优留 1/4"
+        // 的范围里），于是左列宽 = f(社团名长度)：短名时声优贴过来、长名时被推远。
+        // 同一屏里看不出来，换一部作品再看就明显"不同步"。
+        //
+        // ⚠️ 同一个 Measurable 只能 measure 一次（否则抛
+        // `measure() may not be called multiple times`），所以左列宽必须在
+        // measure 之前就用常量算好 —— 这也是固定占比的另一个好处。
+        val available = (constraints.maxWidth - gapPx).coerceAtLeast(1)
+        val col1 = maxOf(label1.width, (available * CIRCLE_COLUMN_FRACTION).toInt())
         val x2 = col1 + gapPx
         val value1 = measurables[1].measure(Constraints(maxWidth = col1))
         val value2 = measurables[3].measure(
