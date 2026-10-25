@@ -543,7 +543,22 @@ fun MainApp(
             PlayerSlideOverlay(
                 progress = { overlayProgress.value },
                 visible = playerOverlayVisible,
-                onBack = { closePlayerOverlay() }
+                onBack = { closePlayerOverlay() },
+                // 从播放页跳到"正在播的这一首"所属作品页。
+                //
+                // 已经停在这部作品的详情页时只收起播放器 —— 否则会往返回栈里
+                // 再压一层同一个页面，看起来像"点了没反应"。
+                onOpenWork = {
+                    val entry = navController.currentBackStackEntry
+                    val onSameWork = entry?.destination?.route == Routes.DETAIL &&
+                        entry.arguments?.getInt("workId") == playerState.workId
+                    closePlayerOverlay()
+                    if (!onSameWork) {
+                        navController.navigate(Routes.detail(playerState.workId)) {
+                            launchSingleTop = true
+                        }
+                    }
+                }
             )
         }
 

@@ -68,6 +68,7 @@ import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.ui.component.DownloadStorageButton
 import com.asmrone.app.ui.component.TreeRow
 import com.asmrone.app.ui.component.collectFolderPaths
+import com.asmrone.app.ui.component.fileSuffixOf
 import com.asmrone.app.ui.component.flattenVisibleTree
 import com.asmrone.app.ui.component.rememberLocalStorageRequester
 
@@ -431,14 +432,37 @@ fun DownloadPickerSheet(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = row.node.title,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = if (isFolder) FontWeight.Medium else FontWeight.Normal,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
+                        // 名字与扩展名分开渲染：名字长了只截名字，格式始终留在行尾
+                        val suffix = fileSuffixOf(row.node)
+                        if (suffix == null) {
+                            Text(
+                                text = row.node.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isFolder) FontWeight.Medium else FontWeight.Normal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        } else {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = row.node.title.dropLast(suffix.length),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                Text(
+                                    text = suffix,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    maxLines = 1
+                                )
+                            }
+                        }
                         val trailing = when {
                             // 存本地时可勾选：说明这一勾是"复制"，不是再下一遍
                             inApp && copiesToLocal(row.path) -> "已在 App 内 · 复制"

@@ -1,8 +1,6 @@
 package com.asmrone.app.ui.screen.player
 
 import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -135,6 +133,7 @@ private val PlayerChrome = Color.White.copy(alpha = 0.10f)
 @Composable
 fun PlayerScreen(
     onBack: () -> Unit,
+    onOpenWork: () -> Unit = {},
     immersiveSystemBars: Boolean = true
 ) {
     val state by AudioController.state.collectAsState()
@@ -281,7 +280,7 @@ fun PlayerScreen(
                 .fillMaxSize()
                 .navigationBarsPadding()
         ) {
-            // ── 顶部：收起 + 分享（Apple Music 的极简 chrome）──
+            // ── 顶部：收起 + 打开作品详情（Apple Music 的极简 chrome）──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -296,21 +295,12 @@ fun PlayerScreen(
                     rotate = 90f
                 )
                 Spacer(Modifier.weight(1f))
-                // 分享：只复制链接，不调系统分享面板 —— 这个 app 的分享场景
-                // 基本是"把作品发给同好"，一个链接比一堆 App 图标更快。
+                // 打开作品详情：从正在播的这一首回到它所属的作品页。
+                // 人听到一半想看简介/文件树/别的音轨时，不用先收起播放器再翻回去。
                 PlayerIconButton(
-                    iconRes = R.drawable.ic_share_fluent,
-                    contentDescription = "复制作品链接",
-                    onClick = {
-                        val link = shareLink(state.workSourceId, state.workId)
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                        if (clipboard != null && link.isNotBlank()) {
-                            clipboard.setPrimaryClip(ClipData.newPlainText("asmr.one", link))
-                            toast.show("链接已复制：$link")
-                        } else {
-                            toast.show("暂时没有可分享的链接")
-                        }
-                    }
+                    iconRes = R.drawable.ic_open_fluent,
+                    contentDescription = "打开作品详情",
+                    onClick = onOpenWork
                 )
             }
 
@@ -611,7 +601,7 @@ fun PlayerScreen(
                 // 弹窗关掉之后没有任何"正在计时"的提示，用户会不确定按到没有
                 toast.show(
                     if (AppPrefs.sleepUntilTrackEnd.value) {
-                        "定时 $minutes 分钟 · 这一首会放完再停"
+                        "定时 $minutes 分钟"
                     } else {
                         "定时 $minutes 分钟"
                     }
@@ -748,7 +738,8 @@ private fun PlayerIconButton(
 fun PlayerSlideOverlay(
     progress: () -> Float,
     visible: Boolean,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenWork: () -> Unit = {}
 ) {
     // 覆盖层在 NavHost 之后组合，BackHandler 优先级高于底层导航：
     // 返回手势先收起播放页，而不是把播放页下面的页面 pop 掉。
@@ -823,6 +814,7 @@ fun PlayerSlideOverlay(
         ) {
             PlayerScreen(
                 onBack = onBack,
+                onOpenWork = onOpenWork,
                 // 页面真正覆盖状态栏之后才切白色系统栏图标
                 immersiveSystemBars = fullyExpanded
             )
@@ -1485,21 +1477,6 @@ private fun formatSpeed(speed: Float): String = "%.2f×".format(speed)
 
 /** 播放速度的快捷档位（0.75–2.0） */
 private val SPEED_PRESETS = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
-
-/**
- * 拼出可分享的作品链接。
- *
- * 优先用 RJ 号（`https://asmr.one/work/RJ01234567`）—— 这是站点的规范地址，
- * 换域名也认；拿不到 RJ 时退回数字 id，站点同样能打开。
- */
-private fun shareLink(sourceId: String?, workId: Int): String {
-    val key = sourceId?.trim().orEmpty()
-    return when {
-        key.isNotEmpty() -> "https://asmr.one/work/$key"
-        workId > 0 -> "https://asmr.one/work/$workId"
-        else -> ""
-    }
-}
 
 /**
  * 毫秒 → `m:ss`。
