@@ -189,40 +189,15 @@ fun FileTreeRow(
                 kind == TrackKind.UNSUPPORTED -> cs.onSurfaceVariant.copy(alpha = 0.6f)
                 else -> cs.onBackground
             }
-            // 扩展名单独拿出来渲染：长名字被省略号截断时，格式仍要看得见。
-            //
-            // 只用一个 Text 做不到 —— TextOverflow.Ellipsis 从整串的尾部截，
-            // 名字一长就正好把 ".mp3" 截掉，而那偏偏是用户最想确认的信息。
-            // 拆成 Row 之后，扩展名先按自身宽度占位，名字拿剩下的宽度再省略。
-            val suffix = fileSuffixOf(node)
-            if (suffix == null) {
-                Text(
-                    text = node.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = nameColor,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = node.title.dropLast(suffix.length),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = nameColor,
-                        // 单行：扩展名固定占一行末尾，名字再多行也只会排出
-                        // ".MP3" 在第二行中间这种读起来别扭的版式。
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    Text(
-                        text = suffix,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = nameColor.copy(alpha = 0.7f),
-                        maxLines = 1
-                    )
-                }
-            }
+            // 名字最多两行，扩展名固定在**最后一行的末尾**（长名字先截名字，
+            // 格式永远看得见）。具体怎么截由 FileNameText 量出来，这里只交代颜色。
+            FileNameText(
+                name = node.title,
+                modifier = Modifier.fillMaxWidth(),
+                color = nameColor,
+                suffixColor = nameColor.copy(alpha = 0.7f),
+                showSuffix = !node.isFolder
+            )
             if (node.isFolder) {
                 val audioCount = node.audioCount()
                 val folderCount = node.children.count { it.children.isNotEmpty() }
@@ -270,24 +245,14 @@ fun FileTreeRow(
 }
 
 /**
- * 文件名的扩展名（含点、统一大写）；不像扩展名时返回 null。
+ * 文件名的扩展名（含点、统一大写）；不像扩展名、或是文件夹时返回 null。
  *
- * 用来实现"名字再长也要看得见格式"：截断只截名字部分，`.MP3` 始终留在行尾。
- * 统一大写是因为它在这里起的是**标签**的作用（`TRACK01` 和 `track01` 的格式
- * 是同一个），混着大小写读起来反而费劲。
- *
- * 只在确实像扩展名时才返回：文件夹没有格式；没有点、点在开头（`.gitignore`）
- * 或点在结尾都不算；超过 5 个字符或含空白的（`RJ12345.这是一个说明`）
- * 多半不是格式，一并放弃 —— 否则会把半句话当成格式钉在行尾。
+ * 真正的截断逻辑在 [FileNameText] 里：截断只截名字部分，`.MP3` 始终留在
+ * 最后一行的末尾。统一大写是因为它在这里起的是**标签**的作用
+ * （`TRACK01` 和 `track01` 的格式是同一个），混着大小写读起来反而费劲。
  */
-internal fun fileSuffixOf(node: Track): String? {
-    if (node.isFolder) return null
-    val dot = node.title.lastIndexOf('.')
-    if (dot <= 0 || dot == node.title.lastIndex) return null
-    val ext = node.title.substring(dot + 1)
-    if (ext.length > 5 || ext.any { it.isWhitespace() }) return null
-    return "." + ext.uppercase()
-}
+internal fun fileSuffixOf(node: Track): String? =
+    if (node.isFolder) null else fileNameSuffixOf(node.title)
 
 /**
  * 文件类型 → 图标资源。
