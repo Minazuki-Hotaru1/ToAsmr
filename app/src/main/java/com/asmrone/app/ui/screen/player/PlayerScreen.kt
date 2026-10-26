@@ -101,6 +101,7 @@ import com.asmrone.app.player.AudioController
 import com.asmrone.app.player.LyricsOverlay
 import com.asmrone.app.player.PlayQueuePolicy
 import com.asmrone.app.ui.component.CoverImage
+import com.asmrone.app.ui.component.FileNameText
 import com.asmrone.app.ui.component.PlayingIndicator
 import com.asmrone.app.ui.component.ToastHost
 import com.asmrone.app.ui.component.rememberToastState
@@ -867,15 +868,17 @@ private fun PlayerCoverPage(
         }
 
         Spacer(Modifier.height(8.dp))
-        Text(
-            text = trackTitle.ifBlank { "未在播放" },
+        // 与文件树用同一套「名字省略、格式保留」的排版：长曲子名截到第二行时，
+        // 末尾固定留出 .MP3 / .WAV 这类真实格式，而不是被省略号吃掉。
+        FileNameText(
+            name = trackTitle.ifBlank { "未在播放" },
+            modifier = Modifier.fillMaxWidth(),
             style = MaterialTheme.typography.headlineMedium.copy(
                 fontWeight = FontWeight.Bold,
                 letterSpacing = (-0.2).sp
             ),
             color = PlayerText,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
+            suffixColor = PlayerText.copy(alpha = 0.62f)
         )
         if (metaLine.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
@@ -1004,13 +1007,13 @@ private fun PlayerQueueSheet(
                                 }
                             }
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = track.title,
+                            FileNameText(
+                                name = track.title,
+                                modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = if (playing) PlayerText else Color.White.copy(alpha = 0.86f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
+                                suffixColor = PlayerTertiary,
+                                maxLines = 1
                             )
                             Spacer(Modifier.width(10.dp))
                             Text(
