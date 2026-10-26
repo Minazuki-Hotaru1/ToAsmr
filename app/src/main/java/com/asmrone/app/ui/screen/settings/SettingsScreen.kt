@@ -17,13 +17,20 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -35,6 +42,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.prefs.AppPrefs
+import com.asmrone.app.data.update.ReleaseInfo
+import com.asmrone.app.data.update.UpdateChecker
+import com.asmrone.app.data.update.UpdateResult
 import com.asmrone.app.R
 import com.asmrone.app.ui.component.FlatDivider
 import com.asmrone.app.ui.component.FlatRow
@@ -42,6 +52,7 @@ import com.asmrone.app.ui.component.FlatSection
 import com.asmrone.app.ui.component.RowChevron
 import com.asmrone.app.ui.component.SettingSwitch
 import com.asmrone.app.ui.theme.ThemeColor
+import kotlinx.coroutines.launch
 
 /**
  * 设置主页 —— 分组与排版完全沿用 comicApp 设置页：
@@ -348,15 +359,27 @@ private fun ThemeColorDot(
  * 开源之后这一页只留"这个 App 是什么、从哪来、代码在哪"三件事：
  * 设计来源（移植自哪个项目）与法律声明两段都撤掉了。
  *
- * @param onCheckUpdate 「版本」行右侧那个按钮，**留给后续接更新检查**（默认空实现，
- *   按下时只有涟漪）。实现时大概要做：请求仓库的 release 接口 → 比对 [installedVersionName]
- *   → 有新版就弹一个对话框，所以按钮文案已经定成「检查更新」而不是「立即更新」。
+ * 「检查更新」直接查仓库的 release 接口（见 [UpdateChecker]），结果一律用对话框
+ * 呈现：这里的三种结局都值得读一眼（有新版本要决定去不去下载、已是最新要确认、
+ * 失败要知道为什么）。
  */
 @Composable
-fun AboutSettingsScreen(onBack: () -> Unit, onCheckUpdate: () -> Unit = {}) {
+fun AboutSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     // 版本号从安装包读，别写死 —— 写死的那份永远不会跟着 build.gradle 走
     val versionName = remember(context) { installedVersionName(context) }
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<UpdateResult?>(null) }
+
+    fun check() {
+        if (checking) return
+        checking = true
+        scope.launch {
+            result = UpdateChecker.check(versionName)
+            checking = false
+        }
+    }
 
     SettingsScaffold(title = "关于", onBack = onBack) {
         FlatSection(title = "ToAsmr") {
@@ -364,8 +387,16 @@ fun AboutSettingsScreen(onBack: () -> Unit, onCheckUpdate: () -> Unit = {}) {
                 title = "版本",
                 description = versionName,
                 trailing = {
-                    SettingsOutlinedButton(onClick = onCheckUpdate) {
-                        Text("检查更新")
+                    SettingsOutlinedButton(onClick = { check() }) {
+                        if (checking) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else {
+                            Text("检查更新")
+                        }
                     }
                 }
             )
@@ -383,6 +414,107 @@ fun AboutSettingsScreen(onBack: () -> Unit, onCheckUpdate: () -> Unit = {}) {
             )
         }
     }
+
+    val current = result
+    when (current) {
+        is UpdateResult.Available -> UpdateDialog(
+            info = current.info,
+            currentVersion = versionName,
+            onDismiss = { result = null },
+            onDownload = {
+                result = null
+                openUrl(context, current.info.apkUrl ?: current.info.pageUrl)
+            }
+        )
+
+        UpdateResult.UpToDate -> InfoDialog(
+            title = "已是最新版本",
+            message = "当前 $versionName 就是这个仓库里最新的版本。",
+            onDismiss = { result = null }
+        )
+
+        is UpdateResult.Failed -> InfoDialog(
+            title = "检查更新失败",
+            message = current.message,
+            confirmLabel = "重试",
+            onConfirm = { result = null; check() },
+            onDismiss = { result = null }
+        )
+
+        null -> Unit
+    }
+}
+
+/**
+ * 有新版本时的对话框：版本号、发布时间、release 说明，以及"是否装了 APK 资产"
+ * 决定按钮文案（有资产就是「下载并安装」指向直链，没资产就「前往 Release 页」）。
+ */
+@Composable
+private fun UpdateDialog(
+    info: ReleaseInfo,
+    currentVersion: String,
+    onDismiss: () -> Unit,
+    onDownload: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("发现新版本 ${info.versionName}") },
+        text = {
+            Column {
+                Text(
+                    text = buildString {
+                        append("当前版本 $currentVersion")
+                        if (info.publishedAt.isNotBlank()) append(" · ${info.publishedAt} 发布")
+                        if (info.apkBytes > 0) {
+                            append(" · ${"%.1f".format(info.apkBytes / 1024f / 1024f)} MB")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (info.notes.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = info.notes,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 12,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDownload) {
+                Text(if (info.apkUrl != null) "下载并安装" else "前往 Release 页")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("以后再说") }
+        }
+    )
+}
+
+@Composable
+private fun InfoDialog(
+    title: String,
+    message: String,
+    confirmLabel: String = "知道了",
+    onConfirm: () -> Unit = {},
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(); if (confirmLabel == "知道了") onDismiss() }) {
+                Text(confirmLabel)
+            }
+        },
+        dismissButton = if (confirmLabel == "知道了") null else {
+            { TextButton(onClick = onDismiss) { Text("关闭") } }
+        }
+    )
 }
 
 /** 项目主页（仓库已改名 ToAsmr，GitHub 对旧名仍会 301，但这里直接写新名） */
@@ -398,8 +530,12 @@ private fun installedVersionName(context: Context): String = runCatching {
     context.packageManager.getPackageInfo(context.packageName, 0).versionName?.trim().orEmpty()
 }.getOrDefault("")
 
-private fun openProjectRepository(context: Context) {
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_REPOSITORY_URL))
+private fun openProjectRepository(context: Context) = openUrl(context, PROJECT_REPOSITORY_URL)
+
+/** 任何"在浏览器里打开"的入口都走这里：失败静默（拿不到浏览器就没得做） */
+private fun openUrl(context: Context, url: String) {
+    if (url.isBlank()) return
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     runCatching { context.startActivity(intent) }
 }
