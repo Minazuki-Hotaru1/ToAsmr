@@ -85,7 +85,6 @@
 
 前往 [Releases](https://github.com/Minazuki-Hotaru1/ToAsmr/releases) 下载最新版本。
 
-> 目前还没有发布正式版本，可以先按下面的「源码构建」自行打包。
 
 ---
 
