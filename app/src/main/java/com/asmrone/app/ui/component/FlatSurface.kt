@@ -113,6 +113,7 @@ fun FlatRow(
     description: String? = null,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    badge: Boolean = false,
     onClick: (() -> Unit)? = null,
     trailing: @Composable (() -> Unit)? = null
 ) {
@@ -126,11 +127,17 @@ fun FlatRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                color = titleColor
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = titleColor
+                )
+                if (badge) {
+                    Spacer(Modifier.width(6.dp))
+                    UpdateBadgeDot(size = 7.dp)
+                }
+            }
             if (!description.isNullOrBlank()) {
                 Spacer(Modifier.height(2.dp))
                 Text(

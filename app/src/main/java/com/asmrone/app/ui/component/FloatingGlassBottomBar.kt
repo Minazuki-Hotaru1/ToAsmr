@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -73,7 +74,9 @@ data class GlassTabItem(
     val route: String,
     val label: String,
     @param:DrawableRes val selectedIcon: Int,
-    @param:DrawableRes val unselectedIcon: Int
+    @param:DrawableRes val unselectedIcon: Int,
+    /** 图标右上角的「有新版本」圆点（目前只有「设置」会用到） */
+    val badge: Boolean = false
 )
 
 internal val LocalLiquidBottomTabScale =
@@ -229,12 +232,10 @@ fun FloatingGlassBottomBar(
                         if (index != selectedIndex) onSelect(tab.route)
                     }
                 ) {
-                    FluentIcon(
-                        res = if (index == currentIndex) tab.selectedIcon
-                        else tab.unselectedIcon,
-                        contentDescription = tab.label,
-                        tint = contentColor,
-                        size = 24.dp
+                    TabIcon(
+                        selected = index == currentIndex,
+                        tab = tab,
+                        tint = contentColor
                     )
                     Text(
                         text = tab.label,
@@ -292,12 +293,10 @@ fun FloatingGlassBottomBar(
                     // 隐藏层只负责给选中胶囊提供取样内容，不能带 clickable，
                     // 否则它会盖在真实标签上方吞掉所有点击。
                     GlassBottomTabVisual {
-                        FluentIcon(
-                            res = if (index == currentIndex) tab.selectedIcon
-                            else tab.unselectedIcon,
-                            contentDescription = null,
-                            tint = contentColor,
-                            size = 24.dp
+                        TabIcon(
+                            selected = index == currentIndex,
+                            tab = tab,
+                            tint = contentColor
                         )
                         Text(
                             text = tab.label,
@@ -374,6 +373,38 @@ fun FloatingGlassBottomBar(
     }
 }
 
+/**
+ * 标签图标 + 可选的「有新版本」圆点。
+ *
+ * 抽成组件是因为它要在两层里各画一遍：可见层和给选中胶囊做取样用的隐藏层。
+ * 两层的图标必须像素级一致，否则放大镜里会看到"没有圆点"的旧画面。
+ */
+@Composable
+private fun TabIcon(
+    selected: Boolean,
+    tab: GlassTabItem,
+    tint: Color
+) {
+    Box(contentAlignment = Alignment.Center) {
+        FluentIcon(
+            res = if (selected) tab.selectedIcon else tab.unselectedIcon,
+            contentDescription = tab.label,
+            tint = tint,
+            size = 24.dp
+        )
+        if (tab.badge) {
+            // 贴在图标右上角外侧一点：24dp 图标 + 8dp 圆点若完全内切会压住线条
+            UpdateBadgeDot(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 3.dp, y = (-2).dp),
+                size = 8.dp,
+                ring = true
+            )
+        }
+    }
+}
+
 @Composable
 private fun RowScope.GlassBottomTab(
     onClick: () -> Unit,
@@ -400,7 +431,6 @@ private fun RowScope.GlassBottomTab(
         content = content
     )
 }
-
 /**
  * 隐藏取样层专用的标签内容：与 [GlassBottomTab] 同样的布局和缩放，
  * 但**没有 clickable / pointerInput**，不会拦截真实标签的点击。

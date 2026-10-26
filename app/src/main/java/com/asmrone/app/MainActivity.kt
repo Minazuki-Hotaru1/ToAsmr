@@ -65,6 +65,8 @@ import com.asmrone.app.data.prefs.AppPrefs
 import com.asmrone.app.data.prefs.LibraryStore
 import com.asmrone.app.data.prefs.PlaybackSessionStore
 import com.asmrone.app.data.repo.AsmrRepository
+import com.asmrone.app.data.update.AppVersion
+import com.asmrone.app.data.update.UpdateChecker
 import com.asmrone.app.player.AudioController
 import com.asmrone.app.ui.component.BottomBarState
 import com.asmrone.app.ui.component.FloatingGlassBottomBar
@@ -89,7 +91,7 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.launch
 
 /** 底部导航项（5 项：音声库 / 搜索 / 收藏 / 下载 / 设置；图标为 Fluent 矢量图资源） */
-private val bottomNavItems = listOf(
+private fun bottomNavItems(hasUpdate: Boolean) = listOf(
     GlassTabItem(Routes.HOME, "音声库", R.drawable.ic_home_fluent, R.drawable.ic_home_outline_fluent),
     GlassTabItem(Routes.SEARCH, "搜索", R.drawable.ic_search_fluent, R.drawable.ic_search_outline_fluent),
     GlassTabItem(
@@ -105,7 +107,9 @@ private val bottomNavItems = listOf(
     ),
     GlassTabItem(
         Routes.SETTINGS, "设置",
-        R.drawable.ic_settings_fluent, R.drawable.ic_settings_outline_fluent
+        R.drawable.ic_settings_fluent, R.drawable.ic_settings_outline_fluent,
+        // 检查更新发现新版本时，在设置图标上点一颗橙黄圆点
+        badge = hasUpdate
     )
 )
 
@@ -279,6 +283,14 @@ fun MainApp(
      * 媒体卡片不显示 —— 等于白接了一套媒体会话。
      */
     val context = LocalContext.current
+
+    // 「有新版本」圆点：底栏的「设置」图标与设置页的「关于」行共用这一份判断。
+    // 存的是上次检查到的版本号，和当前安装版本比一次 —— 装上新版本后圆点自己消失。
+    val pendingUpdate by AppPrefs.updateAvailableVersion.collectAsState()
+    val installedVersion = remember(context) { AppVersion.installedName(context) }
+    val hasUpdate = remember(pendingUpdate, installedVersion) {
+        pendingUpdate.isNotBlank() && UpdateChecker.isNewer(pendingUpdate, installedVersion)
+    }
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
@@ -496,7 +508,7 @@ fun MainApp(
                         Column {
                             if (showMiniPlayer) Spacer(Modifier.height(8.dp))
                             FloatingGlassBottomBar(
-                                tabs = bottomNavItems,
+                                tabs = bottomNavItems(hasUpdate),
                                 currentRoute = currentRoute,
                                 onSelect = { route ->
                                     navController.navigate(route) {

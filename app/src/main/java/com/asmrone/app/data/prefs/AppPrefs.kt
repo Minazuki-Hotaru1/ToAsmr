@@ -196,6 +196,16 @@ object AppPrefs {
     val themeColor: StateFlow<Int> = _themeColor.asStateFlow()
 
     /**
+     * 上次检查更新时发现的、比当前安装版本更新的版本号（如 `"0.5.5"`），空串表示没有。
+     *
+     * 存版本号而不是布尔值：状态要能自己在装上新版本后失效。每次展示"有新版本"
+     * 圆点前都拿它和安装版本比一次（[com.asmrone.app.data.update.UpdateChecker.isNewer]），
+     * 装上 0.5.5 之后旧记录 `"0.5.5"` 自然不再算"更新"，不必等到下次联网检查才消。
+     */
+    private val _updateAvailableVersion = MutableStateFlow("")
+    val updateAvailableVersion: StateFlow<String> = _updateAvailableVersion.asStateFlow()
+
+    /**
      * 收藏页当前页签：0 = 标记，1 = 列表。
      *
      * 持久化是刻意的：从「标记」切到「列表」之后，只要用户不再主动切回去，
@@ -402,6 +412,12 @@ object AppPrefs {
         sp.edit().putInt(KEY_THEME_COLOR, value).apply()
     }
 
+    /** 检查更新的结果：有新版本传版本号，已是最新传空串。 */
+    fun setUpdateAvailableVersion(value: String) {
+        _updateAvailableVersion.value = value
+        sp.edit().putString(KEY_UPDATE_AVAILABLE_VERSION, value).apply()
+    }
+
     fun init(context: Context) {
         if (::sp.isInitialized) return
         sp = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -436,6 +452,7 @@ object AppPrefs {
         _autoNext.value = sp.getBoolean(KEY_AUTO_NEXT, true)
         _themeMode.value = sp.getInt(KEY_THEME_MODE, 0)
         _themeColor.value = sp.getInt(KEY_THEME_COLOR, 0)
+        _updateAvailableVersion.value = sp.getString(KEY_UPDATE_AVAILABLE_VERSION, "").orEmpty()
         _libraryTab.value = sp.getInt(KEY_LIBRARY_TAB, 0)
         _overlayLyrics.value = sp.getBoolean(KEY_OVERLAY_LYRICS, false)
         _downloadStorage.value = sp.getString(KEY_DOWNLOAD_STORAGE, null)
@@ -582,7 +599,8 @@ object AppPrefs {
     private const val KEY_PLAY_MODE = "play_mode"
     private const val KEY_AUTO_NEXT = "auto_next"
     private const val KEY_THEME_MODE = "theme_mode"
-private const val KEY_THEME_COLOR = "theme_color"
+    private const val KEY_THEME_COLOR = "theme_color"
+    private const val KEY_UPDATE_AVAILABLE_VERSION = "update_available_version"
     private const val KEY_LIBRARY_TAB = "library_tab"
     private const val KEY_OVERLAY_LYRICS = "overlay_lyrics"
     private const val KEY_DOWNLOAD_STORAGE = "download_storage"

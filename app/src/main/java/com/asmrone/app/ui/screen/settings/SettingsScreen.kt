@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -44,6 +45,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.asmrone.app.data.auth.AuthManager
 import com.asmrone.app.data.prefs.AppPrefs
+import com.asmrone.app.data.update.AppVersion
 import com.asmrone.app.data.update.ReleaseInfo
 import com.asmrone.app.data.update.UpdateChecker
 import com.asmrone.app.data.update.UpdateResult
@@ -53,6 +55,7 @@ import com.asmrone.app.ui.component.FlatRow
 import com.asmrone.app.ui.component.FlatSection
 import com.asmrone.app.ui.component.RowChevron
 import com.asmrone.app.ui.component.SettingSwitch
+import com.asmrone.app.ui.component.UpdateBadgeDot
 import com.asmrone.app.ui.theme.ThemeColor
 import kotlinx.coroutines.launch
 
@@ -73,6 +76,11 @@ fun SettingsScreen(
 ) {
     val host by AppPrefs.host.collectAsState()
     val authState by AuthManager.state.collectAsState()
+    // 「关于」行上的橙黄圆点：与底栏「设置」图标、关于页「检查更新」按钮同源
+    val context = LocalContext.current
+    val pendingUpdate by AppPrefs.updateAvailableVersion.collectAsState()
+    val installedVersion = remember(context) { AppVersion.installedName(context) }
+    val hasUpdate = pendingUpdate.isNotBlank() && UpdateChecker.isNewer(pendingUpdate, installedVersion)
 
     SettingsScaffold(title = "设置", collapseBottomBarOnScroll = true) {
         // ── 账号 ──
@@ -168,6 +176,7 @@ fun SettingsScreen(
             FlatRow(
                 title = "关于",
                 description = "版本、项目仓库",
+                badge = hasUpdate,
                 onClick = onOpenAbout,
                 trailing = { RowChevron() }
             )
@@ -369,16 +378,27 @@ private fun ThemeColorDot(
 fun AboutSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     // 版本号从安装包读，别写死 —— 写死的那份永远不会跟着 build.gradle 走
-    val versionName = remember(context) { installedVersionName(context) }
+    val versionName = remember(context) { AppVersion.installedName(context) }
     val scope = rememberCoroutineScope()
     var checking by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<UpdateResult?>(null) }
+    // 圆点与其它两处（底栏「设置」、首页「关于」）同源：装的版本已经追上就不再亮
+    val pendingUpdate by AppPrefs.updateAvailableVersion.collectAsState()
+    val hasUpdate = pendingUpdate.isNotBlank() && UpdateChecker.isNewer(pendingUpdate, versionName)
 
     fun check() {
         if (checking) return
         checking = true
         scope.launch {
-            result = UpdateChecker.check(versionName)
+            val checked = UpdateChecker.check(versionName)
+            result = checked
+            // 顺手把结果记下来：底栏「设置」图标与首页「关于」行的橙黄圆点都读这份状态。
+            // 已是最新时写空串，把那颗点清掉；失败则保持原样（网络问题不该抹掉已知的新版本）。
+            when (checked) {
+                is UpdateResult.Available -> AppPrefs.setUpdateAvailableVersion(checked.info.versionName)
+                UpdateResult.UpToDate -> AppPrefs.setUpdateAvailableVersion("")
+                is UpdateResult.Failed -> Unit
+            }
             checking = false
         }
     }
@@ -391,19 +411,31 @@ fun AboutSettingsScreen(onBack: () -> Unit) {
                 trailing = {
                     // 固定 88×34dp：内容在「检查更新」与转圈之间切换，宽度不能跟着变，
                     // 否则每点一次整行都会抖一下。文字与转圈都由按钮自己居中。
-                    SettingsOutlinedButton(
-                        onClick = { check() },
-                        modifier = Modifier.width(UPDATE_BUTTON_WIDTH),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        if (checking) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary
+                    Box {
+                        SettingsOutlinedButton(
+                            onClick = { check() },
+                            modifier = Modifier.width(UPDATE_BUTTON_WIDTH),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            if (checking) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                Text("检查更新", maxLines = 1, softWrap = false)
+                            }
+                        }
+                        // 查到过更新时，按钮右上角挂一颗橙黄小点（不占按钮尺寸，
+                        // 所以不会像之前那样一点击就把「版本」那行挤动）
+                        if (hasUpdate && !checking) {
+                            UpdateBadgeDot(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 3.dp, y = (-3).dp),
+                                size = 8.dp
                             )
-                        } else {
-                            Text("检查更新", maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -536,16 +568,6 @@ private const val PROJECT_REPOSITORY_URL = "https://github.com/Minazuki-Hotaru1/
  * 高度不用管，`SettingsOutlinedButton` 内部已经锁死 34dp。
  */
 private val UPDATE_BUTTON_WIDTH = 88.dp
-
-/**
- * 安装包的 versionName。
- *
- * 不带后缀（作者在 `build.gradle.kts` 里写的 `"0.5.3 "` 带了个尾空格，
- * 界面上一行字看不出差异，但复制出去就会多一格）。
- */
-private fun installedVersionName(context: Context): String = runCatching {
-    context.packageManager.getPackageInfo(context.packageName, 0).versionName?.trim().orEmpty()
-}.getOrDefault("")
 
 private fun openProjectRepository(context: Context) = openUrl(context, PROJECT_REPOSITORY_URL)
 
