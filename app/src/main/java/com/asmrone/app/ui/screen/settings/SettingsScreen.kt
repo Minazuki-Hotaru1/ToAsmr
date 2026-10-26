@@ -403,7 +403,7 @@ fun AboutSettingsScreen(onBack: () -> Unit) {
             FlatDivider()
             FlatRow(
                 title = "项目仓库",
-                description = "github.com/Minazuki-Hotaru1/ToAsmr",
+                description = "帮我点个小⭐Star吧，这对我真的很重要",
                 onClick = { openProjectRepository(context) },
                 trailing = { RowChevron() }
             )
