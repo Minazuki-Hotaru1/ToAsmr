@@ -1,5 +1,8 @@
 package com.asmrone.app.ui.screen.settings
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,13 +19,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -148,6 +154,7 @@ fun SettingsScreen(
         FlatSection(title = "其它") {
             FlatRow(
                 title = "关于",
+                description = "版本、项目仓库",
                 onClick = onOpenAbout,
                 trailing = { RowChevron() }
             )
@@ -335,16 +342,39 @@ private fun ThemeColorDot(
     }
 }
 
-/** 关于页 */
+/**
+ * 关于页 —— 版本、项目仓库、数据来源。
+ *
+ * 开源之后这一页只留"这个 App 是什么、从哪来、代码在哪"三件事：
+ * 设计来源（移植自哪个项目）与法律声明两段都撤掉了。
+ *
+ * @param onCheckUpdate 「版本」行右侧那个按钮，**留给后续接更新检查**（默认空实现，
+ *   按下时只有涟漪）。实现时大概要做：请求仓库的 release 接口 → 比对 [installedVersionName]
+ *   → 有新版就弹一个对话框，所以按钮文案已经定成「检查更新」而不是「立即更新」。
+ */
 @Composable
-fun AboutSettingsScreen(onBack: () -> Unit) {
+fun AboutSettingsScreen(onBack: () -> Unit, onCheckUpdate: () -> Unit = {}) {
+    val context = LocalContext.current
+    // 版本号从安装包读，别写死 —— 写死的那份永远不会跟着 build.gradle 走
+    val versionName = remember(context) { installedVersionName(context) }
+
     SettingsScaffold(title = "关于", onBack = onBack) {
         FlatSection(title = "ToAsmr") {
-            FlatRow(title = "版本", description = "0.2.1")
+            FlatRow(
+                title = "版本",
+                description = versionName,
+                trailing = {
+                    SettingsOutlinedButton(onClick = onCheckUpdate) {
+                        Text("检查更新")
+                    }
+                }
+            )
             FlatDivider()
             FlatRow(
-                title = "设计来源",
-                description = "移植自 comicApp（ToComic）"
+                title = "项目仓库",
+                description = "github.com/Minazuki-Hotaru1/ToAsmr",
+                onClick = { openProjectRepository(context) },
+                trailing = { RowChevron() }
             )
             FlatDivider()
             FlatRow(
@@ -352,14 +382,24 @@ fun AboutSettingsScreen(onBack: () -> Unit) {
                 description = "asmr.one / Kikoeru 公开接口，不存储任何音频"
             )
         }
-
-        Spacer(Modifier.height(24.dp))
-
-        FlatSection(title = "声明") {
-            FlatRow(
-                title = "非官方项目",
-                description = "与 asmr.one、DLsite 无隶属关系"
-            )
-        }
     }
+}
+
+/** 项目主页（仓库已改名 ToAsmr，GitHub 对旧名仍会 301，但这里直接写新名） */
+private const val PROJECT_REPOSITORY_URL = "https://github.com/Minazuki-Hotaru1/ToAsmr"
+
+/**
+ * 安装包的 versionName。
+ *
+ * 不带后缀（作者在 `build.gradle.kts` 里写的 `"0.5.3 "` 带了个尾空格，
+ * 界面上一行字看不出差异，但复制出去就会多一格）。
+ */
+private fun installedVersionName(context: Context): String = runCatching {
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName?.trim().orEmpty()
+}.getOrDefault("")
+
+private fun openProjectRepository(context: Context) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_REPOSITORY_URL))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(intent) }
 }
