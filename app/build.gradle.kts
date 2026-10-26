@@ -39,8 +39,8 @@ android {
         applicationId = "com.asmrone.app"
         minSdk = 28
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.5.4"
+        versionCode = 10
+        versionName = "0.5.5"
     }
 
     signingConfigs {
