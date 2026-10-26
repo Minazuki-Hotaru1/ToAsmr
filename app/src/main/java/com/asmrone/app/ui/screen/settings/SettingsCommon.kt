@@ -105,6 +105,7 @@ internal fun SettingsOutlinedButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     colors: ButtonColors = ButtonDefaults.outlinedButtonColors(),
+    contentPadding: PaddingValues = PaddingValues(horizontal = 14.dp),
     content: @Composable RowScope.() -> Unit
 ) {
     OutlinedButton(
@@ -112,7 +113,7 @@ internal fun SettingsOutlinedButton(
         modifier = modifier.height(34.dp),
         enabled = enabled,
         colors = colors,
-        contentPadding = PaddingValues(horizontal = 14.dp),
+        contentPadding = contentPadding,
         content = content
     )
 }

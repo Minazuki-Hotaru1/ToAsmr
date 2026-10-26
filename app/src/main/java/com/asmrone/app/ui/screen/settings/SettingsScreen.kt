@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
@@ -387,7 +389,13 @@ fun AboutSettingsScreen(onBack: () -> Unit) {
                 title = "版本",
                 description = versionName,
                 trailing = {
-                    SettingsOutlinedButton(onClick = { check() }) {
+                    // 固定 88×34dp：内容在「检查更新」与转圈之间切换，宽度不能跟着变，
+                    // 否则每点一次整行都会抖一下。文字与转圈都由按钮自己居中。
+                    SettingsOutlinedButton(
+                        onClick = { check() },
+                        modifier = Modifier.width(UPDATE_BUTTON_WIDTH),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
                         if (checking) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(14.dp),
@@ -395,7 +403,7 @@ fun AboutSettingsScreen(onBack: () -> Unit) {
                                 color = MaterialTheme.colorScheme.primary
                             )
                         } else {
-                            Text("检查更新")
+                            Text("检查更新", maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -429,7 +437,7 @@ fun AboutSettingsScreen(onBack: () -> Unit) {
 
         UpdateResult.UpToDate -> InfoDialog(
             title = "已是最新版本",
-            message = "当前 $versionName 就是这个仓库里最新的版本。",
+            message = "当前 $versionName 已是最新的版本。",
             onDismiss = { result = null }
         )
 
@@ -519,6 +527,15 @@ private fun InfoDialog(
 
 /** 项目主页（仓库已改名 ToAsmr，GitHub 对旧名仍会 301，但这里直接写新名） */
 private const val PROJECT_REPOSITORY_URL = "https://github.com/Minazuki-Hotaru1/ToAsmr"
+
+/**
+ * 「检查更新」按钮的固定宽度。
+ *
+ * 88dp = 四个中文字的 labelLarge（约 56dp）两侧各留 16dp，也装得下 14dp 的转圈。
+ * 关键在两种内容**共用同一个宽度**：点击时不会把「版本」这一行挤一下。
+ * 高度不用管，`SettingsOutlinedButton` 内部已经锁死 34dp。
+ */
+private val UPDATE_BUTTON_WIDTH = 88.dp
 
 /**
  * 安装包的 versionName。
