@@ -1,3 +1,6 @@
+import java.io.File
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -9,8 +12,8 @@ plugins {
  * ## 为什么不把密钥写进仓库
  *
  * 发布用密钥一旦进过 Git 历史就等于泄露，只能换新密钥重发。所以这里只从
- * **环境变量**读，读不到就退回 debug 签名 —— 退回时打出来的包**不能发布**，
- * 但可以装到自己手机上跑正式版（R8 已开启，性能行为与发布包一致）。
+ * **环境变量**或**仓库外的属性文件**读，读不到就退回 debug 签名 —— 退回时打出来的
+ * 包**不能发布**，但可以装到自己手机上跑正式版（R8 已开启，性能行为与发布包一致）。
  *
  * 发布前设置这四个环境变量即可，构建脚本本身一行都不用改：
  *
@@ -20,11 +23,42 @@ plugins {
  * ASMRONE_KEY_ALIAS         密钥别名
  * ASMRONE_KEY_PASSWORD      密钥口令
  * ```
+ *
+ * ## 为什么还要支持属性文件
+ *
+ * Android Studio 里点 Run / Build APK 的进程拿不到我们 shell 里设的 `$env:`，
+ * 于是图形界面打出来的是 debug 签名包 —— 它和从 Releases 下载的正式包**签名不同，
+ * 装不上也升不上去**（这就是"签名冲突"的全部原因）。
+ *
+ * 所以允许在 `local.properties`（已在 .gitignore 里）写一行指向仓库外的属性文件：
+ *
+ * ```
+ * toasmr.signing.properties=D:\\1aaastudy\\Android\\asmrOneApp\\_keys\\keystore.properties
+ * ```
+ *
+ * 属性文件里的键名与 `_keys/keystore.properties` 一致（storeFile / storePassword /
+ * keyAlias / keyPassword）。配上之后，**debug 构建也用这把密钥签名**，AS 打出来的包
+ * 就能直接覆盖安装、也能被正式包覆盖。
  */
+val externalSigning: Properties? = run {
+    val local = rootProject.file("local.properties")
+    if (!local.isFile) return@run null
+    val localProps = Properties()
+    local.inputStream().use { localProps.load(it) }
+    val path = localProps.getProperty("toasmr.signing.properties")?.takeIf { it.isNotBlank() }
+        ?: return@run null
+    val file = File(path)
+    if (!file.isFile) return@run null
+    Properties().apply { file.inputStream().use { load(it) } }
+}
 val releaseKeystore = System.getenv("ASMRONE_KEYSTORE")?.takeIf { it.isNotBlank() }
+    ?: externalSigning?.getProperty("storeFile")?.takeIf { it.isNotBlank() }
 val releaseStorePass = System.getenv("ASMRONE_KEYSTORE_PASSWORD")
+    ?: externalSigning?.getProperty("storePassword")
 val releaseAlias = System.getenv("ASMRONE_KEY_ALIAS")
+    ?: externalSigning?.getProperty("keyAlias")?.takeIf { it.isNotBlank() }
 val releaseKeyPass = System.getenv("ASMRONE_KEY_PASSWORD")
+    ?: externalSigning?.getProperty("keyPassword")
 val hasReleaseSigning = releaseKeystore != null && releaseAlias != null
 
 android {
@@ -60,6 +94,12 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
+            // 有发布密钥时 debug 也用它签名：否则 AS 点 Run 装上去的是另一把钥匙签的包，
+            // 和 Releases 里的正式包互相装不上（同一台设备上只能二选一）。
+            // 没配密钥时保持默认的 debug 签名，不影响任何人直接 clone 下来就跑。
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
 
         release {
