@@ -39,6 +39,9 @@ plugins {
  * 属性文件里的键名与 `_keys/keystore.properties` 一致（storeFile / storePassword /
  * keyAlias / keyPassword）。配上之后，**debug 构建也用这把密钥签名**，AS 打出来的包
  * 就能直接覆盖安装、也能被正式包覆盖。
+ *
+ * ⚠️ 属性文件里的 `storeFile` 必须写**正斜杠**（`D:/...`）：`Properties.load` 把反斜杠
+ * 当转义符，`D:\1aaastudy\...` 会被吃成 `D:1aaastudy...`（`\t` 还会变成制表符）。
  */
 val externalSigning: Properties? = run {
     val local = rootProject.file("local.properties")
