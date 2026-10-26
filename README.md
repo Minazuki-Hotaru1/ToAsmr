@@ -9,6 +9,7 @@
   [![Kotlin](https://img.shields.io/badge/Kotlin-2.2-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
   [![Compose](https://img.shields.io/badge/Jetpack%20Compose-BOM%202026.02-4285F4)](https://developer.android.com/jetpack/compose)
   [![minSdk](https://img.shields.io/badge/minSdk-28-brightgreen)](#)
+  [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
 
@@ -18,19 +19,6 @@
   <img src="docs/screenshots/player.png" width="19%" alt="播放器" />
   <img src="docs/screenshots/library.png" width="19%" alt="收藏与下载" />
 </div>
-
-用 Kotlin 与 Jetpack Compose 从零写成，界面走「扁平分组 + 液态玻璃」的路子：内容退到后面，顶栏与底栏浮在前面，其余地方只留文字与封面。
-
-它想解决的事情其实很朴素 —— 喜欢的东西应该随时能听。所以除了在线浏览与播放，它也会把作品完整搬到本地：文件树、音频、歌词、封面，一个不少；断网、换设备，或者有一天服务器不在了，下载下来的那些还在硬盘上，就是普通的音频文件。
-
-> 不是官方客户端。App 本体不含、也不托管任何音频：所有内容都来自你自己配置的服务器。
-
-| | |
-|---|---|
-| 包名 | `com.asmrone.app` |
-| 版本 | 0.5.3 |
-| 最低系统 | Android 9（API 28） |
-| 目标系统 | Android 16（API 36） |
 
 ---
 
@@ -168,7 +156,7 @@ cd ToAsmr
 
 ## 开源协议
 
-> 本仓库尚未添加 `LICENSE` 文件。在补上之前，默认保留所有权利 —— fork 之后并不自动获得修改与再分发的授权。
+本项目采用 [MIT License](LICENSE)。可自由使用、修改与再分发（含商业用途），保留版权声明与许可声明即可。
 
 ## 联系方式
 
